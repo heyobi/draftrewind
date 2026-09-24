@@ -49,10 +49,10 @@ jobs:
         shell: bash
         env:
           GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_OAUTH_JSON }}
-          GITHUB_OAUTH_JSON: ${{ secrets.GITHUB_OAUTH_JSON }}
+          GITHUB_OAUTH_JSON: ${{ secrets.GH_OAUTH_JSON }}
         run: |
           if [ -n "$GOOGLE_OAUTH_JSON" ]; then printf '%s' "$GOOGLE_OAUTH_JSON" > app/core/google-oauth.json; else echo "::warning::GOOGLE_OAUTH_JSON secret is empty — Google Drive sign-in will be unavailable in this build"; fi
-          if [ -n "$GITHUB_OAUTH_JSON" ]; then printf '%s' "$GITHUB_OAUTH_JSON" > app/core/github-oauth.json; else echo "::warning::GITHUB_OAUTH_JSON secret is empty"; fi
+          if [ -n "$GITHUB_OAUTH_JSON" ]; then printf '%s' "$GITHUB_OAUTH_JSON" > app/core/github-oauth.json; else echo "::warning::GH_OAUTH_JSON secret is empty"; fi
       - name: Build NSIS installer and publish to the GitHub Release
         run: npx electron-builder --win nsis --publish always
         env:
