@@ -156,9 +156,18 @@ async function sync(project, token, opts = {}) {
             await git.fetch({ fs, http, gitdir, url, remote: 'origin', ref: BRANCH, singleBranch: true, tags: false, onAuth: onAuth(token) });
             remoteOid = await git.resolveRef({ fs, gitdir, ref: `refs/remotes/origin/${BRANCH}` });
         } catch (e) {
-            // Boş depo (henüz hiç gönderilmemiş) → sadece göndereceğiz
-            if (!/Could not find|NotFoundError|empty|couldn't find remote ref/i.test(String(e.message || e.code))) {
-                if (/401|403|Unauthorized|HttpError/i.test(String(e.message))) throw new Error(T('err.ghAuth'));
+            const msg = String(e.message || e.code);
+            if (/401|403|Unauthorized/i.test(msg)) throw Object.assign(new Error(T('err.ghAuth')), { code: 'EGHAUTH' });
+            // Boş depo (henüz hiç gönderilmemiş) → sadece göndereceğiz. Ama depo silinmiş de olabilir:
+            // gerçek GitHub'da depoyu sorup ayırt ederiz (404 → yeniden oluşturulur).
+            if (/Could not find|NotFoundError|empty|couldn't find remote ref|404/i.test(msg)) {
+                if (!opts.url) {
+                    const r = await api(token, 'GET', `/repos/${owner}/${repo}`);
+                    if (r.status === 404) throw Object.assign(new Error(T('err.ghRepoGone')), { code: 'EGHREPO' });
+                    if (r.status === 401) throw Object.assign(new Error(T('err.ghAuth')), { code: 'EGHAUTH' });
+                }
+            } else {
+                if (/HttpError/i.test(msg)) throw Object.assign(new Error(T('err.ghAuth')), { code: 'EGHAUTH' });
                 throw e;
             }
         }
@@ -173,11 +182,23 @@ async function sync(project, token, opts = {}) {
                 pulled = await applyRemote(project, local, remoteOid);
                 await project.setHead(remoteOid);
                 local = remoteOid;
-            } else if (!localAhead) {
-                const res = await mergeDiverged(project, local, remoteOid);
-                pulled = res.pulled;
-                conflicts = res.conflicts;
-                local = res.oid;
+            } else if (!localAhead && !opts.force) {
+                const pushedOid = project.meta && project.meta.githubOid;
+                if (pushedOid && pushedOid === local) {
+                    // Yerelde gönderilmemiş hiçbir kayıt yok; uzak zincir yeniden yazılmış (seyreltme).
+                    // Yeni zinciri olduğu gibi benimse; kaydedilmemiş yerel düzenlemeler applyRemote'ta korunur.
+                    pulled = await applyRemote(project, local, remoteOid);
+                    await project.setHead(remoteOid);
+                    project.treeCache.clear();
+                    project.wordsCache = null;
+                    local = remoteOid;
+                    try { await require('./retention').pruneUnreachable(project); } catch (e) {}
+                } else {
+                    const res = await mergeDiverged(project, local, remoteOid);
+                    pulled = res.pulled;
+                    conflicts = res.conflicts;
+                    local = res.oid;
+                }
             }
         } else if (remoteOid && !local) {
             pulled = await applyRemote(project, null, remoteOid);
@@ -186,7 +207,7 @@ async function sync(project, token, opts = {}) {
         }
 
         if (local && local !== remoteOid) {
-            const r = await git.push({ fs, http, gitdir, url, remote: 'origin', ref: BRANCH, remoteRef: BRANCH, onAuth: onAuth(token) });
+            const r = await git.push({ fs, http, gitdir, url, remote: 'origin', ref: BRANCH, remoteRef: BRANCH, force: !!opts.force, onAuth: onAuth(token) });
             if (r && r.ok === false) throw new Error(T('err.ghPush'));
         }
         // head: GitHub'daki (gönderilmiş) son kayıt; dosya bazlı yedek durumu için saklanır

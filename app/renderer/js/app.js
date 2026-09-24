@@ -482,6 +482,7 @@
             </div>`}
 
             ${rescues.length ? `<div class="banner"><span class="ic">${ic('bolt')}</span><div><div class="t">${tn('home.rescueTitle', rescues.length)}</div><div class="s">${t('home.rescueText')}</div></div><button class="btn sm" data-action="open-file" data-rel="${esc(rescues[0].rel)}">${t('common.open')}</button></div>` : ''}
+            ${S.app.github.needsLogin ? `<div class="banner error"><span class="ic">${ic('github')}</span><div><div class="t">${t('gh.needsLoginTitle')}</div><div class="s">${t('gh.needsLoginText')}</div></div><button class="btn sm primary" data-action="github-login">${t('gh.reconnect')}</button></div>` : ''}
             ${ov.error ? `<div class="banner error"><span class="ic">${ic('alert')}</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(ov.error)}</div></div></div>` : ''}
             ${unprotected.length ? `<div class="banner error"><span class="ic">${ic('shieldOff')}</span><div><div class="t">${tn('bk.bannerTitle', unprotected.length)}</div><div class="s">${tn(dr ? 'bk.bannerTextDrive' : 'bk.bannerText', unprotected.length)} <span class="bk-list">${esc(unprotected.slice(0, 3).map(r => r.split('/').pop()).join(', '))}${unprotected.length > 3 ? '…' : ''}</span></div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${dr ? t('bk.bannerBtnCheck') : t('bk.bannerBtn')}</button></div>` : ''}
             ${!gh && !dr && !dismissed().cloudBanner ? `<div class="banner info"><span class="ic">${ic('cloud')}</span><div><div class="t">${t('home.cloudPromptTitle')}</div><div class="s">${t('home.cloudPromptText')}</div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${t('home.connectCloud')}</button><button class="dismiss-x" data-action="dismiss" data-key="cloudBanner" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button></div>` : ''}
@@ -730,7 +731,7 @@
             ? `<div class="user-row">${gh.user && gh.user.avatar ? `<img src="${esc(gh.user.avatar)}">` : `<span class="avatar-ic">${ic('github')}</span>`}<div><div class="nm">${esc(gh.user ? gh.user.name : '')}</div><div class="lg">@${esc(gh.user ? gh.user.login : '')}</div></div></div>
                <div class="sub">${c.syncing ? `<span class="spinner" style="display:inline-block;vertical-align:-3px"></span> ${t('cloud.sending')}` : c.syncError ? `${ic('history')} ${esc(c.syncError)}` : c.lastSync ? t('cloud.lastPush', { ago: ago(c.lastSync) }) : t('cloud.firstSoon')}
                ${c.github ? `<br>${t('cloud.privateRepo', { link: `<button class="linkish" data-action="open-url" data-url="${esc(c.github.url || `https://github.com/${c.github.owner}/${c.github.repo}`)}">${esc(c.github.owner)}/${esc(c.github.repo)}</button>` })}` : ''}</div>
-               <div class="actions"><button class="btn primary" data-action="sync-now" ${c.syncing ? 'disabled' : ''}>${t('cloud.syncNow')}</button>${dismissed().phoneCard ? `<button class="btn" data-action="phone-qr">${t('qr.button')}</button>` : ''}<button class="btn ghost" data-action="github-logout">${t('cloud.logout')}</button></div>`
+               <div class="actions">${S.app.github.needsLogin ? `<button class="btn primary" data-action="github-login">${t('gh.reconnect')}</button>` : ''}<button class="btn ${S.app.github.needsLogin ? '' : 'primary'}" data-action="sync-now" ${c.syncing ? 'disabled' : ''}>${t('cloud.syncNow')}</button>${dismissed().phoneCard ? `<button class="btn" data-action="phone-qr">${t('qr.button')}</button>` : ''}<button class="btn ghost" data-action="github-logout">${t('cloud.logout')}</button></div>`
             : `<div class="sub">${t('cloud.ghPitch')}</div>
                <div class="actions"><button class="btn primary" data-action="github-login">${t('cloud.ghLogin')}</button><button class="btn ghost" data-action="open-url" data-url="https://github.com/signup">${t('cloud.ghSignup')}</button></div>`;
 
@@ -805,7 +806,13 @@
 
     // ------------------------------------------------------------------ eylemler
     async function addExisting() {
-        const id = await run(() => av.projects.add());
+        let id = await run(() => av.projects.add());
+        if (id && id.confirm) {
+            const c = id.confirm;
+            const ok = await confirmModal({ title: t('addProj.bigTitle'), text: t('addProj.bigText', { files: num(c.files) + (c.capped ? '+' : ''), size: (c.bytes / 1024 / 1024 / 1024).toFixed(1) }), ok: t('addProj.bigOk'), emoji: 'box' });
+            if (!ok) return;
+            id = await run(() => av.projects.addDir(c.dir));
+        }
         if (!id) return;
         S.activeId = id;
         S.tab = 'home';
@@ -979,6 +986,7 @@
             ${win ? `<div class="setting-row"><div><div class="t">${t('settings.guardian')}</div><div class="s">${t('settings.guardianHint')}</div></div><label class="switch"><input type="checkbox" id="guardian" ${pr.guardian ? 'checked' : ''}><span></span></label></div>` : ''}
             <div class="setting-row"><div><div class="t">${t('settings.autostart')}</div><div class="s">${t('settings.autostartHint')}</div></div><label class="switch"><input type="checkbox" id="autostart" ${pr.autostart ? 'checked' : ''}><span></span></label></div>
             <div class="setting-row"><div><div class="t">${t('settings.tips')}</div><div class="s">${t('settings.tipsHint')}</div></div><button class="linkish" id="tips-again" ${Object.keys(dismissed()).length ? '' : 'disabled style="opacity:.5;cursor:default"'}>${t('settings.tipsBtn')}</button></div>
+            <div class="setting-row"><div><div class="t">${t('settings.history')}</div><div class="s" id="hist-size">${t('settings.historyHint')}</div></div><button class="btn sm" id="thin">${t('settings.thinBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.relink')}</div><div class="s">${t('settings.relinkHint')}</div></div><button class="btn sm" id="relink">${t('settings.relinkBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.remove')}</div><div class="s">${t('settings.removeHint')}</div></div><button class="btn sm danger" id="remove">${t('settings.removeBtn')}</button></div>
             <div class="foot"><span style="margin-right:auto;color:var(--text-3);font-size:12px;align-self:center">DraftRewind ${esc(S.app.version)}</span><button class="btn primary" id="done">${t('common.ok')}</button></div>`);
@@ -1001,6 +1009,23 @@
         if (g) g.onchange = async () => { S.app.prefs = await av.setPref('guardian', g.checked); };
         const a = m.querySelector('#autostart');
         a.onchange = async () => { S.app.prefs = await av.setPref('autostart', a.checked); };
+        av.projects.historySize(S.activeId).then(sz => {
+            const el = m.querySelector('#hist-size');
+            if (el && sz) el.textContent = t('settings.historySize', { size: sizeText(sz.bytes) });
+        }).catch(() => {});
+        m.querySelector('#thin').onclick = async () => {
+            const btn = m.querySelector('#thin');
+            btn.disabled = true;
+            const r = await run(() => av.projects.thin(S.activeId));
+            btn.disabled = false;
+            if (!r) return;
+            if (r.skipped === 'unpushed') toast(t('settings.thinUnpushed'), 'cloud', 5000);
+            else if (r.skipped === 'busy') toast(t('settings.thinBusy'), 'history', 4000);
+            else toast(r.removed ? t('settings.thinDone', { n: r.removed }) : t('settings.thinNothing'), 'check', 5000);
+            const el = m.querySelector('#hist-size');
+            if (el && r.size) el.textContent = t('settings.historySize', { size: sizeText(r.size.bytes) });
+            if (r.removed) refresh({ history: true });
+        };
         m.querySelector('#tips-again').onclick = async () => {
             if (!Object.keys(dismissed()).length) return;
             S.app.prefs = (await run(() => av.setPref('dismissed', {}))) || S.app.prefs;

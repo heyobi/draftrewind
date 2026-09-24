@@ -809,6 +809,7 @@ async function reconcile(project, remote, state, kind = 'auto') {
             } catch (e) {}
         };
         try {
+            if (changedSinceScan(target)) throw new Error('changed since scan');
             fs.renameSync(tmp, dst);
             remember(target, dst);
             return { written: target, sum };
@@ -824,9 +825,21 @@ async function reconcile(project, remote, state, kind = 'auto') {
             return { written: alt, sum };
         }
     };
+    // Uzun eşitlemede dosya taramadan SONRA kaydedilmiş olabilir; o halde üstüne yazılmaz
+    const changedSinceScan = rel => {
+        const f = localFiles.get(rel);
+        if (!f) return false;
+        try {
+            const st = fs.statSync(localAbs(rel));
+            return st.mtimeMs !== f.mtimeMs || st.size !== f.size;
+        } catch (e) {
+            return false;
+        }
+    };
     const writeLocal = (rel, buf) => {
         fs.mkdirSync(path.dirname(localAbs(rel)), { recursive: true });
         try {
+            if (changedSinceScan(rel)) throw new Error('changed since scan');
             fs.writeFileSync(localAbs(rel), buf);
             return rel;
         } catch (e) {

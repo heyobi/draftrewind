@@ -13,6 +13,7 @@ const github = require('./core/github');
 const drive = require('./core/drive');
 const { LocalAI, cleanTitle, grounded, hasContent, digestWords } = require('./core/ai');
 const facts = require('./core/facts');
+const retention = require('./core/retention');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
 
@@ -480,6 +481,16 @@ async function runSync(rt) {
         }
     } catch (e) {
         record = recordOf(rt.project.id);
+        if (record && e && e.code === 'EGHREPO') {
+            // Depo GitHub'da silinmiş: bir sonrakinde yeniden oluşturulur, tüm geçmiş yeniden gönderilir
+            record.github = null;
+            record.githubOid = undefined;
+            scheduleSync(rt, 8000);
+        }
+        if (e && e.code === 'EGHAUTH') {
+            store.set('githubNeedsLogin', true);
+            emit('github', { state: 'needsLogin' });
+        }
         if (record) {
             record.syncError = friendlyNetError(e);
             saveProjectRecord(record);
@@ -662,7 +673,7 @@ function appState() {
             return { id: p.id, name: p.name, dir: p.dir, emoji: p.emoji || null, color: p.color || null, missing: !!(rt && rt.missing) };
         }),
         activeId: store.get('activeId') || (projects()[0] && projects()[0].id) || null,
-        github: githubToken() ? { connected: true, user: store.get('githubUser') } : { connected: false },
+        github: githubToken() ? { connected: true, user: store.get('githubUser'), needsLogin: !!store.get('githubNeedsLogin', false) } : { connected: false },
         drive: { mode: d.mode || null, folder: d.folder || null, user: d.user || null, detected: drive.detectFolders(), accountAvailable: !!config.GOOGLE_CLIENT_ID },
         prefs: prefs(),
         ai: ai ? ai.status() : null,
@@ -697,6 +708,50 @@ function absOf(rt, rel) {
     return abs;
 }
 
+// Tüm disk, kullanıcı klasörü ve Belgeler/Masaüstü/İndirilenler gibi kök klasörler proje olamaz
+function checkFolderChoice(dir) {
+    const abs = path.resolve(dir).toLowerCase();
+    const special = [os.homedir(), app.getPath('documents'), app.getPath('desktop'), app.getPath('downloads'), process.env.OneDrive, process.env.OneDriveConsumer]
+        .filter(Boolean)
+        .map(p => path.resolve(p).toLowerCase());
+    if (abs === path.parse(abs).root.toLowerCase() || special.includes(abs)) throw new Error(T('err.tooBroad'));
+}
+
+// Geçmişi seyrelt: yalnızca her şey GitHub'a gönderilmişse (ya da GitHub yoksa) ve eşitleme sürmüyorsa.
+// force: kullanıcı Ayarlar'dan istedi (boyut eşiğine bakılmaz)
+async function thinProject(rt, force = false) {
+    const record = recordOf(rt.project.id);
+    if (!record || rt.missing || rt.syncing || rt.driveBusy) return { removed: 0, skipped: 'busy' };
+    const head = await rt.project.head();
+    if (record.github && record.githubOid !== head) return { removed: 0, skipped: 'unpushed' };
+    if (!force) {
+        const size = retention.historySize(rt.project);
+        if (size.bytes < config.THIN_MIN_BYTES) return { removed: 0, skipped: 'small' };
+    }
+    const r = await retention.thinHistory(rt.project);
+    if (r.removed) {
+        historyCache.delete(rt.project.id);
+        const fresh = recordOf(rt.project.id);
+        if (fresh) {
+            fresh.thinnedAt = Date.now();
+            if (fresh.github) fresh.githubOid = r.head;
+            saveProjectRecord(fresh);
+        }
+        emit('snapshot', { projectId: rt.project.id });
+        // GitHub'daki zinciri de değiştir (zorla gönderme; diğer bilgisayar benimser)
+        if (fresh && fresh.github) {
+            try {
+                const token = await freshGithubToken();
+                rt.project.meta = fresh;
+                await github.sync(rt.project, token, { force: true });
+            } catch (e) {
+                scheduleSync(rt, 30000);
+            }
+        }
+    }
+    return r;
+}
+
 async function addProjectFromDir(dir, name) {
     const existing = projects().find(p => path.resolve(p.dir).toLowerCase() === path.resolve(dir).toLowerCase());
     if (existing) {
@@ -723,10 +778,25 @@ function registerIpc() {
         });
         if (r.canceled || !r.filePaths.length) return null;
         const dir = r.filePaths[0];
-        if (path.resolve(dir) === path.parse(dir).root || path.resolve(dir) === os.homedir()) {
-            throw new Error(T('err.tooBroad'));
+        checkFolderChoice(dir);
+        const stats = retention.quickFolderStats(dir);
+        // Çok büyük klasör (ör. tüm arşiv): zayıf bilgisayarı yorar; kullanıcı bilerek onaylasın
+        if (stats.capped || stats.files > 1500 || stats.bytes > 3 * 1024 * 1024 * 1024) {
+            return { confirm: { dir, files: stats.files, bytes: stats.bytes, capped: stats.capped } };
         }
         return addProjectFromDir(dir);
+    });
+    // Büyük klasör onaylandıktan sonra
+    handle('project:addDir', async dir => {
+        checkFolderChoice(dir);
+        return addProjectFromDir(dir);
+    });
+    // Geçmiş boyutu ve seyreltme (Ayarlar)
+    handle('project:historySize', id => retention.historySize(rtOf(id).project));
+    handle('project:thin', async id => {
+        const rt = rtOf(id);
+        const r = await thinProject(rt, true);
+        return { ...r, size: retention.historySize(rt.project) };
     });
 
     handle('project:create', async name => {
@@ -885,6 +955,7 @@ function registerIpc() {
                 const user = await github.getUser(session.token);
                 saveGithubSession(session);
                 store.set('githubUser', user);
+                store.set('githubNeedsLogin', false);
                 emit('github', { state: 'connected', user });
                 showWindow();
                 for (const rt of runtimes.values()) {
@@ -1536,6 +1607,9 @@ app.whenReady().then(async () => {
     setInterval(() => pollDriveChanges().catch(() => {}), config.DRIVE_CHANGES_POLL_MS);
     setTimeout(() => pollDriveChanges().catch(() => {}), 20 * 1000);
     watchDriveFolder();
+    const thinAll = () => { for (const rt of runtimes.values()) thinProject(rt).catch(() => {}); };
+    setInterval(thinAll, 6 * 3600 * 1000);
+    setTimeout(thinAll, 3 * 60 * 1000);
     setInterval(() => runGuardian().catch(() => {}), config.GUARDIAN_INTERVAL_MS);
     setTimeout(() => runGuardian().catch(() => {}), 30 * 1000);
 

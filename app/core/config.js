@@ -37,6 +37,8 @@ module.exports = {
     DRIVE_POLL_MS: 4 * 60 * 1000,
     // Hesapla bağlıyken Drive'ın "neler değişti" listesi (tek ucuz istek) bu sıklıkla sorulur
     DRIVE_CHANGES_POLL_MS: 45 * 1000,
+    // Geçmiş bu boyutu aşınca eski otomatik kayıtlar kendiliğinden seyreltilir
+    THIN_MIN_BYTES: 700 * 1024 * 1024,
     // Drive'daki "Sürümler" klasörüne aynı dosya için en fazla bu sıklıkta kopya.
     DRIVE_VERSION_EVERY_MS: 30 * 60 * 1000,
     // Sürüm geçmişi (zaman makinesi + GitHub) sınırı. GitHub 50 MB üstünde uyarır, 100 MB üstünü

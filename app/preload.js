@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('av', {
 
     projects: {
         add: () => call('project:add'),
+        addDir: dir => call('project:addDir', dir),
+        historySize: id => call('project:historySize', id),
+        thin: id => call('project:thin', id),
         create: name => call('project:create', name),
         remove: id => call('project:remove', id),
         update: (id, patch) => call('project:update', id, patch),
