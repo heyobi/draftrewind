@@ -18,6 +18,26 @@ const IGNORE_FILE = /^(~\$|~wrl|\.~lock\.|\.ds_store$|thumbs\.db$|desktop\.ini$|
 const IGNORE_EXT = /\.(tmp|temp|bak|lnk|crdownload|part|partial|swp|asd|wbk)$/i;
 const TRAILER = '\n\nacadamiv:';
 
+// Dosyayı okur ama sınırdan büyükse (ör. 10 GB uydu görüntüsü) belleğe ALMADAN hata verir.
+// Boyut, açılan dosya tanıtıcısından okunur; tarama ile okuma arasında büyüyen dosya da yakalanır.
+function readLimitedSync(abs, max = config.MAX_FILE_BYTES) {
+    const fd = fs.openSync(abs, 'r');
+    try {
+        const size = fs.fstatSync(fd).size;
+        if (size > max) throw Object.assign(new Error(T('err.fileTooLarge')), { code: 'ETOOLARGE' });
+        const buf = Buffer.allocUnsafe(size);
+        let off = 0;
+        while (off < size) {
+            const n = fs.readSync(fd, buf, off, size - off, off);
+            if (!n) break;
+            off += n;
+        }
+        return off === size ? buf : buf.subarray(0, off);
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
 function toPosix(p) {
     return p.split(path.sep).join('/');
 }
@@ -59,6 +79,9 @@ class Project {
         this.treeCache = new Map();
         this.queue = Promise.resolve();
         this.skippedLarge = [];
+        this.largeFiles = new Map(); // rel → { abs, size, mtimeMs } (geçmişe girmeyen büyük dosyalar)
+        this.lockedFiles = new Map(); // rel → { m, s }: son denemede okunamadı (açık/kilitli)
+        this.wordsCache = null;
     }
 
     // Aynı projede işlemler sırayla çalışsın (eşzamanlı kayıt/eşitleme çakışmasın).
@@ -133,10 +156,12 @@ class Project {
         }
     }
 
-    // Klasördeki izlenecek dosyalar
-    scanWorkingFiles() {
+    // Klasördeki izlenecek dosyalar. Sınırın (config.MAX_FILE_BYTES) üstündekiler geçmişe girmez ve
+    // skippedLarge'da listelenir; includeLarge: true ise (Drive eşitlemesi) { large: true } ile döner.
+    scanWorkingFiles({ includeLarge = false } = {}) {
         const out = new Map();
         const large = [];
+        const largeMap = new Map();
         const walk = (abs, rel) => {
             let entries;
             try {
@@ -161,6 +186,8 @@ class Project {
                     const r = rel ? `${rel}/${name}` : name;
                     if (st.size > config.MAX_FILE_BYTES) {
                         large.push(r);
+                        largeMap.set(r, { abs: full, size: st.size, mtimeMs: st.mtimeMs, large: true });
+                        if (includeLarge) out.set(r, { abs: full, size: st.size, mtimeMs: st.mtimeMs, large: true });
                         continue;
                     }
                     out.set(r, { abs: full, size: st.size, mtimeMs: st.mtimeMs });
@@ -169,6 +196,8 @@ class Project {
         };
         walk(this.dir, '');
         this.skippedLarge = large;
+        this.largeFiles = largeMap;
+        for (const rel of this.lockedFiles.keys()) if (!out.has(rel)) this.lockedFiles.delete(rel);
         return out;
     }
 
@@ -176,6 +205,7 @@ class Project {
         const result = new Map();
         const nextCache = {};
         for (const [rel, f] of files) {
+            if (f.large) continue; // büyük dosyalar geçmişe girmez (asla okunmaz)
             const c = this.hashCache[rel];
             if (c && c.m === f.mtimeMs && c.s === f.size) {
                 result.set(rel, c.oid);
@@ -184,9 +214,11 @@ class Project {
             }
             let buf;
             try {
-                buf = fs.readFileSync(f.abs);
+                buf = readLimitedSync(f.abs);
+                this.lockedFiles.delete(rel);
             } catch (e) {
-                // Kilitli dosya (ör. Excel açık) → önceki bilinen sürümü kullan, sonra tekrar denenir
+                this.lockedFiles.set(rel, { m: f.mtimeMs, s: f.size, code: e.code || null });
+                // Kilitli (ya da bu arada sınırı aşacak kadar büyümüş) dosya (ör. Excel açık) → önceki bilinen sürümü kullan, sonra tekrar denenir
                 if (c) {
                     result.set(rel, c.oid);
                     nextCache[rel] = c;
@@ -275,6 +307,51 @@ class Project {
         }
     }
 
+    // Kelime sayıları için başlangıç noktası. Başka yerde yapılan kayıtlarda (GitHub web, telefondan
+    // eklenen dosya) "words" bilgisi yoktur; ilk-ebeveyn zincirinde "words" taşıyan en yakın kayda
+    // gidilir (en fazla `limit` kayıt). Aradaki kayıtlarda değişen/silinen dosyalar düzeltilir.
+    async wordsBase(headOid, headFiles, limit = 200) {
+        if (this.wordsCache && this.wordsCache.head === headOid) return { words: { ...this.wordsCache.words } };
+        const res = await this.wordsBaseNow(headOid, headFiles, limit);
+        if (res.words) this.wordsCache = { head: headOid, words: res.words };
+        return res.words ? { words: { ...res.words } } : res;
+    }
+
+    async wordsBaseNow(headOid, headFiles, limit) {
+        let oid = headOid;
+        let found = null;
+        for (let i = 0; oid && i < limit; i++) {
+            let commit;
+            try {
+                ({ commit } = await git.readCommit({ fs, gitdir: this.gitdir, oid }));
+            } catch (e) {
+                break;
+            }
+            const meta = parseMessage(commit.message).meta || {};
+            if (meta.words && typeof meta.words === 'object') {
+                found = { oid, words: { ...meta.words } };
+                break;
+            }
+            oid = commit.parent[0] || null;
+        }
+        if (!found) return {};
+        const words = found.words;
+        if (found.oid !== headOid && headOid) {
+            try {
+                const baseFiles = await this.treeFiles(found.oid);
+                const current = headFiles || (await this.treeFiles(headOid));
+                for (const rel of Object.keys(words)) if (!current.has(rel)) delete words[rel];
+                for (const [rel, blobOid] of current) {
+                    if (baseFiles.get(rel) === blobOid || !docs.countsWords(rel)) continue;
+                    const { blob } = await git.readBlob({ fs, gitdir: this.gitdir, oid: blobOid });
+                    const n = await docs.countWords(rel, Buffer.from(blob));
+                    if (n != null) words[rel] = n;
+                }
+            } catch (e) {}
+        }
+        return { words };
+    }
+
     // Kayıt noktası al. kind: auto | star | rescue | restore | merge
     snapshot({ kind = 'auto', title, note, force = false } = {}) {
         return this.exclusive(async () => {
@@ -292,9 +369,12 @@ class Project {
             for (const rel of changed) {
                 let buf;
                 try {
-                    buf = fs.readFileSync(st.files.get(rel).abs);
+                    buf = readLimitedSync(st.files.get(rel).abs);
+                    this.lockedFiles.delete(rel);
                 } catch (e) {
-                    // Okunamadı: bu kayıtta eski hali kalsın
+                    const f = st.files.get(rel);
+                    this.lockedFiles.set(rel, { m: f.mtimeMs, s: f.size, code: e.code || null });
+                    // Okunamadı (kilitli ya da sınırı aşacak kadar büyümüş): bu kayıtta eski hali kalsın
                     if (st.headFiles.has(rel)) tree.set(rel, st.headFiles.get(rel));
                     else tree.delete(rel);
                     continue;
@@ -305,7 +385,7 @@ class Project {
             }
 
             // Kelime istatistikleri (mobil uygulama da bu bilgiyi okur)
-            const prev = await this.lastMeta(st.head);
+            const prev = await this.wordsBase(st.head, st.headFiles);
             const words = { ...(prev.words || {}) };
             const delta = {};
             for (const rel of deleted) {
@@ -442,7 +522,7 @@ class Project {
     }
 
     async readAt(oid, rel) {
-        if (oid === 'working') return fs.readFileSync(path.join(this.dir, ...rel.split('/')));
+        if (oid === 'working') return readLimitedSync(path.join(this.dir, ...rel.split('/')));
         const files = await this.treeFiles(oid);
         const blobOid = files.get(rel);
         if (!blobOid) return null;
@@ -457,6 +537,12 @@ class Project {
 
     // Paragraf bazlı + paragraf içinde kelime bazlı karşılaştırma
     async diff(rel, fromOid, toOid) {
+        if (toOid === 'working') {
+            // Geçmişe girmeyen çok büyük dosya: karşılaştırma yok (dosya belleğe okunmaz)
+            try {
+                if (fs.statSync(path.join(this.dir, ...rel.split('/'))).size > config.MAX_FILE_BYTES) return { supported: false, kind: docs.kindOf(rel), tooLarge: true };
+            } catch (e) {}
+        }
         const [a, b] = await Promise.all([
             fromOid ? this.readAt(fromOid, rel).catch(() => null) : null,
             this.readAt(toOid, rel).catch(() => null)
@@ -534,4 +620,4 @@ class Project {
     }
 }
 
-module.exports = { Project, parseMessage, BRANCH, TRAILER };
+module.exports = { Project, parseMessage, readLimitedSync, BRANCH, TRAILER };

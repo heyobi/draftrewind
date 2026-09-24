@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
+  Alert,
   Animated,
   AppState,
   Image,
@@ -12,6 +14,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useColorScheme,
 } from 'react-native';
@@ -26,13 +29,16 @@ import { useLocales } from 'expo-localization';
 
 import * as GH from './src/github';
 import * as G from './src/google';
-import { computeStats, ago, dayLabel, hm, num, kindOf } from './src/stats';
+import { computeStats, deepStats, latestWords, ago, dayLabel, hm, num, kindOf } from './src/stats';
 import { arrayBufferToBase64, wordHtml, sheetHtml, textHtml, utf8Decode, diffHtml } from './src/viewer';
-import { FocusActivity, pulse, loadSeen, saveSeen } from './src/island';
+import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
+import { pulse, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
+import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, readBytes, readBase64, discardPicked, mb } from './src/files';
+import { isPairLink, decodePairLink } from './src/pair';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
 
 const GRAD = ['#6c5cff', '#a35cf6', '#ec62be'];
-const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝' };
+const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝', mobile: '📱' };
 const TYPE = {
   word: { label: 'DOC', colors: ['#2b7cd3', '#185abd'] },
   sheet: { label: 'XLS', colors: ['#21a366', '#107c41'] },
@@ -67,22 +73,117 @@ const success = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   } catch (e) {}
 };
+const warn = () => {
+  try {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  } catch (e) {}
+};
 
-// Esnek (jöle) dokunma efekti
-function Jelly({ children, onPress, style, scaleTo = 0.96, disabled }) {
+// Esnek (jöle) dokunma efekti. onLongPress: basılı tutunca (dokunsal geri bildirimle) — ör. belge eylemleri
+function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled, accessibilityLabel }) {
   const scale = useRef(new Animated.Value(1)).current;
   return (
     <Pressable
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       onPressIn={() => {
         tap();
         Animated.spring(scale, { toValue: scaleTo, friction: 4, tension: 180, useNativeDriver: true }).start();
       }}
       onPressOut={() => Animated.spring(scale, { toValue: 1, friction: 3, tension: 140, useNativeDriver: true }).start()}
       onPress={onPress}
+      delayLongPress={380}
+      onLongPress={
+        onLongPress
+          ? () => {
+              tap(Haptics.ImpactFeedbackStyle.Medium);
+              Animated.sequence([
+                Animated.spring(scale, { toValue: scaleTo - 0.03, friction: 5, tension: 220, useNativeDriver: true }),
+                Animated.spring(scale, { toValue: 1, friction: 3, tension: 140, useNativeDriver: true }),
+              ]).start();
+              onLongPress();
+            }
+          : undefined
+      }
     >
       <Animated.View style={[style, { transform: [{ scale }] }, disabled && { opacity: 0.5 }]}>{children}</Animated.View>
     </Pressable>
+  );
+}
+
+// iOS eylem sayfası (Android'de basit uyarı penceresi). actions: [{ label, onPress, destructive }]
+function showActions(c, { title, message, actions }) {
+  const list = actions.filter(Boolean);
+  if (Platform.OS === 'ios') {
+    const destructive = list.findIndex((a) => a.destructive);
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title,
+        message,
+        options: [...list.map((a) => a.label), t('common.cancel')],
+        cancelButtonIndex: list.length,
+        destructiveButtonIndex: destructive >= 0 ? destructive : undefined,
+        userInterfaceStyle: c.dark ? 'dark' : 'light',
+      },
+      (i) => {
+        if (i < list.length) list[i].onPress();
+      }
+    );
+  } else {
+    Alert.alert(title, message, [...list.map((a) => ({ text: a.label, onPress: a.onPress })), { text: t('common.cancel'), style: 'cancel' }]);
+  }
+}
+
+// Belgeyi indir → önbelleğe gerçek adıyla yaz → paylaşım sayfası (WhatsApp, Mail, AirDrop, Dosyalar…)
+async function shareDoc(setBusy, name, load) {
+  setBusy(t('doc.preparingShare'));
+  try {
+    const buf = await load();
+    setBusy(null);
+    await shareBuffer(name, buf);
+  } catch (e) {
+    setBusy(null);
+    warn();
+    Alert.alert(t('doc.shareFailed'), e && e.message ? e.message : String(e));
+  }
+}
+
+// Eski sürüm paylaşılırken dosya adına tarih eklenir: "Tez (24 Eyl 14.05).docx"
+function versionName(name, time) {
+  if (!time) return name;
+  const d = new Date(time);
+  const stamp = `${t('day.date', { d: d.getDate(), month: t('months')[d.getMonth()] })} ${hm(time).replace(':', '.')}`;
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? `${name.slice(0, dot)} (${stamp})${name.slice(dot)}` : `${name} (${stamp})`;
+}
+
+const shortDate = (time) => {
+  const d = new Date(time);
+  return t('day.date', { d: d.getDate(), month: t('months')[d.getMonth()] });
+};
+
+// Yarı saydam "hazırlanıyor" göstergesi
+function BusyHud({ c, text }) {
+  if (!text) return null;
+  return (
+    <View style={[StyleSheet.absoluteFill, s.center, { backgroundColor: c.dark ? '#0006' : '#0000001a' }]}>
+      <Glass c={c} style={{ paddingHorizontal: 24, paddingVertical: 20, alignItems: 'center', gap: 12, borderRadius: 22, maxWidth: 260 }}>
+        <ActivityIndicator color={c.accent} size="large" />
+        <Text style={{ color: c.text, fontWeight: '600', textAlign: 'center' }}>{text}</Text>
+      </Glass>
+    </View>
+  );
+}
+
+// Başlıktaki yuvarlak "+" düğmesi (telefondan dosya ekle)
+function AddButton({ c, onPress, busy }) {
+  return (
+    <Jelly onPress={onPress} disabled={busy} scaleTo={0.88} accessibilityLabel={t('upload.add')}>
+      <Glass c={c} interactive tint={c.accent + '33'} style={s.roundBtn}>
+        {busy ? <ActivityIndicator color={c.accent} size="small" /> : <Text style={{ color: c.accent, fontSize: 26, fontWeight: '500', marginTop: -2 }}>+</Text>}
+      </Glass>
+    </Jelly>
   );
 }
 
@@ -209,6 +310,51 @@ function Root() {
     setScreen(null);
   };
 
+  // QR ile eşleştirme: draftrewind://pair?v=1&d=… (Kamera uygulamasıyla okutulur).
+  // Jeton hiçbir yerde günlüğe yazılmaz.
+  const [pairing, setPairing] = useState(false);
+  const handledUrl = useRef(null);
+  const handleUrl = async (url) => {
+    if (!url || !isPairLink(url) || handledUrl.current === url) return;
+    handledUrl.current = url;
+    let info;
+    try {
+      info = decodePairLink(url);
+    } catch (e) {
+      warn();
+      const expired = e && e.code === 'expired';
+      Alert.alert(t(expired ? 'pair.expiredTitle' : 'pair.invalidTitle'), t(expired ? 'pair.expired' : 'pair.invalid'), [{ text: t('common.ok') }]);
+      return;
+    }
+    setPairing(true);
+    try {
+      const user = await GH.getUser(info.token);
+      await loginGithub(info.token);
+      setGhUser(user);
+      setScreen(null);
+      setAccounts(false);
+      success();
+      pulse({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('pair.done', { login: user.login }), subtitle: t('pair.doneSub'), short: t('pair.doneShort') }, 5000);
+    } catch (e) {
+      warn();
+      if (!e || !e.auth) handledUrl.current = null; // ağ hatasıysa aynı kod yeniden okutulabilsin
+      Alert.alert(t('pair.failedTitle'), e && e.auth ? t('pair.failed') : `${t('pair.failed')}\n\n${e && e.message ? e.message : ''}`.trim(), [{ text: t('common.ok') }]);
+    } finally {
+      setPairing(false);
+    }
+  };
+  const handleUrlRef = useRef(handleUrl);
+  handleUrlRef.current = handleUrl;
+  // Kayıtlı oturum yüklendikten sonra dinle (aksi halde eski oturum yenisinin üstüne yazılabilir)
+  useEffect(() => {
+    if (!ready) return;
+    Linking.getInitialURL()
+      .then((url) => handleUrlRef.current(url))
+      .catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => handleUrlRef.current(url));
+    return () => sub.remove();
+  }, [ready]);
+
   const signedIn = ghToken || google;
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
@@ -241,6 +387,7 @@ function Root() {
         onLogoutGithub={logoutGithub}
         onLogoutGoogle={logoutGoogle}
       />
+      <BusyHud c={c} text={pairing ? t('pair.connecting') : null} />
     </View>
   );
 }
@@ -367,12 +514,28 @@ function LoginScreen({ c, onGithub, onGoogle }) {
       </View>
       {!gh.flow ? (
         <View style={{ gap: 12 }}>
+          <QrHint c={c} />
           <GradientButton title={gh.busy ? t('common.connecting') : t('login.github')} onPress={gh.start} disabled={gh.busy} />
           <SecondaryButton c={c} title={go.busy ? t('common.connecting') : t('login.google')} onPress={go.start} disabled={go.busy} />
           <Text style={{ color: c.text3, textAlign: 'center', fontSize: 12.5 }}>{t('login.hint')}</Text>
         </View>
       ) : null}
     </View>
+  );
+}
+
+// "En hızlısı: QR ile bağlan" kartı
+function QrHint({ c }) {
+  return (
+    <Glass c={c} tint="#6c5cff22" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, marginBottom: 4 }}>
+      <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: 44, height: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 22 }}>📷</Text>
+      </LinearGradient>
+      <View style={s.flex}>
+        <Text style={{ color: c.text, fontWeight: '800', fontSize: 14.5 }}>{t('pair.hintTitle')}</Text>
+        <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, marginTop: 3 }}>{t('pair.hint')}</Text>
+      </View>
+    </Glass>
   );
 }
 
@@ -424,6 +587,7 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
               <Text style={{ color: ghToken ? c.red : c.accent, fontWeight: '700' }}>{ghToken ? t('account.logout') : gh.busy ? '…' : t('account.connect')}</Text>
             </Pressable>
           </Glass>
+          {!ghToken && !gh.flow ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>📷 {t('pair.settingsHint')}</Text> : null}
           {gh.flow ? <GithubCodeCard c={c} flow={gh.flow} onCancel={gh.cancel} /> : null}
 
           <Glass c={c} style={[s.accountRow, { marginTop: 12 }]}>
@@ -475,7 +639,12 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
   const [driveList, setDriveList] = useState(null);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [news, setNews] = useState(null);
+  // Kapatılmamış "yeni kayıtlar" kartı uygulama yeniden açılsa da kalır; kapatınca bir daha gelmez
+  const [news, setNews] = useState(loadPendingNews);
+  const dismissNews = () => {
+    savePendingNews(null);
+    setNews(null);
+  };
 
   const load = useCallback(async () => {
     setError(null);
@@ -556,7 +725,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
       </View>
 
       {news ? (
-        <Jelly onPress={() => setNews(null)} scaleTo={0.97} style={{ marginBottom: 14 }}>
+        <Jelly onPress={dismissNews} scaleTo={0.97} style={{ marginBottom: 14 }}>
           <Glass c={c} tint="#6c5cff44" style={{ padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <Text style={{ fontSize: 28 }}>✨</Text>
             <View style={s.flex}>
@@ -571,8 +740,6 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
           </Glass>
         </Jelly>
       ) : null}
-
-      <FocusCard c={c} title={t('focus.session')} />
 
       {error ? <Text style={{ color: c.red, marginVertical: 10 }}>😕 {error}</Text> : null}
       {loading ? <ActivityIndicator color={c.accent} style={{ marginTop: 30 }} /> : null}
@@ -622,27 +789,50 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
   );
 }
 
-// Telefonda en son bakıldığından beri bilgisayarda yeni kayıt olduysa Dinamik Ada'da kısaca göster
-async function announceNewSaves(token, list) {
+// Telefonda en son bakıldığından beri bilgisayarda yeni kayıt olduysa Dinamik Ada'da kısaca göster.
+// Aynı anda birden çok yükleme (açılış + öne gelme + aşağı çekme) aynı kayıtları iki kez duyurmasın diye tek iş.
+// Dönen değer: kapatılmamış tüm yeni kayıt kartı öğeleri (kalıcı) — yeni bir şey yoksa boş dizi.
+let announcing = null;
+function announceNewSaves(token, list) {
+  if (!announcing) announcing = doAnnounceNewSaves(token, list).finally(() => (announcing = null));
+  return announcing;
+}
+
+async function doAnnounceNewSaves(token, list) {
   const seen = loadSeen();
   const firstRun = Object.keys(seen).length === 0;
   const news = [];
   for (const p of list) {
     const key = `${p.owner}/${p.repo}`;
     const last = seen[key] || 0;
+    let checked = true;
     if (!firstRun && p.pushedAt > last) {
       try {
-        const snaps = (await GH.listSnapshots(token, p, 1)).filter((s) => s.time > last && s.kind !== 'merge');
+        // Telefondan eklenen dosyalar ve birleştirmeler "yeni kayıt" sayılmaz
+        const snaps = (await GH.listSnapshots(token, p, 1)).filter((s) => s.time > last && s.kind !== 'merge' && s.kind !== 'mobile');
         if (snaps.length) {
           const words = snaps.reduce((a, s) => a + Object.values(s.delta || {}).reduce((x, y) => x + y, 0), 0);
-          news.push({ name: p.name, count: snaps.length, words, title: snaps[0].title });
+          news.push({ key, name: p.name, count: snaps.length, words, title: snaps[0].title });
         }
-      } catch (e) {}
+      } catch (e) {
+        checked = false; // ağ hatası: bir dahaki sefere yeniden bak
+      }
     }
-    seen[key] = Math.max(last, p.pushedAt);
+    if (checked) seen[key] = Math.max(last, p.pushedAt);
   }
   saveSeen(seen);
   if (!news.length) return news;
+  // Kapatılmamış eski kartla birleştir ve kalıcı kaydet
+  const pending = loadPendingNews() || [];
+  for (const n of news) {
+    const old = pending.find((x) => x.key === n.key);
+    if (old) {
+      old.count += n.count;
+      old.words += n.words;
+      old.title = n.title;
+    } else pending.unshift(n);
+  }
+  savePendingNews(pending);
   const total = news.reduce((a, n) => a + n.count, 0);
   const words = news.reduce((a, n) => a + n.words, 0);
   success();
@@ -656,98 +846,14 @@ async function announceNewSaves(token, list) {
     },
     7000
   );
-  return news;
-}
-
-// ---------------------------------------------------------------------------
-// Odak modu (Dinamik Ada)
-// ---------------------------------------------------------------------------
-let focusInstance = null;
-let focusEndAt = null;
-
-function FocusCard({ c, title }) {
-  const [endAt, setEndAt] = useState(focusEndAt);
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    if (!endAt) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    const sub = AppState.addEventListener('change', () => setNow(Date.now()));
-    return () => {
-      clearInterval(t);
-      sub.remove();
-    };
-  }, [endAt]);
-
-  useEffect(() => {
-    if (endAt && now >= endAt) {
-      success();
-      stop(true);
-    }
-  }, [now, endAt]);
-
-  const start = (minutes) => {
-    const startAt = Date.now();
-    const end = startAt + minutes * 60 * 1000;
-    try {
-      if (FocusActivity) focusInstance = FocusActivity.start({ title, startAt, endAt: end, caption: t('focus.activityCaption'), label: t('focus.activityLabel') });
-    } catch (e) {}
-    focusEndAt = end;
-    setEndAt(end);
-    setNow(Date.now());
-    tap(Haptics.ImpactFeedbackStyle.Medium);
-  };
-
-  const stop = (finished) => {
-    try {
-      if (focusInstance) focusInstance.end('immediate');
-    } catch (e) {}
-    focusInstance = null;
-    focusEndAt = null;
-    setEndAt(null);
-    if (!finished) tap();
-  };
-
-  const left = endAt ? Math.max(0, Math.round((endAt - now) / 1000)) : 0;
-  const mm = String(Math.floor(left / 60)).padStart(2, '0');
-  const ss = String(left % 60).padStart(2, '0');
-
-  return (
-    <Glass c={c} tint={endAt ? '#6c5cff33' : undefined} style={{ padding: 16, marginBottom: 14 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <Text style={{ fontSize: 30 }}>{endAt ? '✍️' : '⏱️'}</Text>
-        <View style={s.flex}>
-          <Text style={{ color: c.text, fontWeight: '800', fontSize: 16 }}>{endAt ? t('focus.active') : t('focus.title')}</Text>
-          <Text style={{ color: c.text2, fontSize: 13, marginTop: 2 }}>
-            {endAt ? t('focus.activeSub') : t('focus.idleSub')}
-          </Text>
-        </View>
-        {endAt ? <Text style={{ color: c.accent, fontSize: 26, fontWeight: '800', fontVariant: ['tabular-nums'] }}>{mm}:{ss}</Text> : null}
-      </View>
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
-        {endAt ? (
-          <Jelly onPress={() => stop(false)} style={s.flex}>
-            <View style={[s.chipBtn, { backgroundColor: c.redSoft }]}>
-              <Text style={{ color: c.red, fontWeight: '700' }}>{t('focus.end')}</Text>
-            </View>
-          </Jelly>
-        ) : (
-          [15, 25, 45].map((m) => (
-            <Jelly key={m} onPress={() => start(m)} style={s.flex}>
-              <View style={[s.chipBtn, { backgroundColor: c.accentSoft }]}>
-                <Text style={{ color: c.accent, fontWeight: '800' }}>{t('focus.minutes', { n: m })}</Text>
-              </View>
-            </Jelly>
-          ))
-        )}
-      </View>
-    </Glass>
-  );
+  return pending;
 }
 
 // ---------------------------------------------------------------------------
 // GitHub proje ayrıntısı
 // ---------------------------------------------------------------------------
+const touchesFile = (h, path) => (h.changed || []).includes(path) || (h.delta && h.delta[path] !== undefined) || (h.deleted || []).includes(path);
+
 function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   const insets = useSafeAreaInsets();
   const [history, setHistory] = useState(null);
@@ -757,6 +863,14 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   const [refreshing, setRefreshing] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [viewer, setViewer] = useState(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [fileFilter, setFileFilter] = useState(null);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('name');
+  const [busy, setBusy] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const scrollRef = useRef(null);
+  const tabsY = useRef(0);
 
   const load = useCallback(async () => {
     try {
@@ -775,32 +889,129 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   }, [load]);
 
   const sizeOf = (path) => ((files || []).find((f) => f.path === path) || {}).size || 0;
-  const openFile = (path, ref) =>
-    setViewer({ name: path.split('/').pop(), subtitle: ref ? t('project.oldVersion') : t('project.current'), size: sizeOf(path), load: () => GH.fileContent(token, project, path, ref) });
+  const baseName = (path) => path.split('/').pop();
+  const openFile = (path, ref, time) =>
+    setViewer({
+      name: baseName(path),
+      shareName: ref ? versionName(baseName(path), time) : baseName(path),
+      subtitle: ref ? t('project.oldVersion') : t('project.current'),
+      size: sizeOf(path),
+      load: () => GH.fileContent(token, project, path, ref),
+    });
   const openDiff = (path, ref, parentRef) =>
     setViewer({
-      name: path.split('/').pop(),
+      name: baseName(path),
       subtitle: t('project.whatChanged'),
       diff: {
         loadOld: () => (parentRef ? GH.fileContent(token, project, path, parentRef).catch(() => null) : Promise.resolve(null)),
         loadNew: () => GH.fileContent(token, project, path, ref),
       },
     });
+  const shareFile = (path, ref, time) => shareDoc(setBusy, ref ? versionName(baseName(path), time) : baseName(path), () => GH.fileContent(token, project, path, ref));
+  const showHistory = (path) => {
+    setSnapshot(null);
+    setTab('time');
+    setFileFilter(path);
+    setTimeout(() => scrollRef.current && scrollRef.current.scrollTo({ y: Math.max(0, tabsY.current - 8), animated: true }), 350);
+  };
+  const docActions = (path) =>
+    showActions(c, {
+      title: baseName(path),
+      actions: [
+        { label: t('doc.preview'), onPress: () => openFile(path, null) },
+        { label: t('doc.share'), onPress: () => shareFile(path, null) },
+        { label: t('doc.history'), onPress: () => showHistory(path) },
+      ],
+    });
+
+  // Telefondan dosya ekleme → "Telefondan eklenenler/" klasörüne tek kayıt olarak
+  const addFiles = async () => {
+    let picked;
+    try {
+      picked = await pickFiles();
+    } catch (e) {
+      Alert.alert(t('upload.failedTitle'), e.message);
+      return;
+    }
+    if (!picked.length) return;
+    const tooBig = picked.filter((a) => a.size > MAX_UPLOAD);
+    const ok = picked.filter((a) => a.size <= MAX_UPLOAD);
+    tooBig.forEach(discardPicked);
+    if (tooBig.length) {
+      warn();
+      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => t('upload.tooBig', { name: a.name, size: mb(a.size) })).join('\n\n'), [{ text: t('common.ok') }]);
+    }
+    if (!ok.length) return;
+    setUploading(true);
+    const n = ok.length;
+    const island = pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: n === 1 ? ok[0].name : project.name, subtitle: t('upload.progress', { i: 1, n }), short: t('upload.progressShort', { i: 1, n }) }, 180000);
+    const taken = new Set((files || []).map((f) => f.path));
+    const done = [];
+    let failure = null;
+    for (let i = 0; i < n; i++) {
+      const a = ok[i];
+      if (i > 0) island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) });
+      try {
+        const name = await uniqueName(safeName(a.name), async (candidate) => {
+          const p = `${PHONE_FOLDER}/${candidate}`;
+          return taken.has(p) || (await GH.pathExists(token, project, p));
+        });
+        const path = `${PHONE_FOLDER}/${name}`;
+        const content = await readBase64(a);
+        const message = `📱 ${t('upload.fromPhone')}: ${name}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: [path] })}`;
+        await GH.uploadFile(token, project, path, content, message);
+        taken.add(path);
+        done.push(name);
+      } catch (e) {
+        failure = e;
+        if (e.auth) break;
+      } finally {
+        discardPicked(a);
+      }
+    }
+    setUploading(false);
+    if (done.length) {
+      success();
+      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: done.length === 1 ? t('upload.doneOne', { name: done[0] }) : t('upload.doneMany', { n: done.length }), subtitle: t('upload.doneSub'), short: t('upload.doneShort') }, 5000);
+      await load();
+    } else island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: failure ? failure.message : '', short: t('upload.failedShort') });
+    if (failure) {
+      warn();
+      if (failure.auth) onAuthError();
+      else Alert.alert(t('upload.failedTitle'), failure.message, [{ text: t('common.ok') }]);
+    }
+  };
 
   const language = lang();
   const stats = useMemo(() => (history ? computeStats(history) : null), [history, language]);
-  const words = history && history[0] && history[0].words ? history[0].words : {};
-  const sortedFiles = useMemo(
-    () => (files ? [...files].sort((a, b) => (kindOf(a.path) === 'word' ? -1 : 0) - (kindOf(b.path) === 'word' ? -1 : 0) || a.path.localeCompare(b.path, language)) : []),
-    [files, language]
-  );
+  const words = useMemo(() => (history ? latestWords(history) : {}), [history]);
+  // Her dosyanın en son değiştiği kayıt zamanı (yüklenen kayıtlardan)
+  const lastChanged = useMemo(() => {
+    const m = {};
+    for (const h of history || []) for (const p of [...(h.changed || []), ...Object.keys(h.delta || {})]) if (m[p] === undefined) m[p] = h.time;
+    return m;
+  }, [history]);
+  const visibleFiles = useMemo(() => {
+    if (!files) return [];
+    const q = query.trim().toLocaleLowerCase(locale());
+    const list = q ? files.filter((f) => f.path.toLocaleLowerCase(locale()).includes(q)) : [...files];
+    const byName = (a, b) => (kindOf(a.path) === 'word' ? -1 : 0) - (kindOf(b.path) === 'word' ? -1 : 0) || a.path.localeCompare(b.path, language);
+    if (sort === 'changed') list.sort((a, b) => (lastChanged[b.path] || 0) - (lastChanged[a.path] || 0) || byName(a, b));
+    else if (sort === 'size') list.sort((a, b) => b.size - a.size || byName(a, b));
+    else list.sort(byName);
+    return list;
+  }, [files, language, query, sort, lastChanged]);
+  const shownHistory = useMemo(() => (history ? (fileFilter ? history.filter((h) => touchesFile(h, fileFilter)) : history) : []), [history, fileFilter]);
   const maxWeek = stats ? Math.max(1, ...stats.week.map((w) => w.words)) : 1;
 
   let lastDay = '';
   return (
     <View style={s.flex}>
       <ScrollView
+        ref={scrollRef}
         style={s.flex}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}
         refreshControl={
           <RefreshControl
@@ -814,9 +1025,12 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
           />
         }
       >
-        <Pressable onPress={onBack} style={{ paddingVertical: 8, alignSelf: 'flex-start' }} hitSlop={12}>
-          <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }}>‹ {t('nav.projects')}</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Pressable onPress={onBack} style={{ paddingVertical: 8, alignSelf: 'flex-start', flex: 1 }} hitSlop={12}>
+            <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }}>‹ {t('nav.projects')}</Text>
+          </Pressable>
+          {files ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
+        </View>
         <Text style={[s.h1, { color: c.text, marginBottom: 14 }]} numberOfLines={2}>{project.name}</Text>
 
         {error ? <Text style={{ color: c.red, marginBottom: 12 }}>😕 {error}</Text> : null}
@@ -825,55 +1039,75 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
         {stats ? (
           <>
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              <StatCard c={c} emoji="🔥" label={t('stats.streak')} value={t('stats.days', { n: stats.streak, count: stats.streak })} hot />
-              <StatCard c={c} emoji="✍️" label={t('stats.today')} value={`+${num(Math.max(0, stats.today))}`} />
-              <StatCard c={c} emoji="📚" label={t('stats.words')} value={num(stats.total)} />
+              <StatCard c={c} emoji="🔥" label={t('stats.streak')} value={t('stats.days', { n: stats.streak, count: stats.streak })} hot onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} emoji="✍️" label={t('stats.today')} value={`+${num(Math.max(0, stats.today))}`} onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} emoji="📚" label={t('stats.words')} value={num(stats.total)} onPress={() => setStatsOpen(true)} />
             </View>
 
-            <Glass c={c} style={{ padding: 16, marginTop: 10 }}>
-              <Text style={{ color: c.text, fontWeight: '700', fontSize: 15 }}>{t('stats.thisWeek')}</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 96, gap: 8, marginTop: 12 }}>
-                {stats.week.map((w, i) => (
-                  <View key={i} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
-                    {i === 6 ? (
-                      <LinearGradient colors={GRAD} style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%` }]} />
-                    ) : (
-                      <View style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%`, backgroundColor: w.words ? c.accent + '66' : c.border }]} />
-                    )}
-                    <Text style={{ color: c.text3, fontSize: 10.5, marginTop: 5, fontWeight: '600' }}>{w.label}</Text>
-                  </View>
+            <Jelly onPress={() => setStatsOpen(true)} scaleTo={0.98} style={{ marginTop: 10 }}>
+              <Glass c={c} interactive style={{ padding: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={{ color: c.text, fontWeight: '700', fontSize: 15, flex: 1 }}>{t('stats.thisWeek')}</Text>
+                  <Text style={{ color: c.text3, fontSize: 12 }}>{t('stats.tapHint')} ›</Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 96, gap: 8, marginTop: 12 }}>
+                  {stats.week.map((w, i) => (
+                    <View key={i} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
+                      {i === 6 ? (
+                        <LinearGradient colors={GRAD} style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%` }]} />
+                      ) : (
+                        <View style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%`, backgroundColor: w.words ? c.accent + '66' : c.border }]} />
+                      )}
+                      <Text style={{ color: c.text3, fontSize: 10.5, marginTop: 5, fontWeight: '600' }}>{w.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              </Glass>
+            </Jelly>
+
+            <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
+              <Glass c={c} style={[s.seg, { marginTop: 14 }]}>
+                {[
+                  ['time', t('tab.time', { n: num(history.length) })],
+                  ['docs', t('tab.docs', { n: num(files.length) })],
+                ].map(([k, label]) => (
+                  <Pressable
+                    key={k}
+                    onPress={() => {
+                      tap();
+                      setTab(k);
+                    }}
+                    style={[s.segBtn, tab === k && { backgroundColor: c.dark ? '#ffffff22' : '#ffffffcc' }]}
+                  >
+                    <Text style={{ color: tab === k ? c.text : c.text2, fontWeight: '700', fontSize: 13.5 }}>{label}</Text>
+                  </Pressable>
                 ))}
-              </View>
-            </Glass>
-
-            <View style={{ marginTop: 12 }}>
-              <FocusCard c={c} title={project.name} />
+              </Glass>
             </View>
 
-            <Glass c={c} style={[s.seg, { marginTop: 4 }]}>
-              {[
-                ['time', t('tab.time', { n: num(history.length) })],
-                ['docs', t('tab.docs', { n: num(files.length) })],
-              ].map(([k, label]) => (
+            {tab === 'time' && fileFilter ? (
+              <Glass c={c} tint={c.accent + '22'} style={[s.tlItem, { marginTop: 6, paddingVertical: 10 }]}>
+                <FileBadge name={fileFilter} size={30} />
+                <Text style={{ color: c.text, fontWeight: '700', flex: 1 }} numberOfLines={1}>{t('history.filter', { name: baseName(fileFilter) })}</Text>
                 <Pressable
-                  key={k}
+                  hitSlop={10}
                   onPress={() => {
                     tap();
-                    setTab(k);
+                    setFileFilter(null);
                   }}
-                  style={[s.segBtn, tab === k && { backgroundColor: c.dark ? '#ffffff22' : '#ffffffcc' }]}
                 >
-                  <Text style={{ color: tab === k ? c.text : c.text2, fontWeight: '700', fontSize: 13.5 }}>{label}</Text>
+                  <Text style={{ color: c.accent, fontWeight: '700' }}>{t('history.showAll')}</Text>
                 </Pressable>
-              ))}
-            </Glass>
+              </Glass>
+            ) : null}
+            {tab === 'time' && fileFilter && !shownHistory.length ? <Text style={{ color: c.text2, marginTop: 14, marginHorizontal: 4 }}>{t('history.empty')}</Text> : null}
 
             {tab === 'time'
-              ? history.map((h) => {
+              ? shownHistory.map((h) => {
                   const d = dayLabel(h.time);
                   const header = d !== lastDay ? d : null;
                   lastDay = d;
-                  const w = Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
+                  const w = fileFilter ? (h.delta || {})[fileFilter] || 0 : Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
                   return (
                     <View key={h.oid}>
                       {header ? <Text style={[s.dayHeader, { color: c.text3 }]}>{header.toUpperCase()}</Text> : null}
@@ -898,21 +1132,55 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                     </View>
                   );
                 })
-              : sortedFiles.map((f) => (
-                  <Jelly key={f.path} onPress={() => openFile(f.path, null)} scaleTo={0.98} style={{ marginTop: 8 }}>
-                    <Glass c={c} interactive style={s.tlItem}>
-                      <FileBadge name={f.path} />
-                      <View style={s.flex}>
-                        <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={1}>{f.path.split('/').pop()}</Text>
-                        <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
-                          {f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) + ' · ' : ''}
-                          {words[f.path] != null ? t('words.count', { n: num(words[f.path]), count: words[f.path] }) : `${Math.max(1, Math.round(f.size / 1024))} KB`}
-                        </Text>
-                      </View>
-                      <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
-                    </Glass>
-                  </Jelly>
-                ))}
+              : (
+                <>
+                  <Glass c={c} style={[s.searchBox, { marginTop: 8 }]}>
+                    <Text style={{ color: c.text3, fontSize: 15 }}>🔍</Text>
+                    <TextInput
+                      value={query}
+                      onChangeText={setQuery}
+                      placeholder={t('docs.search')}
+                      placeholderTextColor={c.text3}
+                      style={{ flex: 1, color: c.text, fontSize: 15.5, paddingVertical: 0 }}
+                      clearButtonMode="while-editing"
+                      autoCorrect={false}
+                      autoCapitalize="none"
+                      returnKeyType="search"
+                      keyboardAppearance={c.dark ? 'dark' : 'light'}
+                    />
+                  </Glass>
+                  <View style={{ marginTop: 8 }}>
+                    <Segmented
+                      c={c}
+                      value={sort}
+                      onChange={setSort}
+                      options={[
+                        ['name', t('docs.sortName')],
+                        ['changed', t('docs.sortChanged')],
+                        ['size', t('docs.sortSize')],
+                      ]}
+                    />
+                  </View>
+                  {query && !visibleFiles.length ? <Text style={{ color: c.text2, marginTop: 16, marginHorizontal: 4 }}>{t('docs.noMatch', { q: query.trim() })}</Text> : null}
+                  {visibleFiles.map((f) => (
+                    <Jelly key={f.path} onPress={() => openFile(f.path, null)} onLongPress={() => docActions(f.path)} scaleTo={0.98} style={{ marginTop: 8 }}>
+                      <Glass c={c} interactive style={s.tlItem}>
+                        <FileBadge name={f.path} />
+                        <View style={s.flex}>
+                          <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={1}>{baseName(f.path)}</Text>
+                          <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
+                            {f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) + ' · ' : ''}
+                            {words[f.path] != null ? t('words.count', { n: num(words[f.path]), count: words[f.path] }) : `${Math.max(1, Math.round(f.size / 1024))} KB`}
+                            {sort === 'changed' && lastChanged[f.path] ? ` · ${ago(lastChanged[f.path])}` : ''}
+                          </Text>
+                        </View>
+                        <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
+                      </Glass>
+                    </Jelly>
+                  ))}
+                  {visibleFiles.length ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
+                </>
+              )}
           </>
         ) : null}
       </ScrollView>
@@ -925,30 +1193,309 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
         onClose={() => setSnapshot(null)}
         onOpenFile={openFile}
         onOpenDiff={openDiff}
+        onShowHistory={showHistory}
         viewer={viewer}
         onCloseViewer={() => setViewer(null)}
       />
       {/* iOS'ta açık bir sayfanın üstüne ikinci sayfa açılamaz: kayıt ayrıntısı açıkken görüntüleyici onun içinde */}
       {!snapshot ? <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} /> : null}
+      {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={token} project={project} history={history} /> : null}
+      <BusyHud c={c} text={busy} />
     </View>
   );
 }
 
-function StatCard({ c, emoji, label, value, hot }) {
+function StatCard({ c, emoji, label, value, hot, onPress }) {
   return (
-    <Glass c={c} style={[s.flex, { padding: 14 }]}>
+    <Jelly onPress={onPress} scaleTo={0.94} style={s.flex}>
+      <Glass c={c} interactive style={{ padding: 14 }}>
+        <Text style={{ fontSize: 20 }}>{emoji}</Text>
+        <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{label}</Text>
+        <Text style={{ color: hot ? '#ff7a45' : c.text, fontSize: 20, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
+          {value}
+        </Text>
+      </Glass>
+    </Jelly>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// İstatistikler sayfası (seri / bugün / kelime kartlarına dokununca)
+// ---------------------------------------------------------------------------
+const HEAT_WEEKS = 16;
+
+function StatsSheet({ c, visible, onClose, token, project, history }) {
+  const [hist, setHist] = useState(history);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [sel, setSel] = useState(null);
+  const [gridW, setGridW] = useState(0);
+
+  useEffect(() => setHist(history), [history]);
+
+  // 16 hafta için yüklenen kayıtlar yetmiyorsa (sayfa dolu ve en eskisi yeterince eski değil) daha fazlasını getir
+  useEffect(() => {
+    if (!visible || !history.length) return;
+    const cutoff = Date.now() - (HEAT_WEEKS * 7 + 7) * 86400000;
+    const oldest = history[history.length - 1].time;
+    if (oldest <= cutoff || history.length % 100 !== 0) return;
+    let alive = true;
+    setLoadingMore(true);
+    GH.listSnapshots(token, project, 10, cutoff)
+      .then((more) => alive && more.length > history.length && setHist(more))
+      .catch(() => {})
+      .finally(() => alive && setLoadingMore(false));
+    return () => {
+      alive = false;
+    };
+  }, [visible, history]);
+
+  const language = lang();
+  const ds = useMemo(() => deepStats(hist, { weeks: HEAT_WEEKS, weekStart: language === 'tr' ? 1 : 0 }), [hist, language, visible]);
+  if (!visible) return null;
+
+  const heat = [c.dark ? '#ffffff14' : '#1c1a3312', c.accent + '47', c.accent + '80', c.accent + 'bb', c.accent];
+  const gap = 3;
+  const labelW = 26;
+  const cell = gridW ? Math.max(8, Math.floor((gridW - labelW - (HEAT_WEEKS - 1) * gap) / HEAT_WEEKS)) : 0;
+  const weekStart = language === 'tr' ? 1 : 0;
+  const max30 = Math.max(1, ...ds.last30.map((d) => d.words));
+  const maxFile = Math.max(1, ...ds.perFile.map((f) => f.words));
+  const unlocked = ds.badges.filter((b) => b.done).length;
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const pick = (cellData) => {
+    tap();
+    setSel(cellData);
+  };
+  const selText = sel
+    ? sel.words > 0
+      ? t('stats.dayWords', { date: shortDate(sel.time), words: t('words.count', { n: '+' + num(sel.words), count: sel.words }) })
+      : t(sel.active ? 'stats.dayActive' : 'stats.dayNone', { date: shortDate(sel.time) })
+    : t('stats.tapDay');
+
+  return (
+    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={[s.flex, { backgroundColor: c.bg }]}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 10 }}>
+          <View style={s.grabber} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 6 }}>
+            <View style={s.flex}>
+              <Text style={[s.h2, { color: c.text }]}>{t('stats.title')}</Text>
+              <Text style={{ color: c.text3, marginTop: 2 }} numberOfLines={1}>{project.name}</Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={12}>
+              <Text style={{ color: c.accent, fontWeight: '700', fontSize: 16 }}>{t('common.done')}</Text>
+            </Pressable>
+          </View>
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 10, paddingBottom: 50 }}>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <Glass c={c} tint="#ff7a4522" style={[s.flex, { padding: 16 }]}>
+              <Text style={{ fontSize: 26 }}>🔥</Text>
+              <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{t('stats.currentStreak')}</Text>
+              <Text style={{ color: '#ff7a45', fontSize: 24, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
+                {t('stats.days', { n: ds.streak, count: ds.streak })}
+              </Text>
+            </Glass>
+            <Glass c={c} tint="#ffb93822" style={[s.flex, { padding: 16 }]}>
+              <Text style={{ fontSize: 26 }}>🏅</Text>
+              <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{t('stats.bestStreak')}</Text>
+              <Text style={{ color: c.text, fontSize: 24, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
+                {t('stats.days', { n: ds.bestStreak, count: ds.bestStreak })}
+              </Text>
+            </Glass>
+          </View>
+
+          {/* GitHub tarzı ısı haritası */}
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('stats.heatmap')}</Text>
+          <Glass c={c} style={{ padding: 16 }}>
+            <View onLayout={(e) => setGridW(e.nativeEvent.layout.width)}>
+              {cell ? (
+                <>
+                  <View style={{ flexDirection: 'row', marginLeft: labelW, height: 16 }}>
+                    {ds.columns.map((col, i) => (
+                      <View key={i} style={{ width: cell, marginRight: i < HEAT_WEEKS - 1 ? gap : 0, overflow: 'visible' }}>
+                        {col.showMonth ? (
+                          <Text style={{ color: c.text3, fontSize: 10, fontWeight: '600', width: 40 }} numberOfLines={1}>
+                            {t('months')[col.month]}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row' }}>
+                    <View style={{ width: labelW }}>
+                      {[0, 1, 2, 3, 4, 5, 6].map((r) => (
+                        <View key={r} style={{ height: cell, marginBottom: r < 6 ? gap : 0, justifyContent: 'center' }}>
+                          {r % 2 === 1 ? <Text style={{ color: c.text3, fontSize: 9.5, fontWeight: '600' }}>{t('days')[(weekStart + r) % 7]}</Text> : null}
+                        </View>
+                      ))}
+                    </View>
+                    {ds.columns.map((col, i) => (
+                      <View key={i} style={{ marginRight: i < HEAT_WEEKS - 1 ? gap : 0 }}>
+                        {col.cells.map((cd, r) => (
+                          <Pressable
+                            key={r}
+                            disabled={!cd}
+                            onPress={() => pick(cd)}
+                            hitSlop={1}
+                            style={{
+                              width: cell,
+                              height: cell,
+                              marginBottom: r < 6 ? gap : 0,
+                              borderRadius: Math.max(2, cell * 0.28),
+                              backgroundColor: cd ? heat[cd.level] : 'transparent',
+                              borderWidth: sel && cd && sel.time === cd.time ? 1.5 : 0,
+                              borderColor: c.text,
+                            }}
+                          />
+                        ))}
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <View style={{ height: 150 }} />
+              )}
+            </View>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 12, gap: 4 }}>
+              <Text style={{ color: sel ? c.text : c.text3, fontSize: 12.5, fontWeight: sel ? '700' : '500', flex: 1 }} numberOfLines={2}>
+                {selText}
+              </Text>
+              <Text style={{ color: c.text3, fontSize: 10.5, marginRight: 2 }}>{t('stats.less')}</Text>
+              {heat.map((col, i) => (
+                <View key={i} style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: col }} />
+              ))}
+              <Text style={{ color: c.text3, fontSize: 10.5, marginLeft: 2 }}>{t('stats.more')}</Text>
+            </View>
+            {loadingMore ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                <ActivityIndicator size="small" color={c.accent} />
+                <Text style={{ color: c.text3, fontSize: 12 }}>{t('stats.loadingMore')}</Text>
+              </View>
+            ) : null}
+          </Glass>
+
+          {/* Son 30 gün */}
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('stats.last30')}</Text>
+          <Glass c={c} style={{ padding: 16 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 110, gap: 2 }}>
+              {ds.last30.map((d, i) => {
+                const h = d.words ? Math.max(6, (d.words / max30) * 100) : 3;
+                const on = sel && sel.time === d.time;
+                return (
+                  <Pressable key={i} style={{ flex: 1, height: '100%', justifyContent: 'flex-end' }} onPress={() => pick({ ...d, active: d.words > 0 })}>
+                    {i === 29 || on ? (
+                      <LinearGradient colors={GRAD} style={{ height: `${h}%`, borderRadius: 3 }} />
+                    ) : (
+                      <View style={{ height: `${h}%`, borderRadius: 3, backgroundColor: d.words ? c.accent + '88' : c.border }} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={{ flexDirection: 'row', marginTop: 6 }}>
+              <Text style={{ color: c.text3, fontSize: 10.5, flex: 1 }}>{shortDate(ds.last30[0].time)}</Text>
+              <Text style={{ color: c.text3, fontSize: 10.5, flex: 1, textAlign: 'center' }}>{shortDate(ds.last30[15].time)}</Text>
+              <Text style={{ color: c.text3, fontSize: 10.5, flex: 1, textAlign: 'right' }}>{t('stats.today')}</Text>
+            </View>
+          </Glass>
+
+          {/* Küçük özet kutuları */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
+            <MiniStat c={c} emoji="🚀" label={t('stats.bestDay')} value={ds.bestDay ? `+${num(ds.bestDay.words)}` : t('stats.none')} sub={ds.bestDay ? shortDate(ds.bestDay.time) : ''} />
+            <MiniStat c={c} emoji="⏰" label={t('stats.bestHour')} value={ds.bestHour != null ? `${pad2(ds.bestHour)}:00` : t('stats.none')} sub={ds.bestHour != null ? `${pad2(ds.bestHour)}:00–${pad2((ds.bestHour + 1) % 24)}:00` : ''} />
+            <MiniStat c={c} emoji="📈" label={t('stats.avgActive')} value={num(ds.avgActive)} sub={t('stats.avgUnit')} />
+            <MiniStat c={c} emoji="💾" label={t('stats.savePoints')} value={num(ds.saves)} sub={t('stats.words') + ': ' + num(ds.total)} />
+          </View>
+
+          {/* Rozetler */}
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 22 }}>
+            <Text style={[s.dayHeader, { color: c.text3, marginTop: 0, flex: 1 }]}>{t('stats.badges')}</Text>
+            <Text style={{ color: c.accent, fontSize: 12, fontWeight: '700', marginRight: 4 }}>{t('stats.badgesCount', { n: unlocked, total: ds.badges.length })}</Text>
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+            {ds.badges.map((b) => (
+              <Jelly
+                key={b.id}
+                scaleTo={0.9}
+                style={{ width: '22.5%', flexGrow: 1 }}
+                onPress={() => {
+                  if (b.done) success();
+                  Alert.alert(`${b.emoji} ${t('badge.' + b.id)}`, t('badge.' + b.id + '.d'));
+                }}
+              >
+                <Glass c={c} tint={b.done ? '#ffb93826' : undefined} style={{ alignItems: 'center', paddingVertical: 12, paddingHorizontal: 4, borderRadius: 18 }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: b.done ? '#ffb93833' : c.dark ? '#ffffff10' : '#1c1a330d' }}>
+                    <Text style={{ fontSize: 22, opacity: b.done ? 1 : 0.28 }}>{b.done ? b.emoji : '🔒'}</Text>
+                  </View>
+                  <Text style={{ color: b.done ? c.text : c.text3, fontSize: 11.5, fontWeight: '700', marginTop: 6, textAlign: 'center' }} numberOfLines={2}>
+                    {t('badge.' + b.id)}
+                  </Text>
+                </Glass>
+              </Jelly>
+            ))}
+          </View>
+
+          {/* Kilometre taşları */}
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('stats.milestones')}</Text>
+          {ds.milestones.length ? (
+            ds.milestones.map((m) => (
+              <Glass key={m.oid} c={c} tint="#ffb93822" style={[s.tlItem, { marginBottom: 8 }]}>
+                <View style={[s.node, { backgroundColor: '#ffb938' }]}>
+                  <Text style={{ fontSize: 15 }}>⭐</Text>
+                </View>
+                <View style={s.flex}>
+                  <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={2}>{m.title}</Text>
+                  <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }}>{`${shortDate(m.time)} · ${hm(m.time)}`}</Text>
+                </View>
+              </Glass>
+            ))
+          ) : (
+            <Glass c={c} style={{ padding: 16 }}>
+              <Text style={{ color: c.text2, lineHeight: 20 }}>{t('stats.noMilestones')}</Text>
+            </Glass>
+          )}
+
+          {/* Dosya başına kelime */}
+          {ds.perFile.length ? (
+            <>
+              <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('stats.perFile')}</Text>
+              <Glass c={c} style={{ padding: 16, gap: 12 }}>
+                {ds.perFile.map((f) => (
+                  <View key={f.path}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 5 }}>
+                      <Text style={{ color: c.text, fontWeight: '600', flex: 1, fontSize: 13.5 }} numberOfLines={1}>{f.path.split('/').pop()}</Text>
+                      <Text style={{ color: c.text2, fontWeight: '700', fontSize: 13 }}>{num(f.words)}</Text>
+                    </View>
+                    <View style={{ height: 8, borderRadius: 4, backgroundColor: c.dark ? '#ffffff10' : '#1c1a330d', overflow: 'hidden' }}>
+                      <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ width: `${Math.max(3, (f.words / maxFile) * 100)}%`, height: '100%', borderRadius: 4 }} />
+                    </View>
+                  </View>
+                ))}
+              </Glass>
+            </>
+          ) : null}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+function MiniStat({ c, emoji, label, value, sub }) {
+  return (
+    <Glass c={c} style={{ width: '48%', flexGrow: 1, padding: 14 }}>
       <Text style={{ fontSize: 20 }}>{emoji}</Text>
-      <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{label}</Text>
-      <Text style={{ color: hot ? '#ff7a45' : c.text, fontSize: 20, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
-        {value}
-      </Text>
+      <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }} numberOfLines={1}>{label}</Text>
+      <Text style={{ color: c.text, fontSize: 21, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
+      {sub ? <Text style={{ color: c.text3, fontSize: 11.5, marginTop: 1 }} numberOfLines={1}>{sub}</Text> : null}
     </Glass>
   );
 }
 
-function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpenDiff, viewer, onCloseViewer }) {
+function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpenDiff, onShowHistory, viewer, onCloseViewer }) {
   const [files, setFiles] = useState(null);
   const [parent, setParent] = useState(null);
+  const [busy, setBusy] = useState(null);
   useEffect(() => {
     if (!snapshot) return;
     setFiles(null);
@@ -961,6 +1508,19 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   }, [snapshot]);
   if (!snapshot) return null;
   const d = new Date(snapshot.time);
+  const fileActions = (f, canDiff) =>
+    showActions(c, {
+      title: f.path.split('/').pop(),
+      actions: [
+        { label: t('doc.previewVersion'), onPress: () => onOpenFile(f.path, snapshot.oid, snapshot.time) },
+        {
+          label: t('doc.shareVersion'),
+          onPress: () => shareDoc(setBusy, versionName(f.path.split('/').pop(), snapshot.time), () => GH.fileContent(token, project, f.path, snapshot.oid)),
+        },
+        canDiff && { label: t('doc.whatChanged'), onPress: () => onOpenDiff(f.path, snapshot.oid, f.status === 'added' ? null : parent) },
+        { label: t('doc.history'), onPress: () => onShowHistory(f.path) },
+      ],
+    });
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]}>
@@ -988,37 +1548,45 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
             const kind = kindOf(f.path);
             const canDiff = !removed && (kind === 'word' || kind === 'text');
             return (
-              <Glass key={f.path} c={c} style={[s.tlItem, { marginBottom: 12, flexWrap: 'wrap', padding: 16 }]}>
-                <FileBadge name={f.path} size={40} />
-                <View style={s.flex}>
-                  <Text style={{ color: c.text, fontWeight: '600' }} numberOfLines={1}>{f.path.split('/').pop()}</Text>
-                  <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }}>
-                    {removed ? t('snapshot.removed') : f.status === 'added' ? t('snapshot.added') : t('snapshot.modified')}
-                    {delta ? ` · ${t('words.count', { n: (delta > 0 ? '+' : '') + num(delta), count: Math.abs(delta) })}` : ''}
-                  </Text>
-                </View>
-                {!removed ? (
-                  <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 14 }}>
-                    {canDiff ? (
-                      <Jelly style={s.flex} onPress={() => onOpenDiff(f.path, snapshot.oid, f.status === 'added' ? null : parent)}>
-                        <View style={[s.actionBtn, { backgroundColor: c.greenSoft }]}>
-                          <Text style={{ color: c.green, fontWeight: '800', fontSize: 15 }}>{t('snapshot.diff')}</Text>
+              <Pressable key={f.path} delayLongPress={380} onLongPress={removed ? undefined : () => (tap(Haptics.ImpactFeedbackStyle.Medium), fileActions(f, canDiff))}>
+                <Glass c={c} style={[s.tlItem, { marginBottom: 12, flexWrap: 'wrap', padding: 16 }]}>
+                  <FileBadge name={f.path} size={40} />
+                  <View style={s.flex}>
+                    <Text style={{ color: c.text, fontWeight: '600' }} numberOfLines={1}>{f.path.split('/').pop()}</Text>
+                    <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }}>
+                      {removed ? t('snapshot.removed') : f.status === 'added' ? t('snapshot.added') : t('snapshot.modified')}
+                      {delta ? ` · ${t('words.count', { n: (delta > 0 ? '+' : '') + num(delta), count: Math.abs(delta) })}` : ''}
+                    </Text>
+                  </View>
+                  {!removed ? (
+                    <Pressable hitSlop={12} onPress={() => fileActions(f, canDiff)} accessibilityLabel={t('doc.share')}>
+                      <Text style={{ color: c.text3, fontSize: 22, fontWeight: '800', paddingHorizontal: 4 }}>···</Text>
+                    </Pressable>
+                  ) : null}
+                  {!removed ? (
+                    <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 14 }}>
+                      {canDiff ? (
+                        <Jelly style={s.flex} onPress={() => onOpenDiff(f.path, snapshot.oid, f.status === 'added' ? null : parent)}>
+                          <View style={[s.actionBtn, { backgroundColor: c.greenSoft }]}>
+                            <Text style={{ color: c.green, fontWeight: '800', fontSize: 15 }}>{t('snapshot.diff')}</Text>
+                          </View>
+                        </Jelly>
+                      ) : null}
+                      <Jelly style={s.flex} onPress={() => onOpenFile(f.path, snapshot.oid, snapshot.time)}>
+                        <View style={[s.actionBtn, { backgroundColor: c.accentSoft }]}>
+                          <Text style={{ color: c.accent, fontWeight: '800', fontSize: 15 }}>{t('snapshot.thisVersion')}</Text>
                         </View>
                       </Jelly>
-                    ) : null}
-                    <Jelly style={s.flex} onPress={() => onOpenFile(f.path, snapshot.oid)}>
-                      <View style={[s.actionBtn, { backgroundColor: c.accentSoft }]}>
-                        <Text style={{ color: c.accent, fontWeight: '800', fontSize: 15 }}>{t('snapshot.thisVersion')}</Text>
-                      </View>
-                    </Jelly>
-                  </View>
-                ) : null}
-              </Glass>
+                    </View>
+                  ) : null}
+                </Glass>
+              </Pressable>
             );
           })}
           {files && files.length === 0 ? <Text style={{ color: c.text2, marginTop: 10 }}>{t('snapshot.noFiles')}</Text> : null}
         </ScrollView>
       </View>
+      <BusyHud c={c} text={busy} />
       <ViewerSheet c={c} target={viewer} onClose={onCloseViewer} />
     </Modal>
   );
@@ -1033,6 +1601,8 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState(null);
   const [viewer, setViewer] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const current = stack[stack.length - 1];
 
   const load = useCallback(async () => {
@@ -1052,16 +1622,80 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
 
   const back = () => (stack.length > 1 ? setStack(stack.slice(0, -1)) : onBack());
   const isVersions = current.name === '_Sürümler';
+  const openItem = (it) => setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, load: () => drive.download(it.id) });
+  const itemActions = (it) =>
+    showActions(c, {
+      title: it.name,
+      actions: [
+        { label: t('doc.preview'), onPress: () => openItem(it) },
+        { label: t('doc.share'), onPress: () => shareDoc(setBusy, it.name, () => drive.download(it.id)) },
+      ],
+    });
+
+  // Telefondan dosya ekleme: bu klasöre yüklenir, masaüstü bir sonraki eşitlemede alır
+  const addFiles = async () => {
+    let picked;
+    try {
+      picked = await pickFiles();
+    } catch (e) {
+      Alert.alert(t('upload.failedTitle'), e.message);
+      return;
+    }
+    if (!picked.length) return;
+    const tooBig = picked.filter((a) => a.size > MAX_UPLOAD);
+    const ok = picked.filter((a) => a.size <= MAX_UPLOAD);
+    tooBig.forEach(discardPicked);
+    if (tooBig.length) {
+      warn();
+      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => t('upload.tooBig', { name: a.name, size: mb(a.size) })).join('\n\n'), [{ text: t('common.ok') }]);
+    }
+    if (!ok.length) return;
+    setUploading(true);
+    const n = ok.length;
+    const island = pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: n === 1 ? ok[0].name : current.name, subtitle: t('upload.progress', { i: 1, n }), short: t('upload.progressShort', { i: 1, n }) }, 180000);
+    const taken = new Set((items || []).map((it) => it.name));
+    const done = [];
+    let failure = null;
+    for (let i = 0; i < n; i++) {
+      const a = ok[i];
+      if (i > 0) island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) });
+      try {
+        const name = await uniqueName(safeName(a.name), async (candidate) => taken.has(candidate));
+        const bytes = await readBytes(a);
+        await drive.upload(current.id, name, bytes, a.mimeType || fileType(name).mimeType);
+        taken.add(name);
+        done.push(name);
+      } catch (e) {
+        failure = e;
+        if (e.auth) break;
+      } finally {
+        discardPicked(a);
+      }
+    }
+    setUploading(false);
+    if (done.length) {
+      success();
+      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: done.length === 1 ? t('upload.doneOne', { name: done[0] }) : t('upload.doneMany', { n: done.length }), subtitle: t('upload.doneSub'), short: t('upload.doneShort') }, 5000);
+      await load();
+    } else island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: failure ? failure.message : '', short: t('upload.failedShort') });
+    if (failure) {
+      warn();
+      if (failure.auth) onAuthError();
+      else Alert.alert(t('upload.failedTitle'), failure.message, [{ text: t('common.ok') }]);
+    }
+  };
 
   return (
     <View style={s.flex}>
       <ScrollView style={s.flex} contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}>
-        <Pressable onPress={back} style={{ paddingVertical: 8, alignSelf: 'flex-start' }} hitSlop={12}>
-          <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }}>‹ {stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Pressable onPress={back} style={{ paddingVertical: 8, alignSelf: 'flex-start', flex: 1 }} hitSlop={12}>
+            <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }} numberOfLines={1}>‹ {stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}</Text>
+          </Pressable>
+          {!isVersions && items ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
+        </View>
         <Text style={[s.h1, { color: c.text, marginBottom: 4 }]} numberOfLines={2}>{isVersions ? t('drive.versions') : current.name}</Text>
         <Text style={{ color: c.text3, marginBottom: 14 }}>{isVersions ? t('drive.versionsSub') : 'Google Drive'}</Text>
-        {stack.length === 1 ? <FocusCard c={c} title={folder.name} /> : null}
         {error ? <Text style={{ color: c.red }}>😕 {error}</Text> : null}
         {items === null && !error ? <ActivityIndicator color={c.accent} style={{ marginTop: 30 }} /> : null}
         {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : items || []).map((it) => (
@@ -1069,11 +1703,8 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
             key={it.id}
             scaleTo={0.98}
             style={{ marginBottom: 8 }}
-            onPress={() =>
-              it.folder
-                ? setStack([...stack, it])
-                : setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, load: () => drive.download(it.id) })
-            }
+            onPress={() => (it.folder ? setStack([...stack, it]) : openItem(it))}
+            onLongPress={it.folder ? undefined : () => itemActions(it)}
           >
             <Glass c={c} interactive style={s.tlItem}>
               <FileBadge name={it.name} folder={it.folder} />
@@ -1088,8 +1719,10 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
           </Jelly>
         ))}
         {items && items.length === 0 ? <Text style={{ color: c.text2 }}>{t('drive.empty')}</Text> : null}
+        {items && items.some((it) => !it.folder) ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
       </ScrollView>
       <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} />
+      <BusyHud c={c} text={busy} />
     </View>
   );
 }
@@ -1101,24 +1734,30 @@ function ViewerSheet({ c, target, onClose }) {
   const [source, setSource] = useState(null);
   const [error, setError] = useState(null);
   const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const bufRef = useRef(null);
 
   useEffect(() => {
     if (!target) return;
     setSource(null);
     setError(null);
     setReady(false);
+    bufRef.current = null;
     let alive = true;
     (async () => {
       try {
         if (target.diff) {
-          const [oldBuf, newBuf] = await Promise.all([target.diff.loadOld(), target.diff.loadNew()]);
+          const [oldBuf, newBuf, libs] = await Promise.all([target.diff.loadOld(), target.diff.loadNew(), loadViewerLibs(LIBS_FOR.diff)]);
           if (!alive) return;
-          setSource({ html: diffHtml(oldBuf ? arrayBufferToBase64(oldBuf) : null, arrayBufferToBase64(newBuf), kindOf(target.name), c.dark, viewerLabels()) });
+          bufRef.current = newBuf;
+          setSource({ html: diffHtml(oldBuf ? arrayBufferToBase64(oldBuf) : null, arrayBufferToBase64(newBuf), kindOf(target.name), c.dark, viewerLabels(), libs) });
           return;
         }
         // Büyük dosyalarda indirme durumu Dinamik Ada'da (uygulamadan çıksan da görünür)
         const big = (target.size || 0) > 700 * 1024;
         const island = big ? pulse({ icon: 'arrow.down.circle', color: '#38bdf8', title: target.name, subtitle: t('pulse.downloading'), short: t('pulse.downloadingShort') }, 60000) : null;
+        const kind = kindOf(target.name);
+        const libsJob = LIBS_FOR[kind] ? loadViewerLibs(LIBS_FOR[kind]) : Promise.resolve(null);
         let buf;
         try {
           buf = await target.load();
@@ -1128,10 +1767,12 @@ function ViewerSheet({ c, target, onClose }) {
         }
         if (island) island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', subtitle: t('pulse.ready'), short: t('pulse.readyShort') });
         if (!alive) return;
-        const kind = kindOf(target.name);
+        bufRef.current = buf;
         const b64 = arrayBufferToBase64(buf);
-        if (kind === 'word') setSource({ html: wordHtml(b64, c.dark, viewerLabels()) });
-        else if (kind === 'sheet') setSource({ html: sheetHtml(b64, c.dark, viewerLabels()) });
+        const libs = await libsJob;
+        if (!alive) return;
+        if (kind === 'word') setSource({ html: wordHtml(b64, c.dark, viewerLabels(), libs) });
+        else if (kind === 'sheet') setSource({ html: sheetHtml(b64, c.dark, viewerLabels(), libs) });
         else if (kind === 'pdf') setSource({ uri: `data:application/pdf;base64,${b64}` });
         else if (kind === 'image') setSource({ image: `data:image/${target.name.split('.').pop().toLowerCase()};base64,${b64}` });
         else if (kind === 'text') setSource({ html: textHtml(utf8Decode(buf), c.dark, viewerLabels()) });
@@ -1146,6 +1787,7 @@ function ViewerSheet({ c, target, onClose }) {
   }, [target]);
 
   if (!target) return null;
+  const share = () => shareDoc(setBusy, target.shareName || target.name, () => (bufRef.current ? Promise.resolve(bufRef.current) : target.diff ? target.diff.loadNew() : target.load()));
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={[s.flex, { backgroundColor: c.bg }]}>
@@ -1157,6 +1799,11 @@ function ViewerSheet({ c, target, onClose }) {
               <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }} numberOfLines={1}>{target.name}</Text>
               <Text style={{ color: c.text3, fontSize: 12 }}>{target.subtitle}</Text>
             </View>
+            <Jelly onPress={share} scaleTo={0.9} accessibilityLabel={t('viewer.share')}>
+              <View style={[s.pillBtn, { backgroundColor: c.accentSoft }]}>
+                <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14 }}>{t('viewer.share')}</Text>
+              </View>
+            </Jelly>
             <Pressable onPress={onClose} hitSlop={12}>
               <Text style={{ color: c.accent, fontWeight: '700', fontSize: 16 }}>{t('common.close')}</Text>
             </Pressable>
@@ -1194,6 +1841,7 @@ function ViewerSheet({ c, target, onClose }) {
           </View>
         )}
       </View>
+      <BusyHud c={c} text={busy} />
     </Modal>
   );
 }
@@ -1216,7 +1864,9 @@ const s = StyleSheet.create({
   bar: { width: '100%', maxWidth: 30, borderRadius: 8 },
   seg: { flexDirection: 'row', padding: 4, marginBottom: 6, borderRadius: 16 },
   segBtn: { flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12 },
-  chipBtn: { height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  roundBtn: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  pillBtn: { height: 32, borderRadius: 16, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
+  searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, height: 44, borderRadius: 14 },
   actionBtn: { height: 50, borderRadius: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
   dayHeader: { fontSize: 12, fontWeight: '700', letterSpacing: 0.6, marginTop: 16, marginBottom: 8, marginLeft: 4 },
   tlItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18 },

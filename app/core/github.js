@@ -143,9 +143,10 @@ function onAuth(token) {
 
 // Eşitleme: yereldeki hiçbir şey kaybolmaz. İki bilgisayarda aynı dosya farklı değiştiyse
 // yerel sürüm kalır, diğeri "(diğer cihazdan)" kopyası olarak klasöre eklenir.
-async function sync(project, token) {
+// opts.url: depo adresini ezer (testlerde yerel git sunucusu için).
+async function sync(project, token, opts = {}) {
     const { owner, repo } = project.meta.github;
-    const url = `https://github.com/${owner}/${repo}.git`;
+    const url = opts.url || `https://github.com/${owner}/${repo}.git`;
     const gitdir = project.gitdir;
     await git.addRemote({ fs, gitdir, remote: 'origin', url, force: true });
 
@@ -188,7 +189,8 @@ async function sync(project, token) {
             const r = await git.push({ fs, http, gitdir, url, remote: 'origin', ref: BRANCH, remoteRef: BRANCH, onAuth: onAuth(token) });
             if (r && r.ok === false) throw new Error(T('err.ghPush'));
         }
-        return { pushed: local !== remoteOid, pulled, conflicts, at: Date.now() };
+        // head: GitHub'daki (gönderilmiş) son kayıt; dosya bazlı yedek durumu için saklanır
+        return { pushed: local !== remoteOid, pulled, conflicts, head: local || null, at: Date.now() };
     });
 }
 

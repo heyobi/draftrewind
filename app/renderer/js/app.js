@@ -33,7 +33,7 @@
     // Sayı + çoğul: tn('common.words', 5) → "5 kelime" / "5 words"
     const tn = (key, n, vars) => t(key, { ...vars, n: num(n), count: Number(n) || 0 });
     const EMOJIS = ['📘', '📗', '📕', '📙', '🎓', '🧪', '🧬', '🔭', '📐', '🧠', '🌍', '⚖️', '🎨', '💻', '📊', '🏛️', '🩺', '🌱', '🚀', '🎼', '🏗️', '📜', '🦉', '✨'];
-    const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝' };
+    const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝', mobile: '📱' };
     const TYPE_LABEL = { word: 'DOC', sheet: 'XLS', slides: 'PPT', pdf: 'PDF', text: 'TXT', image: 'IMG', other: 'FILE' };
     const MONTHS = () => t('time.months');
     const DAYS = () => t('time.days');
@@ -318,9 +318,9 @@
                     </button>`
                 )
                 .join('')}
-            <button class="proj-btn add-btn" data-action="add-project"><span class="emoji">+</span><span>${t('rail.addProject')}</span></button>
+            <button class="proj-btn add-btn" data-action="add-project" title="${esc(t('rail.addProject'))}"><span class="emoji">+</span><span>${t('rail.addProject')}</span></button>
             <div class="rail-spacer"></div>
-            <div class="rail-cloud" data-action="goto-tab" data-tab="cloud">
+            <div class="rail-cloud" data-action="goto-tab" data-tab="cloud" title="${esc(t('tabs.cloud'))}">
                 <div class="row">🐙<span class="lbl">GitHub</span> ${gh.connected ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
                 <div class="row">📁<span class="lbl">Drive</span> ${dr.mode ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
             </div>`;
@@ -346,9 +346,9 @@
                 <button class="btn ghost" data-action="settings" title="${t('head.settings')}" style="font-size:18px;padding:8px 10px">⚙️</button>
             </div>
             <div class="tabs">
-                <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home">${t('tabs.home')}</button>
-                <button class="tab ${S.tab === 'timeline' ? 'active' : ''}" data-action="goto-tab" data-tab="timeline">${t('tabs.timeline')}${ov && ov.stats ? `<span class="count">${num(ov.stats.snapshots)}</span>` : ''}</button>
-                <button class="tab ${S.tab === 'cloud' ? 'active' : ''}" data-action="goto-tab" data-tab="cloud">${t('tabs.cloud')}</button>
+                <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home" title="Ctrl+1">${t('tabs.home')}</button>
+                <button class="tab ${S.tab === 'timeline' ? 'active' : ''}" data-action="goto-tab" data-tab="timeline" title="Ctrl+2">${t('tabs.timeline')}${ov && ov.stats ? `<span class="count">${num(ov.stats.snapshots)}</span>` : ''}</button>
+                <button class="tab ${S.tab === 'cloud' ? 'active' : ''}" data-action="goto-tab" data-tab="cloud" title="Ctrl+3">${t('tabs.cloud')}</button>
             </div>
             ${
                 ov && ov.missing
@@ -411,6 +411,26 @@
         return `<div class="${extraClass} ${kind}">${TYPE_LABEL[kind] || 'FILE'}</div>`;
     }
 
+    // Dosyanın nerelerde yedekli olduğu (alanlar henüz yoksa hiçbir şey gösterme)
+    function backupBadges(f) {
+        const b = f && f.backup;
+        if (!b || typeof b !== 'object') return '';
+        const icons = [];
+        if (b.history) icons.push(`<span class="bk on" title="${esc(t('bk.history'))}">🕰️</span>`);
+        if (S.app.github.connected && b.history && b.github != null) {
+            const on = b.github === true;
+            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.github') : t('bk.githubPending'))}">🐙</span>`);
+        }
+        if (b.drive != null) {
+            const on = b.drive === true;
+            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.drive') : b.reason === 'driveError' ? t('bk.reason.driveError') : t('bk.drivePending'))}">📁</span>`);
+        }
+        const reasonKey = `bk.reason.${b.reason || 'unknown'}`;
+        const reason = t(reasonKey) === reasonKey ? t('bk.reason.unknown') : t(reasonKey);
+        const warn = b.history === false && b.drive !== true ? `<span class="chip warn" title="${esc(reason)}">${t('bk.notBacked')}</span>` : '';
+        return `<span class="fbackup">${warn}${icons.join('')}</span>`;
+    }
+
     function renderHome(ov) {
         const st = ov.stats;
         const goal = S.app.prefs.dailyGoal;
@@ -423,13 +443,16 @@
         const cloud = ov.cloud;
         const gh = S.app.github.connected;
         const dr = S.app.drive.mode;
+        // Yalnızca bu bilgisayarda olan dosyalar (yol dizisi ya da { rel, … } nesneleri)
+        const unprotected = (Array.isArray(ov.unprotected) ? ov.unprotected : []).map(u => (typeof u === 'string' ? u : u && u.rel)).filter(Boolean);
 
         return `<div class="content">
             <div class="greeting"><h2>${greeting()}${firstName ? `, ${esc(firstName)}` : ''}</h2><p>${motivation(st, goal)}</p></div>
 
             ${rescues.length ? `<div class="banner"><span class="ic">⚡</span><div><div class="t">${tn('home.rescueTitle', rescues.length)}</div><div class="s">${t('home.rescueText')}</div></div><button class="btn sm" data-action="open-file" data-rel="${esc(rescues[0].rel)}">${t('common.open')}</button></div>` : ''}
             ${ov.error ? `<div class="banner error"><span class="ic">⚠️</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(ov.error)}</div></div></div>` : ''}
-            ${!gh && !dr ? `<div class="banner info"><span class="ic">☁️</span><div><div class="t">${t('home.cloudPromptTitle')}</div><div class="s">${t('home.cloudPromptText')}</div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${t('home.connectCloud')}</button></div>` : ''}
+            ${unprotected.length ? `<div class="banner error"><span class="ic">🛟</span><div><div class="t">${tn('bk.bannerTitle', unprotected.length)}</div><div class="s">${tn(dr ? 'bk.bannerTextDrive' : 'bk.bannerText', unprotected.length)} <span class="bk-list">${esc(unprotected.slice(0, 3).map(r => r.split('/').pop()).join(', '))}${unprotected.length > 3 ? '…' : ''}</span></div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${dr ? t('bk.bannerBtnCheck') : t('bk.bannerBtn')}</button></div>` : ''}
+            ${!gh && !dr && !dismissed().cloudBanner ? `<div class="banner info"><span class="ic">☁️</span><div><div class="t">${t('home.cloudPromptTitle')}</div><div class="s">${t('home.cloudPromptText')}</div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${t('home.connectCloud')}</button><button class="dismiss-x" data-action="dismiss" data-key="cloudBanner" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button></div>` : ''}
 
             <div class="stat-grid">
                 <div class="stat streak ${st.streak >= 2 ? 'hot' : ''}"><span class="big-emoji">🔥</span><span class="label">${t('stat.streak')}</span><span class="value">${tn('stat.days', st.streak)}</span><span class="hint">${st.streak ? t('stat.keepChain') : t('stat.startToday')}</span></div>
@@ -450,27 +473,29 @@
                     <div class="safe-row"><span class="ic">💻</span><div><div class="t">${t('safe.thisPc')}</div><div class="s">${t('safe.lastSave', { ago: ago(ov.lastSave) })}</div></div><span class="state on">${t('safe.active')}</span></div>
                     <div class="safe-row"><span class="ic">🐙</span><div><div class="t">${t('safe.github')}</div><div class="s">${gh ? (cloud.syncError ? esc(cloud.syncError) : cloud.lastSync ? t('safe.lastPush', { ago: ago(cloud.lastSync) }) : t('safe.firstPush')) : t('safe.notConnected')}</div></div><span class="state ${gh ? (cloud.syncError ? 'err' : 'on') : 'off'}">${gh ? (cloud.syncError ? '⏳' : '✓') : '—'}</span></div>
                     <div class="safe-row"><span class="ic">📁</span><div><div class="t">Google Drive</div><div class="s">${dr ? (cloud.driveError ? esc(cloud.driveError) : cloud.driveAt ? t('safe.lastCopy', { ago: ago(cloud.driveAt) }) : t('safe.waiting')) : t('safe.notConnected')}</div></div><span class="state ${dr ? (cloud.driveError ? 'err' : 'on') : 'off'}">${dr ? (cloud.driveError ? '⏳' : '✓') : '—'}</span></div>
+                    ${unprotected.length ? `<div class="safe-warn" title="${esc(unprotected.join('\n'))}">${tn('bk.onlyHere', unprotected.length)}</div>` : ''}
                 </div>
             </div>
 
             <div class="card files">
                 <div class="files-head"><div><h3>${t('files.title')}</h3><div class="sub">${tn('files.sub', files.length)}</div></div>
-                    <button class="btn sm" data-action="open-folder">${t('files.openFolder')}</button></div>
+                    <div class="files-head-actions"><button class="btn sm" data-action="add-files" title="${esc(t('fx.addFilesTip'))}">${t('fx.addFiles')}</button><button class="btn sm" data-action="open-folder">${t('files.openFolder')}</button></div></div>
                 ${
                     files.length
                         ? shownFiles
                               .map(
-                                  f => `<div class="file-row" data-action="open-file" data-rel="${esc(f.rel)}" title="${t('files.clickToOpen')}">
+                                  f => `<div class="file-row" data-action="open-file" data-rel="${esc(f.rel)}" data-file-rel="${esc(f.rel)}" draggable="true" title="${esc(t('fx.rowTip'))}">
                             ${fileTypeBox(f.kind)}
                             <div class="fmain"><div class="fname">${esc(f.name)} ${f.pending ? `<span class="chip pending">${t('files.newChange')}</span>` : ''}</div>
                                 <div class="fsub">${f.rel.includes('/') ? esc(f.rel.slice(0, f.rel.lastIndexOf('/'))) + ' · ' : ''}${ago(f.mtime)} · ${sizeText(f.size)}</div></div>
                             ${f.words != null ? `<span class="fwords">${tn('common.words', f.words)}</span>` : ''}
-                            <div class="factions"><button class="btn sm" data-action="file-history" data-rel="${esc(f.rel)}">${t('files.history')}</button></div>
+                            ${backupBadges(f)}
+                            <div class="factions"><button class="btn sm" data-action="file-history" data-rel="${esc(f.rel)}">${t('files.history')}</button><button class="btn sm more-btn" data-action="file-more" data-rel="${esc(f.rel)}" title="${esc(t('fx.more'))}" aria-label="${esc(t('fx.more'))}">⋯</button></div>
                         </div>`
                               )
                               .join('') +
                           (files.length > 12 && !S.showAllFiles ? `<div style="text-align:center;margin-top:8px"><button class="linkish" data-action="show-all-files">${tn('files.showAll', files.length)}</button></div>` : '')
-                        : `<div class="empty-files"><div class="e">🗂️</div><p>${t('files.empty')}</p><button class="btn" data-action="open-folder">${t('files.openFolder')}</button></div>`
+                        : `<div class="empty-files"><div class="e">🗂️</div><p>${t('files.empty')}</p><div style="display:flex;gap:8px;justify-content:center"><button class="btn primary" data-action="add-files">${t('fx.addFiles')}</button><button class="btn" data-action="open-folder">${t('files.openFolder')}</button></div></div>`
                 }
                 ${ov.skippedLarge && ov.skippedLarge.length ? `<div class="banner" style="margin:12px 0 0"><span class="ic">🐘</span><div><div class="t">${tn('files.largeTitle', ov.skippedLarge.length)}</div><div class="s">${t('files.largeText', { list: esc(ov.skippedLarge.slice(0, 3).join(', ')) })}</div></div></div>` : ''}
             </div>
@@ -491,7 +516,7 @@
                 return `${head}<div class="tl-item ${h.kind} ${h.oid === S.selectedOid ? 'active' : ''}" data-action="select-snapshot" data-oid="${h.oid}">
                     <div class="node">${KIND_ICON[h.kind] || '💾'}</div>
                     <div class="tmain"><div class="ttitle">${esc(h.title)}</div>
-                    <div class="tmeta">${hm(new Date(h.time))}${words > 0 ? `<span class="chip add">+${num(words)}</span>` : words < 0 ? `<span class="chip del">${num(words)}</span>` : ''}${h.kind === 'star' ? `<span class="chip star">${t('tl.star')}</span>` : ''}${h.kind === 'rescue' ? `<span class="chip rescue">${t('tl.rescued')}</span>` : ''}</div></div>
+                    <div class="tmeta">${hm(new Date(h.time))}${words > 0 ? `<span class="chip add">+${num(words)}</span>` : words < 0 ? `<span class="chip del">${num(words)}</span>` : ''}${h.kind === 'star' ? `<span class="chip star">${t('tl.star')}</span>` : ''}${h.kind === 'rescue' ? `<span class="chip rescue">${t('tl.rescued')}</span>` : ''}${h.kind === 'mobile' ? `<span class="chip mobile">📱 ${t('tl.fromPhone')}</span>` : ''}</div></div>
                 </div>`;
             })
             .join('');
@@ -532,7 +557,7 @@
             </div>
             <div class="changed-files">${S.changes
                 .map(
-                    c => `<button class="cf ${c.rel === S.selectedFile ? 'active' : ''}" data-action="select-file" data-rel="${esc(c.rel)}">
+                    c => `<button class="cf ${c.rel === S.selectedFile ? 'active' : ''}" data-action="select-file" data-rel="${esc(c.rel)}" data-file-rel="${esc(c.rel)}" data-file-oid="${esc(h.oid)}"${c.change === 'deleted' ? ' data-file-deleted="1"' : ' draggable="true"'} title="${esc(t('fx.chipTip'))}">
                     ${fileTypeBox(c.kind, 'ftype')}${esc(c.rel.split('/').pop())}
                     ${c.change === 'added' ? `<span class="chip add">${t('tl.new')}</span>` : c.change === 'deleted' ? `<span class="chip del">${t('tl.deleted')}</span>` : ''}
                     ${c.delta ? `<span class="chip ${c.delta > 0 ? 'add' : 'del'}">${c.delta > 0 ? '+' : ''}${num(c.delta)}</span>` : ''}
@@ -671,7 +696,7 @@
             ? `<div class="user-row">${gh.user && gh.user.avatar ? `<img src="${esc(gh.user.avatar)}">` : '<span style="font-size:30px">🐙</span>'}<div><div class="nm">${esc(gh.user ? gh.user.name : '')}</div><div class="lg">@${esc(gh.user ? gh.user.login : '')}</div></div></div>
                <div class="sub">${c.syncing ? `<span class="spinner" style="display:inline-block;vertical-align:-3px"></span> ${t('cloud.sending')}` : c.syncError ? `⏳ ${esc(c.syncError)}` : c.lastSync ? t('cloud.lastPush', { ago: ago(c.lastSync) }) : t('cloud.firstSoon')}
                ${c.github ? `<br>${t('cloud.privateRepo', { link: `<button class="linkish" data-action="open-url" data-url="${esc(c.github.url || `https://github.com/${c.github.owner}/${c.github.repo}`)}">${esc(c.github.owner)}/${esc(c.github.repo)}</button>` })}` : ''}</div>
-               <div class="actions"><button class="btn primary" data-action="sync-now" ${c.syncing ? 'disabled' : ''}>${t('cloud.syncNow')}</button><button class="btn ghost" data-action="github-logout">${t('cloud.logout')}</button></div>`
+               <div class="actions"><button class="btn primary" data-action="sync-now" ${c.syncing ? 'disabled' : ''}>${t('cloud.syncNow')}</button>${dismissed().phoneCard ? `<button class="btn" data-action="phone-qr">${t('qr.button')}</button>` : ''}<button class="btn ghost" data-action="github-logout">${t('cloud.logout')}</button></div>`
             : `<div class="sub">${t('cloud.ghPitch')}</div>
                <div class="actions"><button class="btn primary" data-action="github-login">${t('cloud.ghLogin')}</button><button class="btn ghost" data-action="open-url" data-url="https://github.com/signup">${t('cloud.ghSignup')}</button></div>`;
 
@@ -700,12 +725,14 @@
             <div class="cloud-grid">
                 <div class="card cloud-card"><div class="top"><div class="logo">🐙</div><div><h3>${t('cloud.ghTitle')}</h3><div class="sub">${t('cloud.ghSub')}</div></div><span class="badge chip ${gh.connected ? 'add' : 'mod'}">${gh.connected ? t('cloud.connected') : t('cloud.recommended')}</span></div>${ghBody}</div>
                 <div class="card cloud-card"><div class="top"><div class="logo">📁</div><div><h3>Google Drive</h3><div class="sub">${t('cloud.driveSub')}</div></div><span class="badge chip ${dr.mode ? 'add' : 'mod'}">${dr.mode ? t('cloud.connected') : t('cloud.optional')}</span></div>${drBody}</div>
-                <div class="card phone-card">
+                ${dismissed().phoneCard ? '' : `<div class="card phone-card">
+                    <button class="dismiss-x on-grad" data-action="dismiss" data-key="phoneCard" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button>
                     <div class="phone-mock">📱</div>
                     <div><h3>${t('cloud.phoneTitle')}</h3>
                     <div class="sub">${t('cloud.phoneText')}</div>
-                    <div class="steps"><span class="step">${t('cloud.step1')}</span><span class="step">${t('cloud.step2')}</span><span class="step">${t('cloud.step3')}</span></div></div>
-                </div>
+                    <div class="steps"><span class="step">${t('cloud.step1')}</span><span class="step">${t('cloud.step2')}</span><span class="step">${t('cloud.step3')}</span></div>
+                    <div class="qr-row"><button class="btn qr-btn" data-action="phone-qr" ${gh.connected ? '' : 'disabled'}>${t('qr.button')}</button>${gh.connected ? '' : `<span class="qr-hint">${t('qr.needGithub')}</span>`}</div></div>
+                </div>`}
             </div>
         </div>`;
     }
@@ -769,9 +796,12 @@
             <div style="display:grid;gap:10px">
                 <button class="btn big primary" data-x="existing">${t('addProj.existing')}</button>
                 <button class="btn big" data-x="new">${t('addProj.new')}</button>
-            </div>`);
+                <button class="btn big" data-x="github">${t('addProj.github')}</button>
+            </div>
+            <p class="modal-hint">💡 ${t('addProj.hint')}</p>`);
         m.querySelector('[data-x=existing]').onclick = () => { closeModal(); addExisting(); };
         m.querySelector('[data-x=new]').onclick = () => { closeModal(); createNew(); };
+        m.querySelector('[data-x=github]').onclick = () => { closeModal(); importGithubModal(); };
     }
 
     function starModal() {
@@ -832,6 +862,7 @@
             <div class="setting-row"><div><div class="t">${t('settings.goal')}</div><div class="s">${t('settings.goalHint')}</div></div><input type="range" id="goal" min="100" max="3000" step="50" value="${pr.dailyGoal}"><b id="goal-v" style="width:48px;text-align:right">${pr.dailyGoal}</b></div>
             ${win ? `<div class="setting-row"><div><div class="t">${t('settings.guardian')}</div><div class="s">${t('settings.guardianHint')}</div></div><label class="switch"><input type="checkbox" id="guardian" ${pr.guardian ? 'checked' : ''}><span></span></label></div>` : ''}
             <div class="setting-row"><div><div class="t">${t('settings.autostart')}</div><div class="s">${t('settings.autostartHint')}</div></div><label class="switch"><input type="checkbox" id="autostart" ${pr.autostart ? 'checked' : ''}><span></span></label></div>
+            <div class="setting-row"><div><div class="t">${t('settings.tips')}</div><div class="s">${t('settings.tipsHint')}</div></div><button class="linkish" id="tips-again" ${Object.keys(dismissed()).length ? '' : 'disabled style="opacity:.5;cursor:default"'}>${t('settings.tipsBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.relink')}</div><div class="s">${t('settings.relinkHint')}</div></div><button class="btn sm" id="relink">${t('settings.relinkBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.remove')}</div><div class="s">${t('settings.removeHint')}</div></div><button class="btn sm danger" id="remove">${t('settings.removeBtn')}</button></div>
             <div class="foot"><span style="margin-right:auto;color:var(--text-3);font-size:12px;align-self:center">DraftRewind ${esc(S.app.version)}</span><button class="btn primary" id="done">${t('common.ok')}</button></div>`);
@@ -853,6 +884,13 @@
         if (g) g.onchange = async () => { S.app.prefs = await av.setPref('guardian', g.checked); };
         const a = m.querySelector('#autostart');
         a.onchange = async () => { S.app.prefs = await av.setPref('autostart', a.checked); };
+        m.querySelector('#tips-again').onclick = async () => {
+            if (!Object.keys(dismissed()).length) return;
+            S.app.prefs = (await run(() => av.setPref('dismissed', {}))) || S.app.prefs;
+            toast(t('toast.tipsBack'), '💡');
+            render();
+            settingsModal();
+        };
         m.querySelector('#relink').onclick = async () => { closeModal(); if (await run(() => av.projects.relink(S.activeId))) { toast(t('toast.relinked'), '📂'); refresh(); } };
         m.querySelector('#remove').onclick = async () => {
             closeModal();
@@ -907,6 +945,218 @@
             refresh({ history: true });
         }
     }
+
+    // ------------------------------------------------------------------ dosya eylemleri (sağ tık, sürükle, ekle)
+    function dismissed() {
+        return (S.app && S.app.prefs && S.app.prefs.dismissed) || {};
+    }
+
+    async function fileMenu(rel, opts) {
+        if (!S.activeId) return;
+        const r = await run(() => av.files.menu(S.activeId, rel, opts));
+        if (!r) return;
+        if (r.action === 'copyFile') toast(r.how === 'file' ? t('fx.fileCopied') : t('fx.pathCopied'), '📋', 5000);
+        else if (r.action === 'copyPath') toast(t('fx.pathCopied'), '📋');
+        else if (r.action === 'copyVersion') toast(r.how === 'file' ? t('fx.versionCopied') : t('fx.pathCopied'), '📋', 5000);
+        else if (r.action === 'history') actions['file-history']({ rel }, null, { stopPropagation() {} });
+        else if (r.action === 'openVersion') {
+            const ok = await run(() => av.projects.openVersion(S.activeId, rel, opts.oid));
+            if (ok) toast(t('old.openedToast'), '🔒', 6000);
+        }
+    }
+
+    function fileTarget(el) {
+        const node = el && el.closest && el.closest('[data-file-rel]');
+        if (!node) return null;
+        return { node, rel: node.dataset.fileRel, oid: node.dataset.fileOid || undefined, deleted: node.dataset.fileDeleted === '1' };
+    }
+
+    document.addEventListener('contextmenu', e => {
+        const f = fileTarget(e.target);
+        if (!f) return;
+        e.preventDefault();
+        fileMenu(f.rel, { oid: f.oid, deleted: f.deleted });
+    });
+
+    // Eski sürümün geçici kopyası sürükleme başlamadan hazır olsun
+    document.addEventListener('mousedown', e => {
+        if (e.button !== 0) return;
+        const f = fileTarget(e.target);
+        if (f && f.oid && f.oid !== 'working' && !f.deleted) av.files.prepareDrag(S.activeId, f.rel, f.oid).catch(() => {});
+    });
+
+    // Dosyayı uygulamadan dışarı sürükle (Gezgin, WhatsApp, e-posta…): yerel sürükleme ana süreçte başlar
+    let draggingOut = false;
+    document.addEventListener('dragstart', e => {
+        const f = fileTarget(e.target);
+        if (!f || f.deleted) return;
+        e.preventDefault();
+        draggingOut = true;
+        av.files.startDrag(S.activeId, f.rel, f.oid);
+    });
+    document.addEventListener('mousemove', e => {
+        if (draggingOut && e.buttons === 0) draggingOut = false;
+    });
+
+    // Dışarıdan dosya/klasör bırakma → projeye kopyala
+    let dragDepth = 0;
+    const hasFiles = e => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    const canDrop = () => {
+        const p = S.app && S.app.projects.find(x => x.id === S.activeId);
+        return !!(p && !p.missing && !$('#modal-root .modal-back'));
+    };
+    function dropOverlay(show) {
+        let el = $('#drop-overlay');
+        if (!show) {
+            if (el) el.classList.remove('on');
+            return;
+        }
+        const p = S.app.projects.find(x => x.id === S.activeId);
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'drop-overlay';
+            document.body.appendChild(el);
+        }
+        el.innerHTML = `<div class="drop-card"><div class="drop-emoji">${esc(projectEmoji(p))}</div><h2>${esc(t('fx.dropTitle', { name: p.name }))}</h2><p>${t('fx.dropSub')}</p></div>`;
+        requestAnimationFrame(() => el.classList.add('on'));
+    }
+    window.addEventListener('dragenter', e => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        if (draggingOut || !canDrop()) return;
+        if (dragDepth++ === 0) dropOverlay(true);
+    });
+    window.addEventListener('dragover', e => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = hasFiles(e) && !draggingOut && canDrop() ? 'copy' : 'none';
+    });
+    window.addEventListener('dragleave', e => {
+        if (!hasFiles(e) || dragDepth === 0) return;
+        if (--dragDepth <= 0) {
+            dragDepth = 0;
+            dropOverlay(false);
+        }
+    });
+    window.addEventListener('drop', async e => {
+        e.preventDefault();
+        dragDepth = 0;
+        dropOverlay(false);
+        if (draggingOut) {
+            draggingOut = false;
+            return;
+        }
+        if (!hasFiles(e) || !canDrop()) return;
+        const paths = Array.from(e.dataTransfer.files || [])
+            .map(f => av.files.pathOf(f))
+            .filter(Boolean);
+        if (!paths.length) return;
+        const r = await run(() => av.files.importPaths(S.activeId, paths));
+        if (r) addedToast(r);
+    });
+
+    function addedToast(r) {
+        if (r.added.length) {
+            toast(tn('fx.added', r.added.length), '📥', 4500);
+            refresh();
+        }
+        if (r.skipped.length) toast(tn('fx.skipped', r.skipped.length), 'ℹ️', 4500);
+    }
+
+    // ------------------------------------------------------------------ GitHub'dan proje aç
+    let importModal = null;
+    function importGithubModal(prefill = '') {
+        const m = openModal(`<div style="font-size:40px">🐙</div><h2>${t('imp.title')}</h2><p class="sub">${t('imp.sub')}</p>
+            <input class="input" id="imp-url" value="${esc(prefill)}" placeholder="${esc(t('imp.placeholder'))}" spellcheck="false">
+            ${S.app.github.connected ? '' : `<p class="modal-hint">🔒 ${t('imp.privateHint')}</p>`}
+            <div class="foot"><button class="btn ghost" data-x="no">${t('common.cancel')}</button><button class="btn primary" data-x="yes">${t('imp.ok')}</button></div>`);
+        const input = m.querySelector('#imp-url');
+        m.querySelector('[data-x=no]').onclick = closeModal;
+        const go = async () => {
+            const url = input.value.trim();
+            if (!url) {
+                input.focus();
+                return;
+            }
+            const name = url.replace(/\.git$/i, '').replace(/[/?#]+$/, '').split('/').pop() || 'GitHub';
+            importModal = openModal(`<div style="text-align:center"><div style="font-size:40px" class="imp-bob">🐙</div><h2>${esc(t('imp.progressTitle', { name }))}</h2>
+                <p class="sub" id="imp-phase">${t('imp.phaseStart')}</p>
+                <div class="progress"><div class="bar indet" id="imp-bar"></div></div></div>`);
+            const r = await run(() => av.projects.importGithub(url));
+            const stillOpen = !!(importModal && importModal.isConnected);
+            importModal = null;
+            if (stillOpen) closeModal();
+            if (!r) {
+                if (stillOpen) importGithubModal(url);
+                return;
+            }
+            S.activeId = r.id;
+            S.tab = 'home';
+            S.overview = null;
+            toast(t('imp.done', { name: r.name }), '🎉', 5000);
+            confetti();
+            refresh();
+        };
+        m.querySelector('[data-x=yes]').onclick = go;
+        input.addEventListener('keydown', e => e.key === 'Enter' && go());
+    }
+
+    function updateImportProgress(p) {
+        if (!importModal || !importModal.isConnected) return;
+        const phase = String(p.phase || '');
+        let from = 0, span = 5, label = t('imp.phaseStart');
+        if (/receiv/i.test(phase)) { from = 5; span = 60; label = t('imp.phaseDownload'); }
+        else if (/resolv/i.test(phase)) { from = 65; span = 20; label = t('imp.phaseUnpack'); }
+        else if (/workdir/i.test(phase)) { from = 85; span = 15; label = t('imp.phaseFiles'); }
+        const bar = importModal.querySelector('#imp-bar');
+        const ph = importModal.querySelector('#imp-phase');
+        if (ph) ph.textContent = label + (p.total ? ` ${Math.min(100, Math.round((p.loaded / p.total) * 100))}%` : '');
+        if (bar) {
+            bar.classList.toggle('indet', !p.total);
+            bar.style.width = p.total ? `${Math.min(100, from + span * (p.loaded / p.total))}%` : '';
+        }
+    }
+
+    // ------------------------------------------------------------------ Telefonu QR ile bağla
+    let qrTimer = null;
+    function phoneQrModal() {
+        if (!S.app.github.connected) {
+            toast(t('qr.needGithub'), '🐙');
+            return;
+        }
+        clearInterval(qrTimer);
+        const m = openModal(`<div style="text-align:center"><div style="font-size:36px">📱</div><h2>${t('qr.title')}</h2>
+            <p class="sub">${t('qr.text')}</p>
+            <div class="qr-box" id="qr-box"><div class="skeleton" style="width:260px;height:260px"></div></div>
+            <div class="qr-timer" id="qr-timer">&nbsp;</div>
+            <div class="foot" style="justify-content:center"><button class="btn ghost" data-x="close">${t('common.ok')}</button></div></div>`,
+            { onClose: () => clearInterval(qrTimer) });
+        m.querySelector('[data-x=close]').onclick = closeModal;
+        const load = async () => {
+            clearInterval(qrTimer);
+            const box = m.querySelector('#qr-box');
+            const r = await run(() => av.phone.pairQr());
+            if (!r || !m.isConnected) return;
+            box.classList.remove('expired');
+            box.innerHTML = `<img src="${r.dataUrl}" alt="QR" draggable="false"><div class="qr-expired"><b>${t('qr.expired')}</b><button class="btn primary sm" data-x="refresh">${t('qr.refresh')}</button></div>`;
+            box.querySelector('[data-x=refresh]').onclick = load;
+            const timer = m.querySelector('#qr-timer');
+            const tick = () => {
+                const left = Math.max(0, Math.round((r.expiresAt - Date.now()) / 1000));
+                timer.classList.toggle('done', !left);
+                if (!left) {
+                    clearInterval(qrTimer);
+                    box.classList.add('expired');
+                    timer.innerHTML = '&nbsp;';
+                    return;
+                }
+                timer.textContent = t('qr.expiresIn', { time: `${Math.floor(left / 60)}:${pad(left % 60)}` });
+            };
+            tick();
+            qrTimer = setInterval(tick, 1000);
+        };
+        load();
+    }
+
 
     const actions = {
         'select-project': async d => {
@@ -1008,7 +1258,22 @@
             refresh();
         },
         'drive-open': () => run(() => av.drive.open(S.activeId)),
-        'open-url': d => av.openExternal(d.url)
+        'open-url': d => av.openExternal(d.url),
+        'file-more': (d, el, e) => {
+            e.stopPropagation();
+            fileMenu(d.rel, {});
+        },
+        'add-files': async () => {
+            const r = await run(() => av.files.add(S.activeId));
+            if (r) addedToast(r);
+        },
+        dismiss: async (d, el, e) => {
+            e.stopPropagation();
+            const next = { ...dismissed(), [d.key]: true };
+            S.app.prefs = (await run(() => av.setPref('dismissed', next))) || S.app.prefs;
+            render();
+        },
+        'phone-qr': phoneQrModal
     };
 
     document.addEventListener('click', e => {
@@ -1023,6 +1288,17 @@
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && S.activeId) {
             e.preventDefault();
             av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), '💾'));
+        }
+        // F5: yenile · Ctrl+1/2/3: sekmeler
+        if (e.key === 'F5') {
+            e.preventDefault();
+            refresh({ history: S.tab === 'timeline' });
+            toast(t('kbd.refresh'), '🔄', 1400);
+        }
+        const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['1', '2', '3'].includes(e.key) && S.activeId && !inField && !$('#modal-root .modal-back')) {
+            e.preventDefault();
+            actions['goto-tab']({ tab: { 1: 'home', 2: 'timeline', 3: 'cloud' }[e.key] });
         }
     });
 
@@ -1057,6 +1333,9 @@
                 break;
             case 'project':
                 refresh();
+                break;
+            case 'importProgress':
+                updateImportProgress(ev);
                 break;
             case 'github':
                 if (ev.state === 'connected') {

@@ -11,9 +11,23 @@ const TOKEN_KEY = 'acadamiv_github_token';
 // Oturum iki yerde saklanır: iOS anahtar zinciri ve uygulamanın kendi klasörü.
 // Yan yüklenen (Sideloadly/AltStore) uygulamalarda anahtar zinciri bazen okunamıyor;
 // bu durumda dosyadaki kopya kullanılır ve kullanıcı her açılışta giriş yapmak zorunda kalmaz.
-const tokenFile = () => new File(Paths.document, 'oturum.txt');
+// Dosya önbellek klasöründe durur (iCloud/iTunes yedeğine girmez). Eski sürümler Belgeler klasörüne
+// yazıyordu; ilk açılışta oradaki kopya taşınır ve silinir.
+const tokenFile = () => new File(Paths.cache, 'oturum.txt');
+const legacyTokenFile = () => new File(Paths.document, 'oturum.txt');
+
+export function migrateSecretFile(legacy, next) {
+  try {
+    if (!legacy.exists) return;
+    try {
+      if (!next.exists) next.write(legacy.textSync());
+    } catch (e) {}
+    legacy.delete();
+  } catch (e) {}
+}
 
 export async function loadToken() {
+  migrateSecretFile(legacyTokenFile(), tokenFile());
   try {
     const t = await SecureStore.getItemAsync(TOKEN_KEY);
     if (t) return t;
@@ -26,6 +40,7 @@ export async function loadToken() {
 }
 
 export async function saveToken(token) {
+  migrateSecretFile(legacyTokenFile(), tokenFile());
   try {
     if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
     else await SecureStore.deleteItemAsync(TOKEN_KEY);
@@ -129,10 +144,12 @@ export function parseMessage(message) {
   return { title: title.trim(), note: rest.join('\n').trim(), meta };
 }
 
-export async function listSnapshots(token, p, pages = 3) {
+// since (epoch ms, isteğe bağlı): yalnızca bu andan sonraki kayıtlar (istatistikler için daha çok sayfa çekilebilir)
+export async function listSnapshots(token, p, pages = 3, since) {
   const out = [];
+  const sinceQ = since ? `&since=${encodeURIComponent(new Date(since).toISOString())}` : '';
   for (let page = 1; page <= pages; page++) {
-    const list = await api(token, `/repos/${p.owner}/${p.repo}/commits?sha=${p.branch}&per_page=100&page=${page}`);
+    const list = await api(token, `/repos/${p.owner}/${p.repo}/commits?sha=${p.branch}&per_page=100&page=${page}${sinceQ}`);
     for (const c of list) {
       const { title, note, meta } = parseMessage(c.commit.message);
       out.push({
@@ -167,6 +184,39 @@ export async function commitFiles(token, p, oid) {
 }
 
 export async function fileContent(token, p, path, ref) {
-  const enc = path.split('/').map(encodeURIComponent).join('/');
-  return api(token, `/repos/${p.owner}/${p.repo}/contents/${enc}?ref=${ref || p.branch}`, { raw: true });
+  return api(token, `/repos/${p.owner}/${p.repo}/contents/${encPath(path)}?ref=${ref || p.branch}`, { raw: true });
+}
+
+const encPath = (path) => path.split('/').map(encodeURIComponent).join('/');
+
+// Dosya bu dalda var mı? (ad çakışmasını önlemek için)
+export async function pathExists(token, p, path) {
+  const res = await fetch(`${API}/repos/${p.owner}/${p.repo}/contents/${encPath(path)}?ref=${p.branch}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+  });
+  if (res.status === 404) return false;
+  if (res.status === 401) {
+    const e = new Error(t('err.sessionExpired'));
+    e.auth = true;
+    throw e;
+  }
+  if (!res.ok) throw new Error(t('err.github', { status: res.status }));
+  return true;
+}
+
+// Telefondan dosya ekleme: tek bir kayıt (commit) olarak depoya yazar. content: base64.
+export async function uploadFile(token, p, path, content, message) {
+  const res = await fetch(`${API}/repos/${p.owner}/${p.repo}/contents/${encPath(path)}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content, branch: p.branch }),
+  });
+  if (res.status === 401) {
+    const e = new Error(t('err.sessionExpired'));
+    e.auth = true;
+    throw e;
+  }
+  if (!res.ok) throw new Error(t('err.github', { status: res.status }));
+  return res.json();
 }

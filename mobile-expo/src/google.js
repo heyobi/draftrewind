@@ -6,6 +6,7 @@ import * as Crypto from 'expo-crypto';
 import * as SecureStore from 'expo-secure-store';
 import { File, Paths } from 'expo-file-system';
 import { t as translate } from './i18n';
+import { migrateSecretFile } from './github';
 
 export const GOOGLE_IOS_CLIENT_ID = '506965274607-chr5jkmhrpkjo1dtp854tg2oirbs80dk.apps.googleusercontent.com';
 
@@ -30,9 +31,12 @@ function randomString(bytes = 32) {
 }
 
 // ---------------------------------------------------------------- jeton saklama
-const tokenFile = () => new File(Paths.document, 'google-oturum.json');
+// Yedek kopya önbellek klasöründe (iCloud yedeğine girmez); eski Belgeler kopyası taşınıp silinir.
+const tokenFile = () => new File(Paths.cache, 'google-oturum.json');
+const legacyTokenFile = () => new File(Paths.document, 'google-oturum.json');
 
 export async function loadGoogle() {
+  migrateSecretFile(legacyTokenFile(), tokenFile());
   let raw = null;
   try {
     raw = await SecureStore.getItemAsync(KEY);
@@ -51,6 +55,7 @@ export async function loadGoogle() {
 }
 
 export async function saveGoogle(session) {
+  migrateSecretFile(legacyTokenFile(), tokenFile());
   const raw = session ? JSON.stringify(session) : null;
   try {
     if (raw) await SecureStore.setItemAsync(KEY, raw);
@@ -175,4 +180,46 @@ export class Drive {
   download(id) {
     return this.get(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, true);
   }
+
+  // Telefondan dosya ekleme: çok parçalı (multipart) yükleme. drive.file kapsamı uygulamanın
+  // oluşturduğu klasörlere/dosyalara yazmaya izin verir. bytes: Uint8Array
+  async upload(parentId, name, bytes, mimeType) {
+    const boundary = `draftrewind${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    const meta = JSON.stringify({ name, parents: [parentId] });
+    const CRLF = '\r\n';
+    const head = utf8Encode(
+      `--${boundary}${CRLF}Content-Type: application/json; charset=UTF-8${CRLF}${CRLF}${meta}${CRLF}` +
+        `--${boundary}${CRLF}Content-Type: ${mimeType || 'application/octet-stream'}${CRLF}${CRLF}`
+    );
+    const tail = utf8Encode(`${CRLF}--${boundary}--${CRLF}`);
+    const body = new Uint8Array(head.length + bytes.length + tail.length);
+    body.set(head, 0);
+    body.set(bytes, head.length);
+    body.set(tail, head.length + bytes.length);
+    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await this.token()}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    });
+    if (r.status === 401) {
+      const e = new Error(translate('err.googleExpired'));
+      e.auth = true;
+      throw e;
+    }
+    if (!r.ok) throw new Error(translate('err.drive', { status: r.status }));
+    return r.json();
+  }
+}
+
+function utf8Encode(str) {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str);
+  const out = [];
+  for (const ch of str) {
+    const cp = ch.codePointAt(0);
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 63));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63));
+  }
+  return new Uint8Array(out);
 }

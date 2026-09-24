@@ -17,7 +17,8 @@
           "bundleIdentifier": "com.draftrewind.app.widgets"
         }
       ],
-      "expo-localization"
+      "expo-localization",
+      "expo-sharing"
     ],
     "ios": {
       "supportsTablet": true,

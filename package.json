@@ -8,7 +8,8 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder --win nsis",
     "dist:store": "electron-builder --win appx",
-    "notices": "node scripts/third-party-notices.js"
+    "notices": "node scripts/third-party-notices.js",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "git",
@@ -28,8 +29,10 @@
   "dependencies": {
     "diff": "^9.0.0",
     "docx-preview": "^0.4.1",
+    "electron-updater": "^6.8.9",
     "isomorphic-git": "^1.42.2",
-    "jszip": "^3.10.2"
+    "jszip": "^3.10.2",
+    "qrcode": "^1.5.4"
   },
   "build": {
     "appId": "com.draftrewind.app",
@@ -76,7 +79,14 @@
         "en-US",
         "tr-TR"
       ]
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "heyobi",
+        "repo": "draftrewind"
+      }
+    ]
   },
   "productName": "DraftRewind",
   "homepage": "https://draftrewind.com"

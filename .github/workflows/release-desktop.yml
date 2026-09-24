@@ -1,0 +1,39 @@
+name: Release desktop (Windows)
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write OAuth client files from secrets
+        shell: bash
+        env:
+          GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_OAUTH_JSON }}
+          GITHUB_OAUTH_JSON: ${{ secrets.GITHUB_OAUTH_JSON }}
+        run: |
+          if [ -n "$GOOGLE_OAUTH_JSON" ]; then printf '%s' "$GOOGLE_OAUTH_JSON" > app/core/google-oauth.json; else echo "GOOGLE_OAUTH_JSON is empty, skipping"; fi
+          if [ -n "$GITHUB_OAUTH_JSON" ]; then printf '%s' "$GITHUB_OAUTH_JSON" > app/core/github-oauth.json; else echo "GITHUB_OAUTH_JSON is empty, skipping"; fi
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build and publish (NSIS + latest.yml for auto-update)
+        run: npx electron-builder --win nsis --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,7 +6,6 @@ try {
   Activities = require('./FocusActivity');
 } catch (e) {}
 
-export const FocusActivity = Activities.FocusActivity || null;
 const PulseActivity = Activities.PulseActivity || null;
 
 let current = null;
@@ -63,5 +62,27 @@ export function loadSeen() {
 export function saveSeen(seen) {
   try {
     seenFile().write(JSON.stringify(seen));
+  } catch (e) {}
+}
+
+// Ana ekrandaki "yeni kayıtlar" kartı: kapatılana kadar (uygulama yeniden açılsa bile) kalır,
+// kapatılınca silinir. Aynı kayıtlar tekrar gelmez çünkü "görüldü" durumu duyuru anında ilerletilir.
+const newsFile = () => new File(Paths.document, 'yeni-kayitlar.json');
+
+export function loadPendingNews() {
+  try {
+    const f = newsFile();
+    const list = f.exists ? JSON.parse(f.textSync()) : null;
+    return Array.isArray(list) && list.length ? list : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+export function savePendingNews(list) {
+  try {
+    const f = newsFile();
+    if (list && list.length) f.write(JSON.stringify(list));
+    else if (f.exists) f.delete();
   } catch (e) {}
 }

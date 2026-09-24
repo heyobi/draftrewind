@@ -1,9 +1,14 @@
 // Belgeyi WebView içinde gösterecek HTML'i hazırlar (Word için docx-preview, Excel için SheetJS).
-const LIBS = {
-  jszip: 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js',
-  docx: 'https://cdn.jsdelivr.net/npm/docx-preview@0.4.1/dist/docx-preview.min.js',
-  xlsx: 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
-};
+// Kütüphaneler uygulamayla birlikte gelir (bkz. viewerLibs.js) ve HTML'e satır içi <script> olarak gömülür:
+// çevrimdışı çalışır, üçüncü taraf sunucuya istek gitmez. libs: { jszip, docx, xlsx, diff } → kaynak metni.
+
+// Kütüphane kodunu <script> etiketine güvenle göm ("</script" dizisi etiketi erken kapatmasın).
+// Not: replace yerine split/join — kaynak metindeki "$&" gibi diziler yorumlanmasın.
+function inlineScript(code) {
+  if (!code) return '';
+  return '<script>' + String(code).split('</script').join('<\\/script') + '</script>';
+}
+const scripts = (libs, names) => names.map((n) => inlineScript(libs && libs[n])).join('');
 
 export function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);
@@ -46,14 +51,14 @@ const DECODE = (L) => `
   function fail(e){document.getElementById('msg').textContent=L.failed+e;done();}
 `;
 
-export function wordHtml(b64, dark, labels) {
+export function wordHtml(b64, dark, labels, libs) {
   const L = labelsOf(labels);
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
 <style>${BASE_STYLE(dark)}
   .docx-wrapper{background:transparent!important;padding:12px 0!important}
   .docx-wrapper>section.docx{box-shadow:0 4px 24px rgba(0,0,0,.18)!important;margin:0 auto 14px!important}
 </style>
-<script src="${LIBS.jszip}"></script><script src="${LIBS.docx}"></script></head>
+${scripts(libs, ['jszip', 'docx'])}</head>
 <body><div id="msg">${escHtml(L.preparing)}</div><div id="c"></div>
 <script>${DECODE(L)}
 try{
@@ -67,7 +72,7 @@ try{
 </script></body></html>`;
 }
 
-export function sheetHtml(b64, dark, labels) {
+export function sheetHtml(b64, dark, labels, libs) {
   const L = labelsOf(labels);
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5">
 <style>${BASE_STYLE(dark)}
@@ -76,7 +81,7 @@ export function sheetHtml(b64, dark, labels) {
   table{border-collapse:collapse;font-size:13px}
   td{border:1px solid ${dark ? '#2b2b40' : '#e6e3f3'};padding:6px 10px;white-space:nowrap}
   tr:first-child td{font-weight:700;background:${dark ? '#202032' : '#f5f4fb'}}
-</style><script src="${LIBS.xlsx}"></script></head>
+</style>${scripts(libs, ['xlsx'])}</head>
 <body><div id="msg">${escHtml(L.preparingSheet)}</div><div id="c"></div>
 <script>${DECODE(L)}
 try{
@@ -113,7 +118,7 @@ export function utf8Decode(buf) {
 
 // Renkli karşılaştırma: eski ve yeni hali paragraf paragraf (Word) ya da satır satır karşılaştırır.
 // oldB64 null ise dosya bu kayıtta eklenmiştir.
-export function diffHtml(oldB64, newB64, kind, dark, labels) {
+export function diffHtml(oldB64, newB64, kind, dark, labels, libs) {
   const L = labelsOf(labels);
   const c = dark
     ? { bg: '#0f0f17', card: '#1a1a28', text: '#eeedfb', dim: '#9e9cb8', add: '#173222', addT: '#4ade80', del: '#3a1a1e', delT: '#f87171' }
@@ -133,7 +138,7 @@ export function diffHtml(oldB64, newB64, kind, dark, labels) {
   .gap{text-align:center;color:${c.dim};font:12px -apple-system,sans-serif;margin:4px 0 12px}
   #msg{padding:40px 20px;text-align:center;color:${c.dim}}
 </style>
-<script src="${LIBS.jszip}"></script><script src="https://cdn.jsdelivr.net/npm/diff@5.2.0/dist/diff.min.js"></script></head>
+${scripts(libs, ['jszip', 'diff'])}</head>
 <body><div id="msg">${escHtml(L.comparing)}</div><div id="out"></div>
 <script>
 var L=${jsonForScript(L)};

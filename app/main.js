@@ -317,6 +317,12 @@ async function syncDrive(rt, kind = 'auto') {
     let result = null;
     try {
         const info = await remote.prepare(rt.project, record);
+        // Klasör kimliğini HEMEN kaydet: ilk eşitleme yarıda kalırsa bir sonrakinde "Ad (2)" oluşmasın
+        const early = recordOf(rt.project.id);
+        if (early && (early.driveFolderId !== record.driveFolderId || early.driveFolderName !== record.driveFolderName || early.driveUrl !== info.url)) {
+            Object.assign(early, { driveFolderId: record.driveFolderId, driveFolderName: record.driveFolderName, driveUrl: info.url });
+            saveProjectRecord(early);
+        }
         const state = record.driveState || {};
         result = await drive.reconcile(rt.project, remote, state, kind);
         const fresh = recordOf(rt.project.id) || record;
@@ -378,6 +384,7 @@ async function runSync(rt) {
         const r = await github.sync(rt.project, token);
         record = recordOf(rt.project.id);
         record.lastSync = r.at;
+        record.githubOid = r.head || undefined; // GitHub'daki son kayıt (dosya bazlı yedek durumu için)
         record.syncError = null;
         saveProjectRecord(record);
         if (r.pulled) {
@@ -483,17 +490,58 @@ function computeStats(history) {
     };
 }
 
+// Dosya bazlı yedek durumu: kullanıcı yedeklenmeyen dosyayı mutlaka görsün. Yalnız önbellekler
+// kullanılır (büyük dosyalar burada asla okunmaz/özetlenmez). Dönen fonksiyon (rel, f) →
+// { history: bool, github: true|false|'pending'|null, drive: true|false|'pending'|null, reason }
+// null = o servis bağlı değil · reason: null | 'tooLargeForHistory' | 'locked' | 'driveError'
+async function backupStatus(rt, record, st) {
+    const d = store.get('drive', {});
+    const driveOn = !!((d.mode === 'folder' && d.folder && fs.existsSync(d.folder)) || (d.mode === 'account' && driveApi));
+    const ghOn = !!githubToken();
+    const base = (record.driveState && record.driveState.base) || {};
+    const md5s = rt.project.md5Cache || {};
+    let pushed = null;
+    if (ghOn && record.github && record.githubOid) {
+        try { pushed = await rt.project.treeFiles(record.githubOid); } catch (e) {}
+    }
+    return (rel, f) => {
+        const large = !!f.large;
+        const locked = !large && rt.project.lockedFiles.has(rel);
+        const history = !large && !(locked && !st.headFiles.has(rel));
+        let driveState = null;
+        if (driveOn) {
+            const c = md5s[rel];
+            driveState = c && c.m === f.mtimeMs && c.s === f.size && base[rel] === c.md5 ? true : 'pending';
+        }
+        let gh = null;
+        if (ghOn) {
+            const w = st.working.get(rel);
+            gh = large ? false : pushed && w && pushed.get(rel) === w ? true : 'pending';
+        }
+        let reason = null;
+        if (large) reason = 'tooLargeForHistory';
+        else if (locked) reason = 'locked';
+        else if (driveState === 'pending' && record.driveError) reason = 'driveError';
+        return { history, github: gh, drive: driveState, reason };
+    };
+}
+
 async function overview(id) {
     const rt = runtimes.get(id);
     const record = recordOf(id);
     if (!rt || !record) throw new Error(T('err.projectNotFound'));
     if (rt.missing) return { id, name: record.name, dir: record.dir, missing: true };
     const [st, history] = await Promise.all([rt.project.status(), fullHistory(rt)]);
-    const lastWords = (await rt.project.lastMeta(st.head)).words || {};
+    // Başka yerde yapılan kayıtlarda (telefon, GitHub web) kelime bilgisi yok: en yakın bilinen kayıttan
+    const lastWords = (await rt.project.wordsBase(st.head, st.headFiles)).words || {};
     const pending = new Set([...st.changes.added, ...st.changes.modified]);
-    const files = [...st.files.entries()]
-        .map(([rel, f]) => ({ rel, name: path.basename(rel), kind: docs.kindOf(rel), size: f.size, mtime: f.mtimeMs, words: lastWords[rel] ?? null, pending: pending.has(rel), rescue: rel.startsWith(config.RESCUE_DIR + '/') }))
+    const backupOf = await backupStatus(rt, record, st);
+    // Geçmişe girmeyen büyük dosyalar da listelenir (yedek durumlarıyla birlikte)
+    const files = [...st.files.entries(), ...rt.project.largeFiles.entries()]
+        .map(([rel, f]) => ({ rel, name: path.basename(rel), kind: docs.kindOf(rel), size: f.size, mtime: f.mtimeMs, words: lastWords[rel] ?? null, pending: pending.has(rel), rescue: rel.startsWith(config.RESCUE_DIR + '/'), large: !!f.large, backup: backupOf(rel, f) }))
         .sort((a, b) => b.mtime - a.mtime);
+    // Hiçbir yerde korunmayan dosyalar (ör. Drive bağlı değilken 10 GB'lık dosya)
+    const unprotected = files.filter(f => f.backup.history === false && f.backup.drive !== true).map(f => ({ rel: f.rel, name: f.name, size: f.size, reason: f.backup.reason, drive: f.backup.drive }));
     return {
         id,
         name: record.name,
@@ -504,6 +552,7 @@ async function overview(id) {
         stats: computeStats(history),
         files,
         skippedLarge: rt.project.skippedLarge,
+        unprotected,
         error: rt.lastError,
         cloud: cloudInfo(record, rt)
     };
@@ -838,6 +887,238 @@ function registerIpc() {
         if (!/^https:\/\//.test(String(url))) throw new Error(T('err.badLink'));
         return shell.openExternal(url);
     });
+    registerUxIpc();
+}
+
+// ---------------------------------------------------------------------------
+// Dosya eylemleri (sağ tık menüsü, dosyayı panoya kopyalama, dışarı sürükleme, dosya ekleme),
+// GitHub'dan proje açma ve telefonu QR ile eşleme
+// ---------------------------------------------------------------------------
+const versionTempFiles = new Map(); // `${id}|${rel}|${oid}` → geçici dosya yolu
+
+// Eski bir sürümün paylaşılabilir geçici kopyası (openVersion ile aynı adlandırma, aynı klasör)
+async function versionTempFile(id, rel, oid) {
+    const key = `${id}|${rel}|${oid}`;
+    const cached = versionTempFiles.get(key);
+    if (cached && fs.existsSync(cached)) return cached;
+    const rt = rtOf(id);
+    const buf = await rt.project.readAt(oid, rel);
+    if (!buf) throw new Error(T('err.noFileInVersion'));
+    const dir = oldVersionsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(rel);
+    const when = new Date(await rt.project.commitTime(oid));
+    const pad = n => String(n).padStart(2, '0');
+    const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}.${pad(when.getMinutes())}`;
+    const file = path.join(dir, `${path.basename(rel, ext)} (${T('old.fileTag', { date })})${ext}`);
+    try {
+        try { fs.chmodSync(file, 0o666); } catch (e) {}
+        fs.writeFileSync(file, buf);
+    } catch (e) {
+        // Word'de açık (kilitli) olabilir: aynı sürümün dosyası zaten orada
+        if (!fs.existsSync(file)) throw e;
+    }
+    // Eski sürüm izleyicisi bunu "düzenlendi" sanmasın
+    try {
+        const st = fs.statSync(file);
+        openedVersions.set(file.toLowerCase(), { projectId: id, rel, mtimeMs: st.mtimeMs, size: st.size });
+    } catch (e) {}
+    versionTempFiles.set(key, file);
+    return file;
+}
+
+// Dosyanın kendisini panoya koyar (Gezgin, WhatsApp, Outlook, Teams… içine yapıştırılabilir)
+function copyFileToClipboard(file) {
+    if (process.platform !== 'win32') {
+        clipboard.writeText(file);
+        return Promise.resolve('path');
+    }
+    const { execFile } = require('child_process');
+    return new Promise((resolve, reject) => {
+        execFile(
+            'powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-Command', 'Set-Clipboard -LiteralPath $env:DRAFTREWIND_CLIP'],
+            { windowsHide: true, timeout: 15000, env: { ...process.env, DRAFTREWIND_CLIP: file } },
+            err => (err ? reject(new Error(T('fx.copyFailed'))) : resolve('file'))
+        );
+    });
+}
+
+let dragIcon = null;
+function dragIconImage() {
+    if (!dragIcon || dragIcon.isEmpty()) dragIcon = nativeImage.createFromPath(iconPath()).resize({ width: 32, height: 32 });
+    return dragIcon;
+}
+
+function uniqueTarget(dir, name) {
+    const ext = path.extname(name);
+    const base = ext ? name.slice(0, -ext.length) : name;
+    let target = path.join(dir, name);
+    for (let i = 2; fs.existsSync(target) && i < 1000; i++) target = path.join(dir, `${base} (${i})${ext}`);
+    return target;
+}
+
+// Dışarıdan gelen dosya/klasörleri proje köküne kopyalar; hiçbir şeyin üzerine yazmaz
+function copyIntoProject(rt, sources) {
+    const root = path.resolve(rt.project.dir);
+    const contains = (parent, child) => {
+        const rel = path.relative(parent, child);
+        return !rel || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    };
+    const added = [];
+    const skipped = [];
+    for (const raw of sources || []) {
+        const src = path.resolve(String(raw || ''));
+        let st;
+        try {
+            st = fs.statSync(src);
+        } catch (e) {
+            continue;
+        }
+        // Projenin kendi dosyası (ör. uygulamadan sürüklenip geri bırakılan) ya da projeyi içeren klasör
+        if (contains(root, src) || contains(src, root)) {
+            skipped.push(path.basename(src));
+            continue;
+        }
+        const target = uniqueTarget(root, path.basename(src));
+        try {
+            if (st.isDirectory()) fs.cpSync(src, target, { recursive: true, errorOnExist: true, force: false });
+            else fs.copyFileSync(src, target, fs.constants.COPYFILE_EXCL);
+            added.push(path.basename(target));
+        } catch (e) {
+            skipped.push(path.basename(src));
+        }
+    }
+    if (added.length) scheduleSnapshot(rt);
+    return { added, skipped };
+}
+
+function registerUxIpc() {
+    // Yerel sağ tık menüsü. Seçilen eylem burada yapılır; arayüzü ilgilendirenler geri döndürülür.
+    handle('file:menu', (id, rel, opts = {}) => {
+        const rt = rtOf(id);
+        const old = !!(opts.oid && opts.oid !== 'working');
+        const gone = !!opts.deleted;
+        return new Promise(resolve => {
+            let done = false;
+            const pick = action => () => {
+                if (done) return;
+                done = true;
+                resolve(action);
+            };
+            const template = old
+                ? [
+                      { label: T('fx.openVersion'), click: pick('openVersion'), enabled: !gone },
+                      { label: T('fx.copyVersion'), click: pick('copyVersion'), enabled: !gone },
+                      { type: 'separator' },
+                      { label: T('fx.showHistory'), click: pick('history') }
+                  ]
+                : [
+                      { label: T('fx.open'), click: pick('open'), enabled: !gone },
+                      { label: T('fx.reveal'), click: pick('reveal'), enabled: !gone },
+                      { type: 'separator' },
+                      { label: T('fx.copyFile'), click: pick('copyFile'), enabled: !gone },
+                      { label: T('fx.copyPath'), click: pick('copyPath') },
+                      { type: 'separator' },
+                      { label: T('fx.showHistory'), click: pick('history') }
+                  ];
+            Menu.buildFromTemplate(template).popup({
+                window: mainWindow,
+                callback: () => setTimeout(pick(null), 80)
+            });
+        }).then(async action => {
+            if (!action) return null;
+            if (action === 'open') {
+                const err = await shell.openPath(absOf(rt, rel));
+                if (err) throw new Error(err);
+            } else if (action === 'reveal') {
+                shell.showItemInFolder(absOf(rt, rel));
+            } else if (action === 'copyFile') {
+                return { action, how: await copyFileToClipboard(absOf(rt, rel)) };
+            } else if (action === 'copyPath') {
+                clipboard.writeText(absOf(rt, rel));
+            } else if (action === 'copyVersion') {
+                return { action, how: await copyFileToClipboard(await versionTempFile(id, rel, opts.oid)) };
+            }
+            return { action };
+        });
+    });
+
+    handle('file:copyToClipboard', async (id, rel, oid) => {
+        const file = oid && oid !== 'working' ? await versionTempFile(id, rel, oid) : absOf(rtOf(id), rel);
+        return copyFileToClipboard(file);
+    });
+
+    // Eski sürümü sürüklemeden önce geçici dosyayı hazırla (startDrag beklemeden çağrılmalı)
+    handle('file:prepareDrag', async (id, rel, oid) => {
+        if (oid && oid !== 'working') await versionTempFile(id, rel, oid);
+        return true;
+    });
+
+    ipcMain.on('file:dragStart', async (event, { id, rel, oid } = {}) => {
+        try {
+            const file = oid && oid !== 'working' ? await versionTempFile(id, rel, oid) : absOf(rtOf(id), rel);
+            if (!fs.existsSync(file)) return;
+            event.sender.startDrag({ file, icon: dragIconImage() });
+        } catch (e) {}
+    });
+
+    handle('files:add', async id => {
+        const rt = rtOf(id);
+        const r = await dialog.showOpenDialog(mainWindow, {
+            title: T('fx.addDialog', { name: recordOf(id).name }),
+            properties: ['openFile', 'multiSelections'],
+            buttonLabel: T('fx.addBtn')
+        });
+        if (r.canceled || !r.filePaths.length) return null;
+        return copyIntoProject(rt, r.filePaths);
+    });
+
+    handle('files:import', (id, paths) => copyIntoProject(rtOf(id), Array.isArray(paths) ? paths : []));
+
+    // GitHub'dan proje aç: Belgeler/DraftRewind/<depo> içine indir, ayrı gitdir ile kaydet
+    handle('project:importGithub', async input => {
+        const importer = require('./core/importer');
+        if (!importer.parseRepo(input)) throw new Error(T('imp.errBadLink'));
+        let token = null;
+        try { token = await freshGithubToken(); } catch (e) { token = githubToken(); }
+        const id = crypto.randomBytes(6).toString('hex');
+        const gitdir = path.join(app.getPath('userData'), 'depolar', `${id}.git`);
+        let last = 0;
+        const res = await importer.cloneFromGithub({
+            input,
+            baseDir: path.join(app.getPath('documents'), 'DraftRewind'),
+            gitdir,
+            token,
+            onProgress: p => {
+                const now = Date.now();
+                if (now - last < 120 && p.total && p.loaded < p.total) return;
+                last = now;
+                emit('importProgress', p);
+            }
+        });
+        const record = { id, name: res.repo, dir: res.dir, createdAt: Date.now() };
+        store.set('projects', [...projects(), record]);
+        store.set('activeId', id);
+        const rt = await startProject(record);
+        syncDrive(rt, 'star');
+        return { id, name: record.name, dir: res.dir };
+    });
+
+    // Telefonu QR ile eşle: jeton yalnızca QR içinde, 3 dakika geçerli (asla günlüğe yazılmaz)
+    handle('phone:pairQr', async () => {
+        const token = await freshGithubToken();
+        const user = store.get('githubUser');
+        if (!token || !user || !user.login) throw new Error(T('qr.needGithub'));
+        const expiresAt = Date.now() + 3 * 60 * 1000;
+        const d = Buffer.from(JSON.stringify({ t: token, l: user.login, e: expiresAt }), 'utf8')
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+        const dataUrl = await require('qrcode').toDataURL(`draftrewind://pair?v=1&d=${d}`, { margin: 1, width: 320 });
+        return { dataUrl, expiresAt };
+    });
 }
 
 function setupDriveApi() {
@@ -978,6 +1259,8 @@ app.whenReady().then(async () => {
     createWindow();
     createTray();
     applyAutostart();
+    // Ücretsiz GitHub sürümü kendini günceller (Store sürümü ve geliştirme modu hariç)
+    require('./core/updater').init({ app, emit, icon: iconPath() });
 
     for (const record of projects()) {
         startProject(record).catch(e => console.warn('[DraftRewind] Proje açılamadı:', record.name, e.message));

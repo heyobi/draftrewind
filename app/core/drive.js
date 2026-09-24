@@ -14,6 +14,8 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { Readable, Transform } = require('stream');
+const { pipeline } = require('stream/promises');
 const config = require('./config');
 
 const ROOT_NAME = 'DraftRewind';
@@ -33,6 +35,50 @@ const MIME = {
 const IGNORE = /^(~\$|~wrl|\.~lock\.|desktop\.ini$|thumbs\.db$|\.)/i;
 
 const md5 = buf => crypto.createHash('md5').update(buf).digest('hex');
+
+// Çok büyük dosyalar (ör. 10 GB uydu görüntüsü) belleğe alınmaz: md5 diskten akışla hesaplanır.
+function md5File(abs) {
+    return new Promise((resolve, reject) => {
+        const h = crypto.createHash('md5');
+        const s = fs.createReadStream(abs, { highWaterMark: 1024 * 1024 });
+        s.on('data', d => h.update(d));
+        s.on('error', reject);
+        s.on('end', () => resolve(h.digest('hex')));
+    });
+}
+
+const isBig = size => size > config.DRIVE_STREAM_BYTES;
+
+// md5, değişiklik zamanı + boyutla önbelleklenir. Küçük dosyalar eskisi gibi tek seferde okunur.
+async function cachedMd5(abs, st, cache, key) {
+    const c = cache[key];
+    if (c && c.m === st.mtimeMs && c.s === st.size) return c.md5;
+    const sum = isBig(st.size) ? await md5File(abs) : md5(fs.readFileSync(abs));
+    cache[key] = { m: st.mtimeMs, s: st.size, md5: sum };
+    return sum;
+}
+
+// Aynı klasörde gizli geçici dosya (".ad.xxxx.draftrewind.tmp"): ne motor ne de Drive listesi bunu görür.
+function tempBeside(abs) {
+    return path.join(path.dirname(abs), `.${path.basename(abs)}.${crypto.randomBytes(4).toString('hex')}.draftrewind.tmp`);
+}
+
+// Büyük dosyayı diskten diske kopyalar (önce geçici dosyaya, sonra yeniden adlandırma: yarım dosya görünmez).
+async function copyAtomic(src, dst) {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    const tmp = tempBeside(dst);
+    try {
+        await fs.promises.copyFile(src, tmp);
+        fs.renameSync(tmp, dst);
+    } catch (e) {
+        try { fs.unlinkSync(tmp); } catch (err) {}
+        throw e;
+    }
+}
+
+// Klasör modunda Drive klasöründeki dosyaların md5 önbelleği (tam yol → { m, s, md5 }).
+// Her eşitlemede yeni FolderRemote oluşturulduğu için modül düzeyinde tutulur.
+const folderMd5Cache = {};
 
 function safeName(s) {
     return String(s).replace(/[<>:"/\\|?*]/g, '-').trim();
@@ -104,7 +150,7 @@ function detectFoldersNow() {
 class FolderRemote {
     constructor(root) {
         this.root = root;
-        this.md5Cache = {};
+        this.md5Cache = folderMd5Cache;
     }
 
     // Projeye ait klasörü bul/oluştur. Aynı isimde başka projenin klasörü varsa "(2)" ekle.
@@ -138,7 +184,7 @@ class FolderRemote {
 
     async list() {
         const out = new Map();
-        const walk = (abs, rel) => {
+        const walk = async (abs, rel) => {
             let entries = [];
             try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch (e) { return; }
             for (const e of entries) {
@@ -146,24 +192,19 @@ class FolderRemote {
                 const r = rel ? `${rel}/${e.name}` : e.name;
                 if (e.isDirectory()) {
                     if (!rel && e.name === VERSIONS) continue;
-                    walk(path.join(abs, e.name), r);
+                    await walk(path.join(abs, e.name), r);
                 } else if (e.isFile()) {
                     const full = path.join(abs, e.name);
                     try {
                         const st = fs.statSync(full);
-                        if (st.size > config.MAX_FILE_BYTES) continue;
-                        const c = this.md5Cache[r];
-                        let sum = c && c.m === st.mtimeMs && c.s === st.size ? c.md5 : null;
-                        if (!sum) {
-                            sum = md5(fs.readFileSync(full));
-                            this.md5Cache[r] = { m: st.mtimeMs, s: st.size, md5: sum };
-                        }
-                        out.set(r, { md5: sum });
+                        // Büyük dosyalar da dahil (Drive'da "en son hali" yedeklenir); md5 akışla hesaplanır
+                        const sum = await cachedMd5(full, st, this.md5Cache, full);
+                        out.set(r, { md5: sum, size: st.size });
                     } catch (err) {}
                 }
             }
         };
-        walk(this.dir, '');
+        await walk(this.dir, '');
         return out;
     }
 
@@ -179,6 +220,33 @@ class FolderRemote {
         fs.mkdirSync(path.dirname(this.abs(rel)), { recursive: true });
         fs.writeFileSync(this.abs(rel), buf);
         return md5(buf);
+    }
+
+    // --- Büyük dosyalar: belleğe almadan, diskten diske ---
+    async writeFrom(rel, src, sum) {
+        const dst = this.abs(rel);
+        await copyAtomic(src, dst);
+        const st = fs.statSync(dst);
+        const got = sum || (await md5File(dst));
+        this.md5Cache[dst] = { m: st.mtimeMs, s: st.size, md5: got };
+        return got;
+    }
+
+    async readTo(rel, dst) {
+        const src = this.abs(rel);
+        const sum = await cachedMd5(src, fs.statSync(src), this.md5Cache, src);
+        await fs.promises.copyFile(src, dst);
+        return sum;
+    }
+
+    async duplicate(rel, alt) {
+        const src = this.abs(rel);
+        return this.writeFrom(alt, src, await cachedMd5(src, fs.statSync(src), this.md5Cache, src));
+    }
+
+    async versionFrom(rel, src, kind) {
+        const vDir = path.join(this.dir, VERSIONS, ...rel.split('/').slice(0, -1));
+        await copyAtomic(src, path.join(vDir, versionName(rel, kind)));
     }
 
     async archive(rel) {
@@ -314,7 +382,7 @@ class DriveApi {
         return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
-    async query(q, fields = 'files(id,name,mimeType,md5Checksum,parents,webViewLink,appProperties)') {
+    async query(q, fields = 'files(id,name,mimeType,md5Checksum,size,parents,webViewLink,appProperties,createdTime)') {
         const out = [];
         let pageToken = '';
         do {
@@ -334,6 +402,9 @@ class DriveApi {
 
     async upload({ id, name, parentId, buf }) {
         const mime = MIME[path.extname(name).toLowerCase()] || 'application/octet-stream';
+        if (buf.length > config.DRIVE_RESUMABLE_BYTES) {
+            return this.uploadResumable({ id, name, parentId, size: buf.length, readChunk: async (off, len) => buf.subarray(off, off + len) });
+        }
         if (id) {
             return this.req('PATCH', `https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=media&fields=id,md5Checksum`, {
                 headers: { 'Content-Type': mime },
@@ -352,6 +423,121 @@ class DriveApi {
             body
         });
     }
+
+    // Diskteki dosyayı parça parça yükler (dosyanın tamamı asla belleğe alınmaz).
+    async uploadFile({ id, name, parentId, file }) {
+        const fh = await fs.promises.open(file, 'r');
+        try {
+            const size = (await fh.stat()).size;
+            const readChunk = async (off, len) => {
+                const buf = Buffer.allocUnsafe(len);
+                let got = 0;
+                while (got < len) {
+                    const { bytesRead } = await fh.read(buf, got, len - got, off + got);
+                    if (!bytesRead) break;
+                    got += bytesRead;
+                }
+                return got === len ? buf : buf.subarray(0, got);
+            };
+            if (size <= config.DRIVE_RESUMABLE_BYTES) return await this.upload({ id, name, parentId, buf: await readChunk(0, size) });
+            return await this.uploadResumable({ id, name, parentId, size, readChunk });
+        } finally {
+            await fh.close();
+        }
+    }
+
+    // Drive "resumable upload": oturum açılır, dosya 8 MB'lık (256 KB katı) parçalarla PUT edilir.
+    // Bağlantı koparsa sunucuya kaç bayt ulaştığı sorulur ve oradan devam edilir.
+    async uploadResumable({ id, name, parentId, size, readChunk }) {
+        const mime = MIME[path.extname(name).toLowerCase()] || 'application/octet-stream';
+        const start = async () => {
+            const tk = await this.token();
+            const url = id
+                ? `https://www.googleapis.com/upload/drive/v3/files/${id}?uploadType=resumable&fields=id,md5Checksum`
+                : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,md5Checksum';
+            const r = await fetch(url, {
+                method: id ? 'PATCH' : 'POST',
+                headers: {
+                    Authorization: `Bearer ${tk}`,
+                    'Content-Type': 'application/json; charset=UTF-8',
+                    'X-Upload-Content-Type': mime,
+                    'X-Upload-Content-Length': String(size)
+                },
+                body: JSON.stringify(id ? {} : { name, parents: [parentId] })
+            });
+            const loc = r.ok && r.headers.get('location');
+            if (!loc) throw new Error(T('err.driveHttp', { status: r.status }));
+            return loc;
+        };
+        const put = async (session, headers, body) => {
+            const tk = await this.token();
+            try {
+                return await fetch(session, { method: 'PUT', headers: { Authorization: `Bearer ${tk}`, ...headers }, body });
+            } catch (e) {
+                return null; // ağ hatası: aşağıda tekrar denenir
+            }
+        };
+        const nextOffset = r => {
+            const m = (r.headers.get('range') || '').match(/bytes=\d+-(\d+)/);
+            return m ? Number(m[1]) + 1 : 0;
+        };
+        const unit = 256 * 1024;
+        const chunkSize = Math.max(unit, Math.floor(config.DRIVE_CHUNK_BYTES / unit) * unit);
+        const status = `bytes */${size}`;
+        let session = await start();
+        let offset = 0;
+        let failures = 0;
+        let restarts = 0;
+        for (;;) {
+            let r;
+            if (offset < size) {
+                const len = Math.min(chunkSize, size - offset);
+                const body = await readChunk(offset, len);
+                if (body.length !== len) throw new Error(T('err.driveHttp', { status: 'EOF' }));
+                r = await put(session, { 'Content-Range': `bytes ${offset}-${offset + len - 1}/${size}` }, body);
+            } else {
+                r = await put(session, { 'Content-Range': status }, Buffer.alloc(0));
+            }
+            if (r && (r.status === 200 || r.status === 201)) return r.json();
+            if (r && r.status === 308) {
+                offset = nextOffset(r);
+                failures = 0;
+                continue;
+            }
+            if (r && (r.status === 404 || r.status === 410)) {
+                // Yükleme oturumunun süresi dolmuş: yeni oturumla baştan
+                if (++restarts > 2) throw new Error(T('err.driveHttp', { status: r.status }));
+                session = await start();
+                offset = 0;
+                continue;
+            }
+            if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+                throw new Error(T('err.driveHttp', { status: r.status }));
+            }
+            // Ağ hatası / 5xx / 429: bekle, sunucuya ne kadarının ulaştığını sor, oradan devam et
+            if (++failures > 6) throw new Error(T('err.driveHttp', { status: r ? r.status : 'network' }));
+            await new Promise(res => setTimeout(res, Math.min(1000 * 2 ** failures, 30000) * (this.retryScale ?? 1)));
+            const q = await put(session, { 'Content-Range': status }, Buffer.alloc(0));
+            if (q && (q.status === 200 || q.status === 201)) return q.json();
+            if (q && q.status === 308) offset = nextOffset(q);
+        }
+    }
+
+    // İndirmeyi belleğe almadan doğrudan diske akıtır (md5 yol üstünde hesaplanır).
+    async downloadTo(fileId, dst) {
+        const tk = await this.token();
+        const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { headers: { Authorization: `Bearer ${tk}` } });
+        if (!r.ok || !r.body) throw new Error(T('err.driveHttp', { status: r.status }));
+        const h = crypto.createHash('md5');
+        const hasher = new Transform({
+            transform(chunk, enc, cb) {
+                h.update(chunk);
+                cb(null, chunk);
+            }
+        });
+        await pipeline(Readable.fromWeb(r.body), hasher, fs.createWriteStream(dst));
+        return h.digest('hex');
+    }
 }
 
 class ApiRemote {
@@ -361,20 +547,45 @@ class ApiRemote {
         this.dirs = new Map(); // rel dir ('' = proje kökü) → id
     }
 
-    async rootFolder() {
-        const found = await this.api.query(`mimeType='${FOLDER_MIME}' and trashed=false and name='${ROOT_NAME}' and 'root' in parents`);
-        return found[0] || (await this.api.createFolder(ROOT_NAME, null));
+    // Kök "DraftRewind" klasörü. Aynı anda eşitlenen projeler iki kök oluşturmasın diye tek istek
+    // paylaşılır; birden fazla varsa en eskisi kullanılır.
+    rootFolder() {
+        if (!this.api._rootPromise) {
+            const p = (async () => {
+                const found = await this.api.query(`mimeType='${FOLDER_MIME}' and trashed=false and name='${ROOT_NAME}' and 'root' in parents`);
+                found.sort((a, b) => String(a.createdTime || '').localeCompare(String(b.createdTime || '')));
+                return found[0] || (await this.api.createFolder(ROOT_NAME, null));
+            })();
+            this.api._rootPromise = p;
+            p.catch(() => {
+                if (this.api._rootPromise === p) this.api._rootPromise = null;
+            });
+        }
+        return this.api._rootPromise;
     }
 
     // Projeye ait klasör: önce kayıtlı kimlik, sonra proje kimliği etiketi; yoksa benzersiz adla oluştur.
+    // Ağ/izin hatasında istisna fırlatır: bu durumda asla yeni klasör oluşturulmaz.
     async prepare(project, record) {
         let folder = null;
         if (record.driveFolderId) {
-            folder = await this.api.req('GET', `https://www.googleapis.com/drive/v3/files/${record.driveFolderId}?fields=id,name,trashed,webViewLink`);
-            if (folder && folder.trashed) folder = null;
+            folder = await this.api.req('GET', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(record.driveFolderId)}?fields=id,name,mimeType,trashed,webViewLink,appProperties`);
+            if (folder && (folder.trashed || (folder.mimeType && folder.mimeType !== FOLDER_MIME))) folder = null;
+            if (folder && (!folder.appProperties || folder.appProperties.draftrewindId !== project.id)) {
+                // Etiketsiz klasör: etiketle ki kayıtlı kimlik kaybolsa da yedek yolla bulunabilsin
+                try {
+                    await this.api.req('PATCH', `https://www.googleapis.com/drive/v3/files/${folder.id}?fields=id`, {
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ appProperties: { draftrewindId: project.id } })
+                    });
+                } catch (e) {}
+            }
         }
         if (!folder) {
+            // Yedek yol: proje kimliği etiketi (yarıda kalmış bir ilk eşitlemenin klasörü de böyle bulunur).
+            // Birden fazla varsa en eskisi.
             const tagged = await this.api.query(`mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='draftrewindId' and value='${this.api.esc(project.id)}' }`);
+            tagged.sort((a, b) => String(a.createdTime || '').localeCompare(String(b.createdTime || '')));
             folder = tagged[0] || null;
         }
         if (!folder) {
@@ -410,7 +621,7 @@ class ApiRemote {
                 } else if (f.md5Checksum) {
                     // Google Dokümanlar biçimindeki dosyaların md5'i yok; bunlar bizim değil, atla
                     this.files.set(r, { id: f.id, md5: f.md5Checksum, parent: id });
-                    out.set(r, { md5: f.md5Checksum });
+                    out.set(r, { md5: f.md5Checksum, size: Number(f.size) || 0 });
                 }
             }
         }
@@ -440,6 +651,39 @@ class ApiRemote {
         });
         this.files.set(rel, { id: r.id, md5: r.md5Checksum, parent: existing && existing.parent });
         return r.md5Checksum || md5(buf);
+    }
+
+    // --- Büyük dosyalar: diskten parça parça yükleme, doğrudan diske indirme ---
+    async writeFrom(rel, src) {
+        const existing = this.files.get(rel);
+        const r = await this.api.uploadFile({
+            id: existing && existing.id,
+            name: rel.split('/').pop(),
+            parentId: await this.dirId(rel.split('/').slice(0, -1).join('/')),
+            file: src
+        });
+        this.files.set(rel, { id: r.id, md5: r.md5Checksum, parent: existing && existing.parent });
+        return r.md5Checksum || (await md5File(src));
+    }
+
+    async readTo(rel, dst) {
+        return this.api.downloadTo(this.files.get(rel).id, dst);
+    }
+
+    // Sunucu tarafında kopya: büyük dosya yeniden yüklenmez
+    async duplicate(rel, alt) {
+        const f = this.files.get(rel);
+        const parentId = await this.dirId(alt.split('/').slice(0, -1).join('/'));
+        const r = await this.api.req('POST', `https://www.googleapis.com/drive/v3/files/${f.id}/copy?fields=id,md5Checksum`, {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: alt.split('/').pop(), parents: [parentId] })
+        });
+        this.files.set(alt, { id: r.id, md5: r.md5Checksum, parent: parentId });
+        return r.md5Checksum || f.md5;
+    }
+
+    async versionFrom(rel, src, kind) {
+        await this.api.uploadFile({ name: versionName(rel, kind), parentId: await this.versionDir(rel), file: src });
     }
 
     async versionDir(rel) {
@@ -479,8 +723,11 @@ function shouldVersion(state, rel, kind) {
 async function reconcile(project, remote, state, kind = 'auto') {
     state.base = state.base || {};
     project.md5Cache = project.md5Cache || {};
+    // Büyük dosyaların md5'i kalıcı saklanır: uygulama yeniden açılınca 10 GB yeniden okunmasın
+    for (const [rel, c] of Object.entries(state.bigMd5 || {})) if (!project.md5Cache[rel]) project.md5Cache[rel] = c;
     const base = state.base;
-    const localFiles = project.scanWorkingFiles();
+    // Geçmişe girmeyen büyük dosyalar da Drive'a "en son hali" olarak yedeklenir
+    const localFiles = project.scanWorkingFiles({ includeLarge: true });
     const local = new Map();
     for (const [rel, f] of localFiles) {
         const c = project.md5Cache[rel];
@@ -489,7 +736,7 @@ async function reconcile(project, remote, state, kind = 'auto') {
             continue;
         }
         try {
-            const sum = md5(fs.readFileSync(f.abs));
+            const sum = isBig(f.size) ? await md5File(f.abs) : md5(fs.readFileSync(f.abs));
             project.md5Cache[rel] = { m: f.mtimeMs, s: f.size, md5: sum };
             local.set(rel, sum);
         } catch (e) {
@@ -497,10 +744,59 @@ async function reconcile(project, remote, state, kind = 'auto') {
             if (base[rel]) local.set(rel, base[rel]);
         }
     }
+    state.bigMd5 = {};
+    for (const [rel, f] of localFiles) {
+        const c = project.md5Cache[rel];
+        if (isBig(f.size) && c) state.bigMd5[rel] = c;
+    }
+    if (!Object.keys(state.bigMd5).length) delete state.bigMd5;
     const remoteFiles = await remote.list();
     const result = { uploaded: [], downloaded: [], conflicts: [], archived: [] };
     const localAbs = rel => path.join(project.dir, ...rel.split('/'));
     const readLocal = rel => fs.readFileSync(localAbs(rel));
+    const localSize = rel => {
+        try {
+            return fs.statSync(localAbs(rel)).size;
+        } catch (e) {
+            return 0;
+        }
+    };
+    const remoteSize = rel => (remoteFiles.get(rel) || {}).size || 0;
+    const bigPath = remote => typeof remote.writeFrom === 'function';
+    // Büyük dosyayı diske indir: geçici dosyaya, sonra yerine (açık/kilitliyse "(Drive'dan)" kopyası)
+    const downloadBig = async (rel, target) => {
+        const dst = localAbs(target);
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        const tmp = tempBeside(dst);
+        let sum;
+        try {
+            sum = await remote.readTo(rel, tmp);
+        } catch (e) {
+            try { fs.unlinkSync(tmp); } catch (err) {}
+            throw e;
+        }
+        const remember = (r, abs) => {
+            try {
+                const st = fs.statSync(abs);
+                project.md5Cache[r] = { m: st.mtimeMs, s: st.size, md5: sum };
+            } catch (e) {}
+        };
+        try {
+            fs.renameSync(tmp, dst);
+            remember(target, dst);
+            return { written: target, sum };
+        } catch (e) {
+            const alt = copyName(target, "Drive'dan");
+            try {
+                fs.renameSync(tmp, localAbs(alt));
+                remember(alt, localAbs(alt));
+            } catch (err) {
+                try { fs.unlinkSync(tmp); } catch (x) {}
+                throw err;
+            }
+            return { written: alt, sum };
+        }
+    };
     const writeLocal = (rel, buf) => {
         fs.mkdirSync(path.dirname(localAbs(rel)), { recursive: true });
         try {
@@ -514,15 +810,35 @@ async function reconcile(project, remote, state, kind = 'auto') {
         }
     };
     const upload = async (rel, versionKind) => {
+        const size = localSize(rel);
+        if (isBig(size) && bigPath(remote)) {
+            base[rel] = await remote.writeFrom(rel, localAbs(rel), local.get(rel));
+            // Çok büyük dosyaların sürüm kopyası tutulmaz (yalnızca en son hali)
+            if (versionKind && size <= config.DRIVE_VERSION_MAX_BYTES && shouldVersion(state, rel, versionKind)) await remote.versionFrom(rel, localAbs(rel), versionKind);
+            result.uploaded.push(rel);
+            return;
+        }
         const buf = readLocal(rel);
         base[rel] = await remote.write(rel, buf);
         if (versionKind && shouldVersion(state, rel, versionKind)) await remote.version(rel, buf, versionKind);
         result.uploaded.push(rel);
     };
     const download = async rel => {
+        if (isBig(remoteSize(rel)) && bigPath(remote)) {
+            const { written, sum } = await downloadBig(rel, rel);
+            base[rel] = sum;
+            if (written !== rel) result.conflicts.push(written);
+            result.downloaded.push(written);
+            return;
+        }
         const buf = await remote.read(rel);
         const written = writeLocal(rel, buf);
         base[rel] = md5(buf);
+        try {
+            // Dosya bazlı yedek durumu hemen "Drive'da" görünsün
+            const st = fs.statSync(localAbs(written));
+            project.md5Cache[written] = { m: st.mtimeMs, s: st.size, md5: base[rel] };
+        } catch (e) {}
         if (written !== rel) result.conflicts.push(written);
         result.downloaded.push(written);
     };
@@ -557,9 +873,14 @@ async function reconcile(project, remote, state, kind = 'auto') {
             } else {
                 // İki tarafta da değişmiş (veya ilk eşitleme): hiçbirini ezme
                 const alt = copyName(rel, "Drive'dan");
-                const buf = await remote.read(rel);
-                writeLocal(alt, buf);
-                base[alt] = await remote.write(alt, buf);
+                if (isBig(remoteSize(rel)) && bigPath(remote)) {
+                    await downloadBig(rel, alt);
+                    base[alt] = await remote.duplicate(rel, alt);
+                } else {
+                    const buf = await remote.read(rel);
+                    writeLocal(alt, buf);
+                    base[alt] = await remote.write(alt, buf);
+                }
                 await upload(rel, kind);
                 result.conflicts.push(alt);
             }
@@ -570,4 +891,4 @@ async function reconcile(project, remote, state, kind = 'auto') {
     return result;
 }
 
-module.exports = { detectFolders, signIn, DriveApi, ApiRemote, FolderRemote, reconcile };
+module.exports = { detectFolders, signIn, DriveApi, ApiRemote, FolderRemote, reconcile, md5File };

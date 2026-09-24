@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const call = (channel, ...args) =>
     ipcRenderer.invoke(channel, ...args).then(r => {
@@ -28,7 +28,26 @@ contextBridge.exposeInMainWorld('av', {
         importEdited: (id, file, rel) => call('project:importEdited', id, file, rel),
         openFolder: id => call('project:openFolder', id),
         openFile: (id, rel) => call('file:open', id, rel),
-        revealFile: (id, rel) => call('file:reveal', id, rel)
+        revealFile: (id, rel) => call('file:reveal', id, rel),
+        importGithub: input => call('project:importGithub', input)
+    },
+
+    files: {
+        // opts: { oid, deleted } → seçilen eylem ({ action, how }) ya da null
+        menu: (id, rel, opts) => call('file:menu', id, rel, opts),
+        copyToClipboard: (id, rel, oid) => call('file:copyToClipboard', id, rel, oid),
+        prepareDrag: (id, rel, oid) => call('file:prepareDrag', id, rel, oid),
+        startDrag: (id, rel, oid) => ipcRenderer.send('file:dragStart', { id, rel, oid }),
+        add: id => call('files:add', id),
+        importPaths: (id, paths) => call('files:import', id, paths),
+        // Electron ≥32: File.path yok; sandbox'ta yol webUtils ile alınır
+        pathOf: file => {
+            try { return webUtils.getPathForFile(file) || null; } catch (e) { return null; }
+        }
+    },
+
+    phone: {
+        pairQr: () => call('phone:pairQr')
     },
 
     github: {
