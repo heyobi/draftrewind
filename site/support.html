@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DraftRewind — Support</title>
+<link rel="icon" href="img/icon.png">
+<style>
+  :root { --bg:#f6f5ff; --surface:#fff; --text:#1c1a33; --text2:#5b5875; --border:#e6e4f4; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f0f17; --surface:#1a1928; --text:#eeedfb; --text2:#b1afca; --border:#2a2940; } }
+  body { margin:0; font-family:"Segoe UI",system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); line-height:1.6; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 20px 60px; }
+  a { color:#6c5cff; } h1 { letter-spacing:-.02em; }
+  .top { display:flex; justify-content:space-between; align-items:center; }
+  .lang { border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:5px 12px; cursor:pointer; font-weight:600; font-size:13px; }
+  details { border-bottom:1px solid var(--border); padding: 12px 0; } summary { cursor:pointer; font-weight:700; } details p { color: var(--text2); margin: 8px 0 0; }
+  .box { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:18px; margin: 20px 0; }
+  [data-tr] { display:none; } html[lang="tr"] [data-tr] { display:revert; } html[lang="tr"] [data-en] { display:none; }
+</style>
+</head>
+<body><div class="wrap">
+  <div class="top"><a href="index.html">← DraftRewind</a><button class="lang" id="lang">TR</button></div>
+  <h1 data-en>Support</h1><h1 data-tr>Destek</h1>
+  <div class="box">
+    <p data-en>Email <a href="mailto:support@draftrewind.com">support@draftrewind.com</a> — usually answered within a day. Bugs and feature requests are also welcome on <a href="https://github.com/heyobi/draftrewind/issues">GitHub Issues</a>.</p>
+    <p data-tr><a href="mailto:support@draftrewind.com">support@draftrewind.com</a> adresine yaz; genelde bir gün içinde yanıtlanır. Hata ve öneriler için <a href="https://github.com/heyobi/draftrewind/issues">GitHub Issues</a> da açık.</p>
+  </div>
+
+  <div data-en>
+    <details><summary>The phone app shows no projects</summary><p>The phone reads from your GitHub backup. On the computer open Cloud &amp; Phone, connect GitHub and wait for the first upload; then sign in on the phone with the same GitHub account (or pair with the QR code).</p></details>
+    <details><summary>A file I saved a minute ago is not in the history yet</summary><p>Snapshots are taken a few seconds after a save, at most once every three minutes per project. The pending change is shown at the top of Time Machine as "Current changes"; press Ctrl+S to snapshot it right away.</p></details>
+    <details><summary>I edited a file on two computers</summary><p>Nothing is lost: the version from the other computer is placed next to yours with "(diğer cihazdan)" in the name. Keep the one you want and delete the other.</p></details>
+    <details><summary>Windows says the installer is from an unknown publisher</summary><p>The free edition is not code-signed yet. Click "More info" → "Run anyway", or install from the Microsoft Store.</p></details>
+    <details><summary>How do I move a project to a new folder?</summary><p>Move the folder, then Settings → "Moved your folder?" and point DraftRewind to the new location. The history follows.</p></details>
+    <details><summary>How do I delete everything?</summary><p>Uninstall the app and delete <code>%APPDATA%\DraftRewind</code>. Your documents stay where they are. Delete the private repository in your GitHub account and the DraftRewind folder in Google Drive if you used them.</p></details>
+  </div>
+  <div data-tr>
+    <details><summary>Telefon uygulamasında proje görünmüyor</summary><p>Telefon, GitHub yedeğinden okur. Bilgisayarda Bulut &amp; Telefon sekmesinden GitHub'ı bağla, ilk yüklemeyi bekle; sonra telefonda aynı GitHub hesabıyla giriş yap (ya da QR ile eşle).</p></details>
+    <details><summary>Bir dakika önce kaydettiğim dosya geçmişte yok</summary><p>Kayıt noktaları kaydetmeden birkaç saniye sonra, projede en fazla üç dakikada bir alınır. Bekleyen değişiklik Zaman Makinesi'nin en üstünde "Şu anki değişiklikler" olarak görünür; hemen kayıt için Ctrl+S.</p></details>
+    <details><summary>Aynı dosyayı iki bilgisayarda düzenledim</summary><p>Hiçbir şey kaybolmaz: diğer bilgisayardaki sürüm, adında "(diğer cihazdan)" ile seninkinin yanına konur. İstediğini tut, diğerini sil.</p></details>
+    <details><summary>Windows "bilinmeyen yayımcı" uyarısı veriyor</summary><p>Ücretsiz sürüm henüz kod imzalı değil. "Daha fazla bilgi" → "Yine de çalıştır" de ya da Microsoft Store'dan kur.</p></details>
+    <details><summary>Projeyi başka klasöre taşıdım</summary><p>Klasörü taşı, sonra Ayarlar → "Klasör taşındı mı?" ile yeni yeri göster. Geçmiş seninle gelir.</p></details>
+    <details><summary>Her şeyi nasıl silerim?</summary><p>Uygulamayı kaldır ve <code>%APPDATA%\DraftRewind</code> klasörünü sil. Belgelerin yerinde kalır. Kullandıysan GitHub hesabındaki özel depoyu ve Google Drive'daki DraftRewind klasörünü sil.</p></details>
+  </div>
+</div>
+<script>
+  const html=document.documentElement,btn=document.getElementById('lang');
+  const apply=l=>{html.lang=l;btn.textContent=l==='tr'?'EN':'TR';localStorage.setItem('lang',l);};
+  apply(localStorage.getItem('lang')||((navigator.language||'').toLowerCase().startsWith('tr')?'tr':'en'));
+  btn.onclick=()=>apply(html.lang==='tr'?'en':'tr');
+</script>
+</body></html>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DraftRewind — Never lose a draft</title>
+<meta name="description" content="DraftRewind quietly keeps every version of your thesis, homework or paper. No Git, no setup. Windows app free on GitHub; iPhone companion on the App Store.">
+<meta property="og:title" content="DraftRewind — Never lose a draft. Rewind anytime.">
+<meta property="og:description" content="Automatic version history for your thesis folder. Unsaved Word documents rescued. Private backup to your own GitHub and Google Drive.">
+<meta property="og:image" content="https://draftrewind.com/img/overview.png">
+<link rel="icon" href="img/icon.png">
+<style>
+  :root { --bg:#f6f5ff; --surface:#fff; --text:#1c1a33; --text2:#5b5875; --text3:#908daa; --accent:#6c5cff; --accent2:#ec62be; --border:#e6e4f4; --radius:18px; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f0f17; --surface:#1a1928; --text:#eeedfb; --text2:#b1afca; --text3:#7c7a98; --border:#2a2940; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--text); line-height:1.55; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:18px 0; }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:800; font-size:18px; text-decoration:none; color:var(--text); }
+  .brand img { width:30px; height:30px; border-radius:8px; }
+  nav a { margin-left:18px; text-decoration:none; color:var(--text2); font-weight:600; font-size:14px; }
+  .lang { border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:5px 12px; cursor:pointer; font-weight:600; font-size:13px; color:var(--text2); }
+  .hero { padding: 56px 0 28px; text-align:center; }
+  .hero h1 { font-size: clamp(32px, 5vw, 52px); line-height:1.1; margin:0 0 14px; letter-spacing:-.02em; }
+  .hero h1 span { background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .hero p { font-size: 18px; color: var(--text2); max-width: 640px; margin: 0 auto 26px; }
+  .cta { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .btn { display:inline-flex; align-items:center; gap:8px; padding:13px 20px; border-radius:14px; font-weight:700; text-decoration:none; border:1px solid var(--border); background:var(--surface); color:var(--text); }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color:#fff; border:0; box-shadow: 0 10px 30px rgba(108,92,255,.25); }
+  .note { font-size: 13px; color: var(--text3); margin-top: 10px; }
+  .shot { margin: 34px auto 0; max-width: 1000px; border-radius: var(--radius); overflow:hidden; border:1px solid var(--border); box-shadow: 0 30px 80px rgba(40,30,120,.15); }
+  .shot img { display:block; width:100%; height:auto; }
+  section { padding: 56px 0; }
+  h2 { font-size: 28px; margin: 0 0 8px; letter-spacing:-.01em; }
+  .sub { color: var(--text2); margin: 0 0 26px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin:0; color: var(--text2); font-size: 14.5px; }
+  .feature { display:grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items:center; margin-top: 28px; }
+  .feature.rev > :first-child { order: 2; }
+  .feature img { width:100%; border-radius: 14px; border:1px solid var(--border); }
+  @media (max-width: 760px) { .feature, .feature.rev > :first-child { display:block; order: initial; } .feature img { margin-top: 14px; } }
+  .price { display:grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:16px; }
+  .price .card { text-align:center; }
+  .price .big { font-size: 34px; font-weight: 800; margin: 6px 0; }
+  .faq details { border-bottom:1px solid var(--border); padding: 12px 0; }
+  .faq summary { cursor:pointer; font-weight:700; }
+  .faq p { color: var(--text2); margin: 8px 0 0; }
+  footer { padding: 30px 0 50px; color: var(--text3); font-size: 13px; border-top: 1px solid var(--border); margin-top: 20px; }
+  footer a { color: var(--text2); margin-right: 14px; }
+  [data-tr] { display:none; } html[lang="tr"] [data-tr] { display: revert; } html[lang="tr"] [data-en] { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="/"><img src="img/icon.png" alt=""> DraftRewind</a>
+    <nav>
+      <a href="#how" data-en>How it works</a><a href="#how" data-tr>Nasıl çalışır</a>
+      <a href="#get" data-en>Download</a><a href="#get" data-tr>İndir</a>
+      <a href="support.html" data-en>Support</a><a href="support.html" data-tr>Destek</a>
+      <button class="lang" id="lang">TR</button>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1 data-en>Never lose a draft.<br><span>Rewind anytime.</span></h1>
+    <h1 data-tr>Hiçbir taslağını kaybetme.<br><span>İstediğin an geri sar.</span></h1>
+    <p data-en>DraftRewind quietly keeps every version of your thesis, homework or paper. You write and save as usual; it remembers everything, even the Word document you forgot to save.</p>
+    <p data-tr>DraftRewind; tezinin, ödevinin ya da makalenin her halini sessizce saklar. Sen her zamanki gibi yazıp kaydedersin; o her şeyi hatırlar, kaydetmeyi unuttuğun Word belgesini bile.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/heyobi/draftrewind/releases/latest" data-en>Download for Windows — free</a>
+      <a class="btn primary" href="https://github.com/heyobi/draftrewind/releases/latest" data-tr>Windows için indir — ücretsiz</a>
+      <a class="btn" href="#get" data-en>iPhone app</a>
+      <a class="btn" href="#get" data-tr>iPhone uygulaması</a>
+    </div>
+    <div class="note" data-en>Windows 10/11 · No Git, no account needed to start · Open source (GPL)</div>
+    <div class="note" data-tr>Windows 10/11 · Git ya da hesap gerekmez · Açık kaynak (GPL)</div>
+    <div class="shot"><img src="img/overview.png" alt="DraftRewind overview screen"></div>
+  </div>
+
+  <section id="how">
+    <h2 data-en>How it works</h2><h2 data-tr>Nasıl çalışır</h2>
+    <p class="sub" data-en>Pick your thesis folder once. That's the whole setup.</p>
+    <p class="sub" data-tr>Tez klasörünü bir kez seç. Kurulum bu kadar.</p>
+    <div class="grid">
+      <div class="card"><h3 data-en>1 · Write and save</h3><h3 data-tr>1 · Yaz ve kaydet</h3><p data-en>Every save becomes a restore point within seconds, with a readable title like “Methods: 1 paragraph added (+120 words)”.</p><p data-tr>Her kayıt birkaç saniyede bir geri dönüş noktası olur; başlığı okunur: “Yöntem: 1 paragraf eklendi (+120 kelime)”.</p></div>
+      <div class="card"><h3 data-en>2 · Rewind</h3><h3 data-tr>2 · Geri sar</h3><p data-en>See what changed word by word, open any old version, or restore it with one click. Yesterday's paragraph is never gone.</p><p data-tr>Neyin değiştiğini kelime kelime gör, eski sürümü aç ya da tek tıkla geri getir. Dünkü paragraf asla kaybolmaz.</p></div>
+      <div class="card"><h3 data-en>3 · Sleep well</h3><h3 data-tr>3 · Rahat uyu</h3><p data-en>Unsaved Word/Excel documents are rescued every few minutes. Power cut, crash, closed without saving: covered.</p><p data-tr>Kaydedilmemiş Word/Excel belgeleri birkaç dakikada bir kurtarılır. Elektrik kesintisi, çökme, kaydetmeden kapatma: hepsi kapsanır.</p></div>
+    </div>
+
+    <div class="feature">
+      <div>
+        <h2 data-en>Time Machine</h2><h2 data-tr>Zaman Makinesi</h2>
+        <p class="sub" data-en>Every version of every file, side by side. Green is new, red is gone. Restore is one button; nothing is ever overwritten.</p>
+        <p class="sub" data-tr>Her dosyanın her sürümü, yan yana. Yeşil eklenen, kırmızı silinen. Geri getirme tek düğme; hiçbir şeyin üstüne yazılmaz.</p>
+      </div>
+      <img src="img/time-machine.png" alt="Time Machine with a coloured diff">
+    </div>
+    <div class="feature rev">
+      <div>
+        <h2 data-en>Your cloud, your rules</h2><h2 data-tr>Senin bulutun, senin kuralların</h2>
+        <p class="sub" data-en>Backs up to a private repository in <b>your</b> GitHub account and mirrors to <b>your</b> Google Drive. We run no servers and never see your files.</p>
+        <p class="sub" data-tr><b>Senin</b> GitHub hesabındaki özel bir depoya yedekler, <b>senin</b> Google Drive'ına kopyalar. Bizim sunucumuz yok; dosyalarını asla görmeyiz.</p>
+      </div>
+      <img src="img/cloud.png" alt="Cloud and phone settings">
+    </div>
+  </section>
+
+  <section id="get">
+    <h2 data-en>Get it</h2><h2 data-tr>Edin</h2>
+    <p class="sub" data-en>The Windows app is free. The iPhone companion is a small one-time purchase that supports development.</p>
+    <p class="sub" data-tr>Windows uygulaması ücretsiz. iPhone uygulaması geliştirmeyi destekleyen küçük, tek seferlik bir ödeme.</p>
+    <div class="price">
+      <div class="card"><h3>Windows</h3><div class="big" data-en>Free</div><div class="big" data-tr>Ücretsiz</div><p data-en>From GitHub, with automatic updates. Also on the Microsoft Store if you prefer store updates.</p><p data-tr>GitHub'dan, otomatik güncellemeyle. Mağaza güncellemesi istersen Microsoft Store'da da.</p><p style="margin-top:12px"><a class="btn primary" href="https://github.com/heyobi/draftrewind/releases/latest" data-en>Download</a><a class="btn primary" href="https://github.com/heyobi/draftrewind/releases/latest" data-tr>İndir</a></p></div>
+      <div class="card"><h3>iPhone</h3><div class="big">$4.99</div><p data-en>Your whole history in your pocket: browse versions, see what changed, add photos and files to your thesis from your phone, send a change report to your advisor.</p><p data-tr>Tüm geçmiş cebinde: sürümlere bak, neyin değiştiğini gör, telefondan tezine fotoğraf ve dosya ekle, danışmanına değişiklik raporu gönder.</p><p style="margin-top:12px"><a class="btn" href="#" id="appstore" data-en>App Store — coming soon</a><a class="btn" href="#" data-tr>App Store — yakında</a></p></div>
+    </div>
+  </section>
+
+  <section class="faq">
+    <h2 data-en>Questions</h2><h2 data-tr>Sorular</h2>
+    <details><summary data-en>Do I need Git or a GitHub account?</summary><summary data-tr>Git ya da GitHub hesabı gerekir mi?</summary><p data-en>No. Version history works entirely on your computer with nothing to install. A GitHub account is optional and only used for your private cloud backup and the phone app.</p><p data-tr>Hayır. Sürüm geçmişi tamamen bilgisayarında, ek kurulum olmadan çalışır. GitHub hesabı isteğe bağlıdır; yalnızca özel bulut yedeği ve telefon uygulaması için kullanılır.</p></details>
+    <details><summary data-en>Where are my files stored?</summary><summary data-tr>Dosyalarım nerede saklanıyor?</summary><p data-en>On your computer, and if you enable it, in your own GitHub repository and Google Drive. DraftRewind has no servers. See the <a href="privacy.html">privacy policy</a>.</p><p data-tr>Bilgisayarında ve istersen kendi GitHub deponda ve Google Drive'ında. DraftRewind'in sunucusu yoktur. Bkz. <a href="privacy.html">gizlilik politikası</a>.</p></details>
+    <details><summary data-en>Does it work with Word, Excel, LaTeX?</summary><summary data-tr>Word, Excel, LaTeX ile çalışır mı?</summary><p data-en>Yes: .docx, .xlsx, .pptx, .pdf, .txt, .md, .tex, .bib and any other file in the folder are versioned. Word-by-word comparison works for Word and text files.</p><p data-tr>Evet: .docx, .xlsx, .pptx, .pdf, .txt, .md, .tex, .bib ve klasördeki diğer tüm dosyalar saklanır. Kelime kelime karşılaştırma Word ve metin dosyalarında çalışır.</p></details>
+    <details><summary data-en>How much disk space does history take?</summary><summary data-tr>Geçmiş ne kadar yer kaplar?</summary><p data-en>Old automatic snapshots are thinned out over time (all of the last 7 days, then one per day, then one per week); moments you mark are kept forever. Settings shows the current size.</p><p data-tr>Eski otomatik kayıtlar zamanla seyreltilir (son 7 gün tümü, sonra günde bir, sonra haftada bir); işaretlediğin anlar hep kalır. Ayarlar'da güncel boyut görünür.</p></details>
+  </section>
+
+  <footer>
+    <a href="privacy.html" data-en>Privacy</a><a href="privacy.html" data-tr>Gizlilik</a>
+    <a href="support.html" data-en>Support</a><a href="support.html" data-tr>Destek</a>
+    <a href="https://github.com/heyobi/draftrewind">GitHub</a>
+    <div style="margin-top:10px">© <span id="y"></span> DraftRewind. Code under GPL‑3.0; the DraftRewind name and logo are trademarks. Not affiliated with Git, GitHub or Google.</div>
+  </footer>
+</div>
+<script>
+  const html = document.documentElement, btn = document.getElementById('lang');
+  const saved = localStorage.getItem('lang') || ((navigator.language || '').toLowerCase().startsWith('tr') ? 'tr' : 'en');
+  const apply = l => { html.lang = l; btn.textContent = l === 'tr' ? 'EN' : 'TR'; localStorage.setItem('lang', l); };
+  apply(saved);
+  btn.onclick = () => apply(html.lang === 'tr' ? 'en' : 'tr');
+  document.getElementById('y').textContent = new Date().getFullYear();
+</script>
+</body>
+</html>
