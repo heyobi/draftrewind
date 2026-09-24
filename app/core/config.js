@@ -32,6 +32,8 @@ module.exports = {
     // Buluta gönderme: kayıtlardan sonra bu kadar bekleyip toplu gönderir.
     SYNC_DEBOUNCE_MS: 45 * 1000,
     // Drive'da (web, telefon) yapılan düzenlemeleri kontrol etme sıklığı.
+    // GitHub'daki yeni kayıtları (telefondan eklenen dosyalar, diğer bilgisayarlar) kontrol etme sıklığı.
+    GITHUB_POLL_MS: 3 * 60 * 1000,
     DRIVE_POLL_MS: 4 * 60 * 1000,
     // Drive'daki "Sürümler" klasörüne aynı dosya için en fazla bu sıklıkta kopya.
     DRIVE_VERSION_EVERY_MS: 30 * 60 * 1000,

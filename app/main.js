@@ -396,7 +396,10 @@ async function runSync(rt) {
         saveProjectRecord(record);
         if (r.pulled) {
             emit('toast', { icon: '📥', text: T('main.pulled', { n: r.pulled }) });
+            notify('DraftRewind', T('main.pulled', { n: r.pulled }));
             emit('snapshot', { projectId: rt.project.id });
+            // Telefondan / başka bilgisayardan gelen dosyalar Drive kopyasına da gitsin
+            syncDrive(rt).catch(() => {});
         }
         if (r.conflicts.length) {
             emit('toast', { icon: '🤝', text: T('main.ghConflicts', { n: r.conflicts.length }) });
@@ -1291,6 +1294,13 @@ function createWindow() {
         if (/^https:\/\//.test(url)) shell.openExternal(url);
         return { action: 'deny' };
     });
+    // Pencereye dönüldüğünde (en fazla dakikada bir) telefondan gelen değişiklikleri hemen al
+    let lastFocusSync = 0;
+    mainWindow.on('focus', () => {
+        if (Date.now() - lastFocusSync < 60 * 1000) return;
+        lastFocusSync = Date.now();
+        for (const rt of runtimes.values()) if (!rt.syncing) runSync(rt);
+    });
     mainWindow.on('close', e => {
         if (app.isQuitting) return;
         e.preventDefault();
@@ -1386,6 +1396,10 @@ app.whenReady().then(async () => {
             } catch (e) {}
         }
     }, config.RESCAN_INTERVAL_MS);
+    // Telefondan veya başka bilgisayardan GitHub'a gelen değişiklikleri düzenli olarak al
+    setInterval(() => {
+        for (const rt of runtimes.values()) if (!rt.syncing) runSync(rt);
+    }, config.GITHUB_POLL_MS);
     // Drive'da yapılan düzenlemeleri düzenli olarak kontrol et
     setInterval(() => {
         for (const rt of runtimes.values()) syncDrive(rt);

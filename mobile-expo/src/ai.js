@@ -132,7 +132,7 @@ function baseInstructions(role, l) {
     `Never thank the user, never greet, never praise the change itself ("great start", "valuable", "interesting"), no filler sentences. ` +
     `Never invent facts that are not in the input and never comment on how often the student saved. ` +
     (l === 'tr'
-      ? 'Write natural Turkish and address the student informally with "sen" (e.g. "ekledin", "yazdın"), never "siz". '
+      ? 'Write natural Turkish and address the student informally with the "sen" form (second person singular verbs), never "siz". '
       : 'Address the student directly as "you". ') +
     `Always answer in ${LANG_NAME[l]}, even if the input is in another language. Do not use Markdown headings or bold text.`
   );
@@ -245,12 +245,15 @@ export async function summarizeChanges(id, name, diff) {
   if (p.removed.length) sections.push(`REMOVED TEXT:\n${p.removed.map((s) => `• ${s}`).join('\n')}`);
   if (p.edited.length) sections.push(`REWORDED:\n${p.edited.map((e) => `• "${e.old}" became "${e.new}"`).join('\n')}`);
   const body = sections.join('\n\n');
+  // Not: istemde örnek cümle YOK — küçük modeller örneği içerik yerine aynen kopyalıyor.
+  const task = diff.first
+    ? `This file "${name}" was just added. In 1 or 2 short sentences, say what the file contains or is for, ` +
+      `based only on the text below.`
+    : `The student saved a new version of "${name}". In 1 or 2 short sentences, say what they added, removed or ` +
+      `reworded, naming the actual topic of the text below.`;
   const prompt =
-    `The student saved a new version of "${name}".` +
-    (diff.first ? ' This is the first version of the file, so everything is new.' : '') +
-    `\nIn 1 or 2 short sentences, say what they added, removed or reworded — describe the content itself ` +
-    `(e.g. "Giriş bölümüne araştırmanın amacını anlatan bir paragraf ekledin."). No introduction, no evaluation. ` +
-    `Answer in ${LANG_NAME[l]}.\n\n${AI.truncate(body, AI.MAX_PROMPT_CHARS - 700)}`;
+    `${task} Use only information from the text below; if it is code, say what the code does. ` +
+    `No introduction, no evaluation. Answer in ${LANG_NAME[l]}.\n\n${AI.truncate(body, AI.MAX_PROMPT_CHARS - 700)}`;
   return run(cacheKey('diff', id, text), instructions, prompt);
 }
 
