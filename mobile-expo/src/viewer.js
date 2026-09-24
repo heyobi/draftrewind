@@ -181,6 +181,19 @@ async function lines(b64,kind){
     else if(bk.t==='del')html+='<p class="pdel">'+esc(bk.s)+'</p>';
     else html+='<p>'+bk.parts.map(function(p){return p.added?'<ins>'+esc(p.value)+'</ins>':p.removed?'<del>'+esc(p.value)+'</del>':esc(p.value)}).join('')+'</p>';});
   flush();
+  // Uygulamaya değişikliklerin kısa metin hali (cihaz üstü "Neler değişti?" özeti için):
+  // "+ eklenen", "- silinen", "~ [-eski-]{+yeni+}" satırları. 'ready' mesajı ayrıca done() ile gider.
+  var cmp=[],clen=0;
+  function one(s){return String(s).replace(/\\s+/g,' ').trim();}
+  function clip(s){s=one(s);return s.length>400?s.slice(0,400)+'…':s;}
+  function ctx(s){s=one(s);return s.length>110?s.slice(0,50)+' … '+s.slice(-50):s;}
+  function pushC(line){if(clen<7000){cmp.push(line);clen+=line.length+1;}}
+  blocks.forEach(function(bk){
+    if(bk.t==='add')pushC('+ '+clip(bk.s));
+    else if(bk.t==='del')pushC('- '+clip(bk.s));
+    else if(bk.t==='mod')pushC('~ '+clip(bk.parts.map(function(p){return p.added?'{+'+one(p.value)+'+}':p.removed?'[-'+one(p.value)+'-]':ctx(p.value);}).join(' ')));
+  });
+  try{window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify({type:'diff',text:cmp.join('\\n'),add:add,rem:rem,first:${oldB64 ? 'false' : 'true'}}));}catch(e){}
   var sum='<div class="sum">'+(${oldB64 ? 'false' : 'true'}?'<span class="chip n">'+esc(L.firstVersion)+'</span>':'')+(add?'<span class="chip a">'+esc(fmt(add===1?L.wordsOne:L.words,'+'+add))+'</span>':'')+(rem?'<span class="chip d">'+esc(fmt(rem===1?L.wordsOne:L.words,'−'+rem))+'</span>':'')+'</div>';
   document.getElementById('msg').remove();
   document.getElementById('out').innerHTML=blocks.some(function(b){return b.t!=='same'})?sum+'<div class="doc">'+html+'</div>':'<div id="msg">'+esc(L.unchanged)+'</div>';

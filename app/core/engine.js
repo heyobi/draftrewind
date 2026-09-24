@@ -8,7 +8,7 @@ const Diff = require('diff');
 const docs = require('./docs');
 const config = require('./config');
 const { atomicWriteFileSync } = require('./store');
-const { describeSnapshot } = require('./describe');
+const { describeSnapshot, changeDigest, wordNote } = require('./describe');
 const I18N = require('../i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
 
@@ -414,11 +414,23 @@ class Project {
                 }
                 for (const rel of deleted) files.push({ rel, oldBuf: Buffer.alloc(1), newBuf: null });
                 summary = await describeSnapshot(files, delta);
+                // İsteğe bağlı yerel yapay zekâ başlığı (kapalıysa, yavaşsa ya da hata verirse kural tabanlı kalır)
+                if (!title && kind === 'auto' && this.aiTitle && files.length) {
+                    const digest = await changeDigest(files);
+                    if (digest.trim()) {
+                        const ai = await Promise.race([this.aiTitle(digest).catch(() => null), new Promise(r => setTimeout(() => r(null), 25000))]);
+                        if (ai) {
+                            const totalWords = Object.values(delta || {}).reduce((a, b) => a + b, 0);
+                            summary = { title: ai + wordNote(totalWords), body: [summary && `${T('snap.ruleTitle')}: ${summary.title}`, summary && summary.body].filter(Boolean).join('\n'), ai: true };
+                        }
+                    }
+                }
             } catch (e) {}
             let finalTitle = title || (summary && summary.title) || this.autoTitle(kind, realChanged, deleted, delta);
             if (!title && kind === 'rescue') finalTitle = `⚡ ${T('snap.rescued', { names: realChanged.map(r => path.basename(r)).join(', ') })}`;
             const body = [note, summary && summary.body].filter(Boolean).join('\n\n');
             const meta = { v: 1, kind, total, words, delta, changed: realChanged, deleted };
+            if (summary && summary.ai) meta.ai = true;
             const message = `${finalTitle}${body ? `\n\n${body}` : ''}${TRAILER} ${JSON.stringify(meta)}\n`;
 
             const treeOid = await this.writeTreeFromMap(tree);

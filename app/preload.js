@@ -57,6 +57,15 @@ contextBridge.exposeInMainWorld('av', {
         syncNow: id => call('github:syncNow', id)
     },
 
+    // İsteğe bağlı yerel yapay zekâ
+    ai: {
+        install: () => call('ai:install'),
+        cancel: () => call('ai:cancel'),
+        remove: () => call('ai:remove'),
+        summarizeChange: (id, rel, oid) => call('ai:summarizeChange', id, rel, oid),
+        weekly: id => call('ai:weekly', id)
+    },
+
     drive: {
         useFolder: folder => call('drive:useFolder', folder),
         signIn: () => call('drive:signIn'),

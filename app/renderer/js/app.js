@@ -19,7 +19,8 @@
         railCollapsed: (() => {
             try { return localStorage.getItem('railCollapsed') === '1'; } catch (e) { return false; }
         })(),
-        loginModal: null
+        loginModal: null,
+        aiCache: {}
     };
 
     const $ = sel => document.querySelector(sel);
@@ -463,7 +464,7 @@
 
             <div class="two-col">
                 <div class="card">
-                    <h3>${t('week.title')}</h3><div class="sub">${t('week.sub')}</div>
+                    <div style="display:flex;align-items:flex-start;gap:8px"><div style="flex:1"><h3>${t('week.title')}</h3><div class="sub">${t('week.sub')}</div></div>${aiReady() ? `<button class="btn sm ai-btn" data-action="ai-week">${t('ai.myWeek')}</button>` : ''}</div>
                     <div class="week">${st.week
                         .map((w, i) => `<div class="bar-col"><div class="bar ${i === 6 ? 'today' : w.active ? 'active' : ''}" style="height:${Math.max(4, (w.words / maxWeek) * 100)}%">${w.words ? `<span class="tip">${num(w.words)}</span>` : ''}</div><span class="day">${i === 6 ? t('time.today') : typeof w.dow === 'number' ? t('time.daysShort')[w.dow] : esc(w.label)}</span></div>`)
                         .join('')}</div>
@@ -567,12 +568,13 @@
             ${
                 sel
                     ? `<div class="viewer-bar">
-                    <div class="seg"><button class="${S.viewMode === 'diff' ? 'active' : ''}" data-action="view-mode" data-mode="diff">${t('tl.viewDiff')}</button><button class="${S.viewMode === 'preview' ? 'active' : ''}" data-action="view-mode" data-mode="preview">${t('tl.viewDoc')}</button></div>
+                    <div class="seg"><button class="${S.viewMode === 'diff' ? 'active' : ''}" data-action="view-mode" data-mode="diff">${t('tl.viewDiff')}</button><button class="${S.viewMode === 'preview' ? 'active' : ''}" data-action="view-mode" data-mode="preview">${t('tl.viewDoc')}</button></div>${aiReady() && sel.change !== 'deleted' ? `<button class="btn sm ai-btn" data-action="ai-summarize">${t('ai.summarize')}</button>` : ''}
                     <div class="viewer-actions" ${isLive ? 'hidden' : ''}>
                         ${sel.change !== 'deleted' ? `<button class="btn sm" data-action="open-version">${t('tl.openVersion')}</button><button class="btn sm" data-action="save-copy">${t('tl.saveCopy')}</button>` : ''}
                         <button class="btn sm primary" data-action="restore">${sel.change === 'deleted' ? t('tl.bringBack') : t('tl.restore')}</button>
                     </div>
                 </div>
+                <div id="ai-answer">${S.aiCache[`${S.selectedOid}|${S.selectedFile}`] ? aiCard(S.aiCache[`${S.selectedOid}|${S.selectedFile}`]) : ''}</div>
                 <div id="viewer"><div class="skeleton" style="height:300px"></div></div>`
                     : ''
             }`;
@@ -851,6 +853,73 @@
         refresh();
     }
 
+    // ------------------------------------------------------------------ yerel yapay zekâ
+    const aiReady = () => !!(S.app && S.app.ai && S.app.ai.installed);
+    const gb = n => (n / 1073741824).toLocaleString(locale(), { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+
+    function aiBlockHtml() {
+        const a = S.app.ai;
+        if (!a || !a.supported) return `<div class="setting-row"><div><div class="t">${t('ai.title')}</div><div class="s">${t('ai.unsupported')}</div></div></div>`;
+        if (a.installing) {
+            const pct = a.installing.total ? Math.floor((a.installing.received * 100) / a.installing.total) : 0;
+            return `<div class="setting-row"><div style="flex:1"><div class="t">${t('ai.title')}</div>
+                <div class="s">${t(a.installing.phase === 'engine' ? 'ai.phaseEngine' : 'ai.phaseModel')} · %${pct} (${gb(a.installing.received)} / ${gb(a.installing.total)} GB)</div>
+                <div class="ai-progress"><span style="width:${pct}%"></span></div></div>
+                <button class="btn sm" id="ai-cancel">${t('common.cancel')}</button></div>`;
+        }
+        if (!a.installed) {
+            return `<div class="setting-row"><div><div class="t">${t('ai.title')}</div><div class="s">${t('ai.pitch', { size: gb(a.model.size + a.engineSize) })}${a.ramOk ? '' : ` ${t('ai.lowRam')}`}</div></div>
+                <button class="btn sm primary" id="ai-install">${t('ai.install')}</button></div>`;
+        }
+        return `<div class="setting-row"><div><div class="t">${t('ai.titlesToggle')} <span class="chip add">✨ ${t('ai.ready')}</span></div><div class="s">${t('ai.readyHint', { model: esc(a.model.name) })}</div></div>
+                <label class="switch"><input type="checkbox" id="ai-titles" ${S.app.prefs.aiTitles !== false ? 'checked' : ''}><span></span></label></div>
+            <div class="setting-row"><div><div class="s">${t('ai.titlesHint')}</div></div><button class="btn sm danger" id="ai-remove">${t('ai.remove')}</button></div>`;
+    }
+
+    function bindAiBlock(root) {
+        const q = s => root.querySelector(s);
+        if (q('#ai-install')) q('#ai-install').onclick = async () => {
+            const r = await run(() => av.ai.install());
+            if (r && r.installed) {
+                S.app.ai = r;
+                confetti();
+                toast(t('ai.installed'), '✨', 5000);
+                refreshAiBlock();
+            }
+        };
+        if (q('#ai-cancel')) q('#ai-cancel').onclick = () => av.ai.cancel();
+        if (q('#ai-titles')) q('#ai-titles').onchange = async e => { S.app.prefs = await av.setPref('aiTitles', e.target.checked); };
+        if (q('#ai-remove')) q('#ai-remove').onclick = async () => {
+            closeModal();
+            const ok = await confirmModal({ title: t('ai.removeTitle'), text: t('ai.removeText'), ok: t('ai.remove'), danger: true, emoji: '🧹' });
+            if (ok) S.app.ai = (await run(() => av.ai.remove())) || S.app.ai;
+            settingsModal();
+        };
+    }
+
+    function refreshAiBlock() {
+        const blk = document.getElementById('ai-block');
+        if (!blk) return;
+        blk.innerHTML = aiBlockHtml();
+        bindAiBlock(blk);
+    }
+
+    const aiCard = text => `<div class="ai-card"><div class="ai-text">${esc(text)}</div><div class="ai-foot">🔒 ${t('ai.footnote')}</div></div>`;
+    const aiThinking = () => `<div class="ai-card thinking"><span class="spinner"></span> ${t('ai.thinking')}</div>`;
+
+    async function aiWeekModal() {
+        const m = openModal(`<div style="font-size:40px">🗓️</div><h2>${t('ai.weekTitle')}</h2><div id="ai-week">${aiThinking()}</div><div class="foot"><button class="btn primary" data-x="ok">${t('common.ok')}</button></div>`);
+        m.querySelector('[data-x=ok]').onclick = closeModal;
+        try {
+            const text = await av.ai.weekly(S.activeId);
+            const box = document.getElementById('ai-week');
+            if (box) box.innerHTML = aiCard(text);
+        } catch (e) {
+            const box = document.getElementById('ai-week');
+            if (box) box.innerHTML = `<p class="sub">😕 ${esc(e.message)}</p>`;
+        }
+    }
+
     function settingsModal() {
         const pr = S.app.prefs;
         const win = S.app.platform === 'win32';
@@ -859,6 +928,7 @@
         const m = openModal(`<h2>${t('settings.title')}</h2><p class="sub">${t('settings.sub')}</p>
             <div class="setting-row"><div><div class="t">${t('settings.language')}</div><div class="s">${t('settings.languageHint')}</div></div>${seg('pref-lang', pr.language || 'auto', [['auto', t('settings.langAuto')], ['tr', t('settings.langTr')], ['en', t('settings.langEn')]])}</div>
             <div class="setting-row"><div><div class="t">${t('settings.theme')}</div><div class="s">${t('settings.themeHint')}</div></div>${seg('pref-theme', pr.theme || 'system', [['system', t('settings.themeSystem')], ['light', t('settings.themeLight')], ['dark', t('settings.themeDark')]])}</div>
+            <div id="ai-block">${aiBlockHtml()}</div>
             <div class="setting-row"><div><div class="t">${t('settings.goal')}</div><div class="s">${t('settings.goalHint')}</div></div><input type="range" id="goal" min="100" max="3000" step="50" value="${pr.dailyGoal}"><b id="goal-v" style="width:48px;text-align:right">${pr.dailyGoal}</b></div>
             ${win ? `<div class="setting-row"><div><div class="t">${t('settings.guardian')}</div><div class="s">${t('settings.guardianHint')}</div></div><label class="switch"><input type="checkbox" id="guardian" ${pr.guardian ? 'checked' : ''}><span></span></label></div>` : ''}
             <div class="setting-row"><div><div class="t">${t('settings.autostart')}</div><div class="s">${t('settings.autostartHint')}</div></div><label class="switch"><input type="checkbox" id="autostart" ${pr.autostart ? 'checked' : ''}><span></span></label></div>
@@ -877,6 +947,7 @@
             }));
         bindSeg('pref-lang', 'language');
         bindSeg('pref-theme', 'theme');
+        bindAiBlock(m);
         const goal = m.querySelector('#goal');
         goal.oninput = () => (m.querySelector('#goal-v').textContent = goal.value);
         goal.onchange = async () => { S.app.prefs = await av.setPref('dailyGoal', Number(goal.value)); };
@@ -1205,6 +1276,23 @@
             const ok = await run(() => av.projects.openVersion(S.activeId, S.selectedFile, S.selectedOid));
             if (ok) toast(t('old.openedToast'), '🔒', 6000);
         },
+        'ai-week': aiWeekModal,
+        'ai-summarize': async () => {
+            const key = `${S.selectedOid}|${S.selectedFile}`;
+            const box = document.getElementById('ai-answer');
+            if (!box) return;
+            box.innerHTML = aiThinking();
+            try {
+                const text = await av.ai.summarizeChange(S.activeId, S.selectedFile, S.selectedOid);
+                if (S.selectedOid !== 'working') S.aiCache[key] = text;
+                const now = document.getElementById('ai-answer');
+                if (now) now.innerHTML = aiCard(text);
+            } catch (e) {
+                const now = document.getElementById('ai-answer');
+                if (now) now.innerHTML = '';
+                toast(e.message, '😕', 5000);
+            }
+        },
         'save-now': async () => {
             const r = await run(() => av.projects.snapshot(S.activeId, {}));
             if (r !== undefined) {
@@ -1327,6 +1415,10 @@
             case 'cloud':
                 if (typeof ev.syncing === 'boolean') S.syncing[ev.projectId] = ev.syncing;
                 if (ev.projectId === S.activeId) refresh({ history: false });
+                break;
+            case 'ai':
+                if (S.app) S.app.ai = ev.status;
+                refreshAiBlock();
                 break;
             case 'toast':
                 toast(ev.text, ev.icon);

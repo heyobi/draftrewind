@@ -158,4 +158,56 @@ async function describeSnapshot(files, delta) {
     return { title, body };
 }
 
-module.exports = { describeSnapshot, describeFile };
+// Yapay zekâya verilecek kısa değişiklik metni: dosya, bölüm, eklenen (+) / çıkan (-) satırlar.
+// Zayıf bilgisayarlarda hızlı kalsın diye ~1800 karakterle sınırlıdır.
+async function changeDigest(files, limit = 1800) {
+    let out = '';
+    for (const f of files.slice(0, 3)) {
+        const kind = docs.kindOf(f.rel);
+        if (!f.newBuf) {
+            out += `File deleted: ${f.rel}\n`;
+            continue;
+        }
+        if (!f.oldBuf) {
+            out += `New file: ${f.rel}\n`;
+            continue;
+        }
+        if (kind !== 'word' && kind !== 'text' && kind !== 'sheet' && kind !== 'slides') {
+            out += `Changed: ${f.rel}\n`;
+            continue;
+        }
+        const [a, b] = await Promise.all([docs.extractLines(f.rel, f.oldBuf), docs.extractLines(f.rel, f.newBuf)]);
+        if (!a || !b) continue;
+        let section = null;
+        if (kind === 'word') {
+            const st = await docs.wordStructure(f.newBuf);
+            section = st ? st : null;
+        }
+        out += `File: ${f.rel}\n`;
+        let pos = 0;
+        const headingBefore = idx => {
+            if (!section) return null;
+            for (let i = Math.min(idx, section.length - 1); i >= 0; i--) if (section[i].heading) return section[i].text;
+            return null;
+        };
+        let lastHeading = null;
+        for (const c of Diff.diffArrays(a, b)) {
+            if (!c.added && !c.removed) {
+                pos += c.value.length;
+                continue;
+            }
+            const h = headingBefore(pos);
+            if (h && h !== lastHeading) {
+                out += `Section: ${h}\n`;
+                lastHeading = h;
+            }
+            for (const line of c.value) out += `${c.added ? '+' : '-'} ${line.slice(0, 300)}\n`;
+            if (c.added) pos += c.value.length;
+            if (out.length > limit) break;
+        }
+        if (out.length > limit) break;
+    }
+    return out.slice(0, limit);
+}
+
+module.exports = { describeSnapshot, describeFile, changeDigest, wordNote };

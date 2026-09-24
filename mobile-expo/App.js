@@ -5,6 +5,7 @@ import {
   Alert,
   Animated,
   AppState,
+  Easing,
   Image,
   Linking,
   Modal,
@@ -36,6 +37,7 @@ import { pulse, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './s
 import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
+import { useAiStatus, shouldShowAiHint, dismissAiHint, aiHintText, aiErrorText, summarizeDocument, summarizeChanges, weekRecap } from './src/ai';
 
 const GRAD = ['#6c5cff', '#a35cf6', '#ec62be'];
 const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝', mobile: '📱' };
@@ -243,6 +245,275 @@ function Ambient({ c }) {
       <LinearGradient colors={['#ec62be', 'transparent']} style={[s.orb, { top: 260, right: -120, opacity: c.dark ? 0.35 : 0.22 }]} />
       <LinearGradient colors={['#38bdf8', 'transparent']} style={[s.orb, { bottom: -60, left: -40, opacity: c.dark ? 0.3 : 0.18 }]} />
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// İskelet (yükleniyor) yer tutucuları: üzerinde yavaşça kayan bir ışık
+// ---------------------------------------------------------------------------
+function Shimmer({ c, style, children }) {
+  const x = useRef(new Animated.Value(0)).current;
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const loop = Animated.loop(Animated.timing(x, { toValue: 1, duration: 1250, easing: Easing.inOut(Easing.quad), useNativeDriver: true }));
+    loop.start();
+    return () => loop.stop();
+  }, []);
+  const translateX = x.interpolate({ inputRange: [0, 1], outputRange: [-w, w] });
+  return (
+    <View style={[{ overflow: 'hidden' }, style]} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+      {children}
+      {w ? (
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { transform: [{ translateX }] }]}>
+          <LinearGradient colors={['transparent', c.dark ? '#ffffff16' : '#ffffffaa', 'transparent']} start={{ x: 0, y: 0.5 }} end={{ x: 1, y: 0.5 }} style={StyleSheet.absoluteFill} />
+        </Animated.View>
+      ) : null}
+    </View>
+  );
+}
+
+function Bone({ c, w = '100%', h = 12, r = 6, style }) {
+  return <View style={[{ width: w, height: h, borderRadius: r, backgroundColor: c.dark ? '#ffffff14' : '#1c1a3312' }, style]} />;
+}
+
+// variant: 'project' (büyük kutucuklu satır) | 'row' (zaman çizelgesi / dosya satırı)
+function SkeletonRows({ c, rows = 3, variant = 'row', style }) {
+  const big = variant === 'project';
+  return (
+    <View style={style} accessibilityLabel="…" accessible>
+      {Array.from({ length: rows }).map((_, i) => (
+        <Glass key={i} c={c} style={[big ? s.projRow : s.tlItem, { marginBottom: big ? 10 : 8 }]}>
+          <Shimmer c={c} style={{ flexDirection: 'row', alignItems: 'center', gap: big ? 14 : 12, flex: 1 }}>
+            <Bone c={c} w={big ? 52 : 34} h={big ? 52 : 34} r={big ? 16 : 17} />
+            <View style={[s.flex, { gap: 7 }]}>
+              <Bone c={c} w={`${[72, 58, 66, 50][i % 4]}%`} h={big ? 15 : 13} />
+              <Bone c={c} w={`${[38, 46, 30, 42][i % 4]}%`} h={10} />
+            </View>
+          </Shimmer>
+        </Glass>
+      ))}
+    </View>
+  );
+}
+
+// Proje ekranı açılırken: istatistik kartları + hafta grafiği + birkaç satır
+function ProjectSkeleton({ c }) {
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        {[0, 1, 2].map((i) => (
+          <Glass key={i} c={c} style={[s.flex, { padding: 14 }]}>
+            <Shimmer c={c} style={{ gap: 8 }}>
+              <Bone c={c} w={22} h={22} r={11} />
+              <Bone c={c} w="60%" h={10} />
+              <Bone c={c} w="80%" h={18} />
+            </Shimmer>
+          </Glass>
+        ))}
+      </View>
+      <Glass c={c} style={{ padding: 16, marginTop: 10, marginBottom: 14 }}>
+        <Shimmer c={c}>
+          <Bone c={c} w="40%" h={13} />
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 96, gap: 8, marginTop: 12 }}>
+            {[40, 65, 30, 80, 50, 70, 90].map((h, i) => (
+              <Bone key={i} c={c} w={null} h={`${h}%`} r={8} style={{ flex: 1 }} />
+            ))}
+          </View>
+        </Shimmer>
+      </Glass>
+      <SkeletonRows c={c} rows={4} />
+    </View>
+  );
+}
+
+// Tutarlı boş durum kartı
+function EmptyState({ c, emoji, title, body, style }) {
+  return (
+    <Glass c={c} style={[{ alignItems: 'center', paddingVertical: 26, paddingHorizontal: 20, marginTop: 10 }, style]}>
+      <Text style={{ fontSize: 40 }}>{emoji}</Text>
+      {title ? <Text style={{ color: c.text, fontSize: 17, fontWeight: '700', marginTop: 8, textAlign: 'center' }}>{title}</Text> : null}
+      {body ? <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>{body}</Text> : null}
+    </Glass>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Apple Intelligence (cihaz üstü) arayüz parçaları
+// ---------------------------------------------------------------------------
+// Degrade "✨ …" düğmesi
+function AiButton({ c, title, sub, onPress, style, compact }) {
+  return (
+    <Jelly onPress={onPress} scaleTo={0.95} style={style} accessibilityLabel={title}>
+      <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.aiBtn, compact && { height: 44, paddingHorizontal: 18 }]}>
+        <Text style={{ color: '#fff', fontWeight: '800', fontSize: compact ? 15 : 15.5 }} numberOfLines={1}>{title}</Text>
+        {sub ? <Text style={{ color: '#ffffffcc', fontSize: 12, marginTop: 1 }} numberOfLines={1}>{sub}</Text> : null}
+      </LinearGradient>
+    </Jelly>
+  );
+}
+
+// "Düşünüyor" durumu: ışıltılı iskelet satırları + nabız gibi atan başlık
+function AiThinking({ c, lines = 4 }) {
+  const glow = useRef(new Animated.Value(0.45)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glow, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(glow, { toValue: 0.45, duration: 800, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, []);
+  return (
+    <View accessibilityLiveRegion="polite" accessibilityLabel={t('ai.thinking')}>
+      <Animated.Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, opacity: glow, marginBottom: 12 }}>✨ {t('ai.thinking')}</Animated.Text>
+      <Shimmer c={c} style={{ gap: 9 }}>
+        {Array.from({ length: lines }).map((_, i) => (
+          <Bone key={i} c={c} w={i === lines - 1 ? '55%' : `${[100, 94, 97][i % 3]}%`} h={12} />
+        ))}
+      </Shimmer>
+    </View>
+  );
+}
+
+function AiFootnote({ c }) {
+  return <Text style={{ color: c.text3, fontSize: 11.5, marginTop: 14, lineHeight: 16 }}>🔒 {t('ai.footnote')}</Text>;
+}
+
+// Apple Intelligence kullanılamıyorsa bir kez gösterilen küçük, dostça not (asla hata değil)
+function AiHint({ c, status, style }) {
+  const [, force] = useState(0);
+  if (!shouldShowAiHint(status)) return null;
+  return (
+    <Glass c={c} tint="#6c5cff1f" style={[{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 14 }, style]}>
+      <Text style={{ fontSize: 18 }}>✨</Text>
+      <View style={s.flex}>
+        <Text style={{ color: c.text, fontWeight: '700', fontSize: 13.5 }}>Apple Intelligence</Text>
+        <Text style={{ color: c.text2, fontSize: 12.5, lineHeight: 17, marginTop: 2 }}>{aiHintText(status)}</Text>
+      </View>
+      <Pressable
+        hitSlop={12}
+        accessibilityLabel={t('common.close')}
+        onPress={() => {
+          tap();
+          dismissAiHint();
+          force((n) => n + 1);
+        }}
+      >
+        <Text style={{ color: c.text3, fontSize: 15 }}>✕</Text>
+      </Pressable>
+    </Glass>
+  );
+}
+
+// Görüntüleyicinin altından kayan yapay zekâ paneli.
+// ai: { title, status: 'loading' | 'done' | 'error', summary?, points?, text?, error? }
+function AiPanel({ c, ai, onClose, onRetry }) {
+  const y = useRef(new Animated.Value(500)).current;
+  useEffect(() => {
+    Animated.spring(y, { toValue: 0, friction: 9, tension: 70, useNativeDriver: true }).start();
+  }, []);
+  const close = () => {
+    tap();
+    Animated.timing(y, { toValue: 600, duration: 200, easing: Easing.in(Easing.quad), useNativeDriver: true }).start(() => onClose());
+  };
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <Pressable style={[StyleSheet.absoluteFill, { backgroundColor: c.dark ? '#0008' : '#0003' }]} onPress={close} accessibilityLabel={t('common.close')} />
+      <Animated.View style={[s.aiPanel, { transform: [{ translateY: y }] }]}>
+        <Glass c={c} style={{ borderRadius: 26, padding: 18, maxHeight: '100%' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+            <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.aiIcon}>
+              <Text style={{ fontSize: 15 }}>✨</Text>
+            </LinearGradient>
+            <Text style={{ color: c.text, fontWeight: '800', fontSize: 17, flex: 1, marginLeft: 10 }} numberOfLines={1}>{ai.title}</Text>
+            <Pressable onPress={close} hitSlop={12}>
+              <Text style={{ color: c.accent, fontWeight: '700', fontSize: 15.5 }}>{t('common.done')}</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ paddingBottom: 2 }}>
+            {ai.status === 'loading' ? (
+              <AiThinking c={c} lines={ai.points ? 5 : 3} />
+            ) : ai.status === 'error' ? (
+              <View style={{ alignItems: 'center', paddingVertical: 6 }}>
+                <Text style={{ fontSize: 30 }}>🌙</Text>
+                <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>{ai.error}</Text>
+                {onRetry ? (
+                  <Pressable onPress={() => (tap(), onRetry())} hitSlop={10} style={{ marginTop: 10 }}>
+                    <Text style={{ color: c.accent, fontWeight: '700' }}>{t('ai.retry')}</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : (
+              <>
+                {ai.summary || ai.text ? <Text style={{ color: c.text, fontSize: 15.5, lineHeight: 23 }} selectable>{ai.summary || ai.text}</Text> : null}
+                {ai.points && ai.points.length ? (
+                  <>
+                    <Text style={[s.dayHeader, { color: c.text3, marginTop: 16, marginLeft: 0 }]}>{t('ai.keyPoints')}</Text>
+                    {ai.points.map((p, i) => (
+                      <View key={i} style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                        <View style={[s.aiDot, { backgroundColor: c.accentSoft }]}>
+                          <Text style={{ color: c.accent, fontWeight: '800', fontSize: 12 }}>{i + 1}</Text>
+                        </View>
+                        <Text style={{ color: c.text, flex: 1, fontSize: 14.5, lineHeight: 21 }} selectable>{p}</Text>
+                      </View>
+                    ))}
+                  </>
+                ) : null}
+              </>
+            )}
+            <AiFootnote c={c} />
+          </ScrollView>
+        </Glass>
+      </Animated.View>
+    </View>
+  );
+}
+
+// İstatistik sayfasındaki "✨ Haftam" kartı
+function AiWeekCard({ c, status, project, history, streak }) {
+  const [state, setState] = useState(null); // null | { status, text?, error? }
+  const req = useRef(0);
+  const week = useMemo(() => computeStats(history).week, [history, lang()]);
+  if (status !== 'available') return <AiHint c={c} status={status} style={{ marginTop: 12 }} />;
+  const start = async () => {
+    const id = ++req.current;
+    setState({ status: 'loading' });
+    try {
+      const text = await weekRecap(`${project.owner}/${project.repo}`, history, week, streak);
+      if (id !== req.current) return;
+      success();
+      setState({ status: 'done', text });
+    } catch (e) {
+      if (id !== req.current) return;
+      warn();
+      setState({ status: 'error', error: aiErrorText(e) });
+    }
+  };
+  if (!state) return <AiButton c={c} title={t('ai.myWeek')} sub={t('ai.myWeekSub')} onPress={start} style={{ marginTop: 12 }} />;
+  return (
+    <Glass c={c} tint="#6c5cff1a" style={{ padding: 16, marginTop: 12 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+        <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.aiIcon}>
+          <Text style={{ fontSize: 15 }}>✨</Text>
+        </LinearGradient>
+        <Text style={{ color: c.text, fontWeight: '800', fontSize: 16, marginLeft: 10, flex: 1 }}>{t('ai.weekTitle')}</Text>
+      </View>
+      {state.status === 'loading' ? (
+        <AiThinking c={c} lines={3} />
+      ) : state.status === 'error' ? (
+        <>
+          <Text style={{ color: c.text2, lineHeight: 20 }}>{state.error}</Text>
+          <Pressable onPress={() => (tap(), start())} hitSlop={10} style={{ marginTop: 8, alignSelf: 'flex-start' }}>
+            <Text style={{ color: c.accent, fontWeight: '700' }}>{t('ai.retry')}</Text>
+          </Pressable>
+        </>
+      ) : (
+        <Text style={{ color: c.text, fontSize: 15, lineHeight: 22 }} selectable>{state.text}</Text>
+      )}
+      <AiFootnote c={c} />
+    </Glass>
   );
 }
 
@@ -742,7 +1013,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
       ) : null}
 
       {error ? <Text style={{ color: c.red, marginVertical: 10 }}>😕 {error}</Text> : null}
-      {loading ? <ActivityIndicator color={c.accent} style={{ marginTop: 30 }} /> : null}
+      {loading && !(ghList && ghList.length) && !(driveList && driveList.length) ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
 
       {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.githubHeader')}</Text> : null}
       {(ghList || []).map((p, i) => (
@@ -776,15 +1047,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         </Jelly>
       ))}
 
-      {empty ? (
-        <Glass c={c} style={{ alignItems: 'center', paddingVertical: 30, paddingHorizontal: 18, marginTop: 10 }}>
-          <Text style={{ fontSize: 48 }}>🌱</Text>
-          <Text style={{ color: c.text, fontSize: 18, fontWeight: '700', marginTop: 8 }}>{t('home.emptyTitle')}</Text>
-          <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>
-            {t('home.emptyBody')}
-          </Text>
-        </Glass>
-      ) : null}
+      {empty ? <EmptyState c={c} emoji="🌱" title={t('home.emptyTitle')} body={t('home.emptyBody')} /> : null}
     </ScrollView>
   );
 }
@@ -896,12 +1159,16 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       shareName: ref ? versionName(baseName(path), time) : baseName(path),
       subtitle: ref ? t('project.oldVersion') : t('project.current'),
       size: sizeOf(path),
+      aiId: `${project.owner}/${project.repo}@${ref || 'HEAD'}:${path}`,
       load: () => GH.fileContent(token, project, path, ref),
     });
-  const openDiff = (path, ref, parentRef) =>
+  // autoAi: "✨ Neler değişti?" ile açıldıysa özet kendiliğinden başlar
+  const openDiff = (path, ref, parentRef, autoAi) =>
     setViewer({
       name: baseName(path),
       subtitle: t('project.whatChanged'),
+      aiId: `${project.owner}/${project.repo}@${ref}:${path}`,
+      autoAi: !!autoAi,
       diff: {
         loadOld: () => (parentRef ? GH.fileContent(token, project, path, parentRef).catch(() => null) : Promise.resolve(null)),
         loadNew: () => GH.fileContent(token, project, path, ref),
@@ -1034,7 +1301,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
         <Text style={[s.h1, { color: c.text, marginBottom: 14 }]} numberOfLines={2}>{project.name}</Text>
 
         {error ? <Text style={{ color: c.red, marginBottom: 12 }}>😕 {error}</Text> : null}
-        {!stats && !error ? <ActivityIndicator color={c.accent} style={{ marginTop: 40 }} /> : null}
+        {!stats && !error ? <ProjectSkeleton c={c} /> : null}
 
         {stats ? (
           <>
@@ -1100,7 +1367,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                 </Pressable>
               </Glass>
             ) : null}
-            {tab === 'time' && fileFilter && !shownHistory.length ? <Text style={{ color: c.text2, marginTop: 14, marginHorizontal: 4 }}>{t('history.empty')}</Text> : null}
+            {tab === 'time' && fileFilter && !shownHistory.length ? <EmptyState c={c} emoji="🕰️" title={t('empty.noChanges')} body={t('history.empty')} /> : null}
 
             {tab === 'time'
               ? shownHistory.map((h) => {
@@ -1161,7 +1428,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                       ]}
                     />
                   </View>
-                  {query && !visibleFiles.length ? <Text style={{ color: c.text2, marginTop: 16, marginHorizontal: 4 }}>{t('docs.noMatch', { q: query.trim() })}</Text> : null}
+                  {query && !visibleFiles.length ? <EmptyState c={c} emoji="🔍" title={t('empty.noResults')} body={t('docs.noMatch', { q: query.trim() })} /> : null}
                   {visibleFiles.map((f) => (
                     <Jelly key={f.path} onPress={() => openFile(f.path, null)} onLongPress={() => docActions(f.path)} scaleTo={0.98} style={{ marginTop: 8 }}>
                       <Glass c={c} interactive style={s.tlItem}>
@@ -1229,6 +1496,7 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [sel, setSel] = useState(null);
   const [gridW, setGridW] = useState(0);
+  const aiStatus = useAiStatus();
 
   useEffect(() => setHist(history), [history]);
 
@@ -1304,6 +1572,9 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
               </Text>
             </Glass>
           </View>
+
+          {/* ✨ Haftam (cihaz üstü Apple Intelligence) */}
+          <AiWeekCard c={c} status={aiStatus} project={project} history={hist} streak={ds.streak} />
 
           {/* GitHub tarzı ısı haritası */}
           <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('stats.heatmap')}</Text>
@@ -1496,9 +1767,11 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   const [files, setFiles] = useState(null);
   const [parent, setParent] = useState(null);
   const [busy, setBusy] = useState(null);
+  const aiStatus = useAiStatus();
   useEffect(() => {
     if (!snapshot) return;
     setFiles(null);
+    setParent(null);
     GH.commitFiles(token, project, snapshot.oid)
       .then((r) => {
         setFiles(r.files);
@@ -1508,6 +1781,14 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   }, [snapshot]);
   if (!snapshot) return null;
   const d = new Date(snapshot.time);
+  // "✨ Neler değişti?": en çok değişen karşılaştırılabilir (Word/metin) dosyanın farkı açılır ve özetlenir
+  const sdelta = snapshot.delta || {};
+  const aiFile =
+    aiStatus === 'available' && files
+      ? files
+          .filter((f) => f.status !== 'removed' && (kindOf(f.path) === 'word' || kindOf(f.path) === 'text'))
+          .sort((a, b) => Math.abs(sdelta[b.path] || 0) - Math.abs(sdelta[a.path] || 0))[0]
+      : null;
   const fileActions = (f, canDiff) =>
     showActions(c, {
       title: f.path.split('/').pop(),
@@ -1539,16 +1820,29 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
           </Pressable>
         </View>
 
+        {aiFile ? (
+          <AiButton
+            c={c}
+            title={t('ai.whatChanged')}
+            sub={aiFile.path.split('/').pop()}
+            style={{ marginTop: 18 }}
+            onPress={() => onOpenDiff(aiFile.path, snapshot.oid, aiFile.status === 'added' ? null : parent, true)}
+          />
+        ) : files ? (
+          <AiHint c={c} status={aiStatus} style={{ marginTop: 16 }} />
+        ) : null}
+
         <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('snapshot.changed')}</Text>
-        {files === null ? <ActivityIndicator color={c.accent} style={{ marginTop: 20 }} /> : null}
+        {files === null ? <SkeletonRows c={c} rows={2} /> : null}
         <ScrollView>
           {(files || []).map((f) => {
-            const delta = snapshot.delta[f.path];
+            const delta = sdelta[f.path];
             const removed = f.status === 'removed';
             const kind = kindOf(f.path);
             const canDiff = !removed && (kind === 'word' || kind === 'text');
+            const Card = removed ? View : Jelly; // silinmiş dosyada dokunulacak bir şey yok
             return (
-              <Pressable key={f.path} delayLongPress={380} onLongPress={removed ? undefined : () => (tap(Haptics.ImpactFeedbackStyle.Medium), fileActions(f, canDiff))}>
+              <Card key={f.path} {...(removed ? {} : { scaleTo: 0.98, onPress: () => fileActions(f, canDiff), onLongPress: () => fileActions(f, canDiff) })}>
                 <Glass c={c} style={[s.tlItem, { marginBottom: 12, flexWrap: 'wrap', padding: 16 }]}>
                   <FileBadge name={f.path} size={40} />
                   <View style={s.flex}>
@@ -1580,10 +1874,10 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
                     </View>
                   ) : null}
                 </Glass>
-              </Pressable>
+              </Card>
             );
           })}
-          {files && files.length === 0 ? <Text style={{ color: c.text2, marginTop: 10 }}>{t('snapshot.noFiles')}</Text> : null}
+          {files && files.length === 0 ? <EmptyState c={c} emoji={KIND_ICON[snapshot.kind] || '⭐'} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
         </ScrollView>
       </View>
       <BusyHud c={c} text={busy} />
@@ -1622,7 +1916,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
 
   const back = () => (stack.length > 1 ? setStack(stack.slice(0, -1)) : onBack());
   const isVersions = current.name === '_Sürümler';
-  const openItem = (it) => setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, load: () => drive.download(it.id) });
+  const openItem = (it) => setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, aiId: `drive:${it.id}:${it.modified}`, load: () => drive.download(it.id) });
   const itemActions = (it) =>
     showActions(c, {
       title: it.name,
@@ -1697,7 +1991,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
         <Text style={[s.h1, { color: c.text, marginBottom: 4 }]} numberOfLines={2}>{isVersions ? t('drive.versions') : current.name}</Text>
         <Text style={{ color: c.text3, marginBottom: 14 }}>{isVersions ? t('drive.versionsSub') : 'Google Drive'}</Text>
         {error ? <Text style={{ color: c.red }}>😕 {error}</Text> : null}
-        {items === null && !error ? <ActivityIndicator color={c.accent} style={{ marginTop: 30 }} /> : null}
+        {items === null && !error ? <SkeletonRows c={c} rows={5} /> : null}
         {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : items || []).map((it) => (
           <Jelly
             key={it.id}
@@ -1718,7 +2012,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
             </Glass>
           </Jelly>
         ))}
-        {items && items.length === 0 ? <Text style={{ color: c.text2 }}>{t('drive.empty')}</Text> : null}
+        {items && items.length === 0 ? <EmptyState c={c} emoji="📂" title={t('empty.folder')} body={t('drive.empty')} /> : null}
         {items && items.some((it) => !it.folder) ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
       </ScrollView>
       <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} />
@@ -1736,12 +2030,23 @@ function ViewerSheet({ c, target, onClose }) {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(null);
   const bufRef = useRef(null);
+  // Cihaz üstü Apple Intelligence
+  const aiStatus = useAiStatus();
+  const webRef = useRef(null);
+  const textWaiter = useRef(null);
+  const aiReq = useRef(0);
+  const [diffInfo, setDiffInfo] = useState(null); // diffHtml'in gönderdiği { text, add, rem, first }
+  const [ai, setAi] = useState(null); // AiPanel durumu
 
   useEffect(() => {
     if (!target) return;
     setSource(null);
     setError(null);
     setReady(false);
+    setDiffInfo(null);
+    setAi(null);
+    aiReq.current++;
+    textWaiter.current = null;
     bufRef.current = null;
     let alive = true;
     (async () => {
@@ -1786,7 +2091,69 @@ function ViewerSheet({ c, target, onClose }) {
     };
   }, [target]);
 
+  // WebView'dan görünen metni iste (belge özeti için). 'ready' mesajının davranışı değişmez.
+  const getDocText = () =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        textWaiter.current = null;
+        resolve('');
+      }, 4000);
+      textWaiter.current = (text) => {
+        clearTimeout(timer);
+        textWaiter.current = null;
+        resolve(text);
+      };
+      if (!webRef.current) return textWaiter.current('');
+      webRef.current.injectJavaScript(
+        "(function(){var t='';try{t=(document.body&&document.body.innerText)||'';}catch(e){}window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify({type:'text',text:t.slice(0,60000)}));})();true;"
+      );
+    });
+
+  const onWebMessage = (e) => {
+    const data = e && e.nativeEvent ? e.nativeEvent.data : '';
+    if (typeof data === 'string' && data[0] === '{') {
+      let m = null;
+      try {
+        m = JSON.parse(data);
+      } catch (err) {}
+      if (m && m.type === 'diff') return setDiffInfo(m);
+      if (m && m.type === 'text') return textWaiter.current && textWaiter.current(String(m.text || ''));
+    }
+    setReady(true);
+  };
+
+  const runAi = async (mode) => {
+    if (!target) return;
+    const id = ++aiReq.current;
+    const title = mode === 'doc' ? t('ai.summaryTitle') : t('ai.changesTitle');
+    setAi({ mode, title, status: 'loading', points: mode === 'doc' ? [] : null });
+    try {
+      let result;
+      if (mode === 'doc') {
+        const text = await getDocText();
+        result = await summarizeDocument(target.aiId || target.name, target.name, text);
+      } else {
+        result = { text: await summarizeChanges(target.aiId || target.name, target.name, diffInfo) };
+      }
+      if (id !== aiReq.current) return;
+      success();
+      setAi({ mode, title, status: 'done', ...result });
+    } catch (err) {
+      if (id !== aiReq.current) return;
+      warn();
+      setAi({ mode, title, status: 'error', error: aiErrorText(err) });
+    }
+  };
+
+  // Kayıt ayrıntısındaki "✨ Neler değişti?" ile açıldıysa özet kendiliğinden başlar
+  useEffect(() => {
+    if (target && target.autoAi && diffInfo && diffInfo.text && aiStatus === 'available' && !ai) runAi('diff');
+  }, [diffInfo, aiStatus]);
+
   if (!target) return null;
+  const aiOn = aiStatus === 'available' && ready && !!source && !error;
+  const canDoc = aiOn && !!source.html && !target.diff;
+  const canDiff = aiOn && !!target.diff && !!diffInfo && !!diffInfo.text;
   const share = () => shareDoc(setBusy, target.shareName || target.name, () => (bufRef.current ? Promise.resolve(bufRef.current) : target.diff ? target.diff.loadNew() : target.load()));
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -1821,10 +2188,11 @@ function ViewerSheet({ c, target, onClose }) {
         ) : source ? (
           <View style={s.flex}>
             <WebView
+              ref={webRef}
               source={source.html ? { html: source.html, baseUrl: 'https://draftrewind.local/' } : { uri: source.uri }}
               originWhitelist={['*']}
               style={{ flex: 1, backgroundColor: c.bg }}
-              onMessage={() => setReady(true)}
+              onMessage={onWebMessage}
               onLoadEnd={() => source.uri && setReady(true)}
             />
             {!ready ? (
@@ -1832,6 +2200,22 @@ function ViewerSheet({ c, target, onClose }) {
                 <ActivityIndicator color={c.accent} size="large" />
                 <Text style={{ color: c.text2, marginTop: 12 }}>{t('viewer.preparing')}</Text>
               </View>
+            ) : null}
+            {(canDoc || canDiff) && !ai ? (
+              <View style={s.aiFloat} pointerEvents="box-none">
+                <AiButton c={c} compact title={canDoc ? t('ai.summarize') : t('ai.whatChanged')} onPress={() => runAi(canDoc ? 'doc' : 'diff')} style={s.aiShadow} />
+              </View>
+            ) : null}
+            {ai ? (
+              <AiPanel
+                c={c}
+                ai={ai}
+                onRetry={() => runAi(ai.mode)}
+                onClose={() => {
+                  aiReq.current++;
+                  setAi(null);
+                }}
+              />
             ) : null}
           </View>
         ) : (
@@ -1873,5 +2257,11 @@ const s = StyleSheet.create({
   node: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   chip: { paddingHorizontal: 7, paddingVertical: 1.5, borderRadius: 999 },
   grabber: { width: 38, height: 5, borderRadius: 3, backgroundColor: '#8886', alignSelf: 'center', marginBottom: 12 },
+  aiBtn: { minHeight: 54, borderRadius: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingVertical: 8 },
+  aiPanel: { position: 'absolute', left: 12, right: 12, bottom: 28, maxHeight: '74%' },
+  aiIcon: { width: 30, height: 30, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  aiDot: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  aiShadow: { shadowColor: '#6c5cff', shadowOpacity: 0.35, shadowRadius: 14, shadowOffset: { width: 0, height: 6 } },
+  aiFloat: { position: 'absolute', left: 0, right: 0, bottom: 30, alignItems: 'center' },
   viewerHead: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth },
 });

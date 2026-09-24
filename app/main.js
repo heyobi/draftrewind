@@ -11,6 +11,7 @@ const { Guardian } = require('./core/guardian');
 const docs = require('./core/docs');
 const github = require('./core/github');
 const drive = require('./core/drive');
+const { LocalAI, cleanTitle, grounded, hasContent } = require('./core/ai');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
 
@@ -41,6 +42,11 @@ let mainWindow = null;
 let tray = null;
 let store = null;
 let guardian = null;
+let ai = null; // isteğe bağlı yerel yapay zekâ (app/core/ai.js)
+// Hangi yoldan kapanırsa kapansın (app.exit dahil) yapay zekâ motorunu arkada açık bırakma
+process.on('exit', () => {
+    if (ai) ai.stop();
+});
 let driveApi = null;
 let githubLogin = null; // { cancel }
 const runtimes = new Map(); // projectId -> runtime
@@ -85,7 +91,7 @@ function recordOf(id) {
 }
 
 function prefs() {
-    return { dailyGoal: 500, guardian: true, autostart: true, language: 'auto', theme: 'system', ...(store.get('prefs', {})) };
+    return { dailyGoal: 500, guardian: true, autostart: true, language: 'auto', theme: 'system', aiTitles: false, ...(store.get('prefs', {})) };
 }
 
 // Dil: prefs.language ('auto' | 'tr' | 'en'); 'auto' → sistem dili (tr* ise Türkçe, değilse İngilizce)
@@ -224,6 +230,7 @@ async function startProject(record) {
         author: { name: (user && user.name) || os.userInfo().username, email: user && user.login ? `${user.login}@users.noreply.github.com` : undefined }
     });
     project.meta = record;
+    project.aiTitle = aiTitle;
     const rt = { project, watcher: null, timer: null, syncTimer: null, missing: false, syncing: false, lastError: null };
     runtimes.set(record.id, rt);
     if (!fs.existsSync(record.dir)) {
@@ -581,6 +588,7 @@ function appState() {
         github: githubToken() ? { connected: true, user: store.get('githubUser') } : { connected: false },
         drive: { mode: d.mode || null, folder: d.folder || null, user: d.user || null, detected: drive.detectFolders(), accountAvailable: !!config.GOOGLE_CLIENT_ID },
         prefs: prefs(),
+        ai: ai ? ai.status() : null,
         lang: I18N.getLanguage(),
         platform: process.platform,
         version: app.getVersion()
@@ -888,6 +896,7 @@ function registerIpc() {
         return shell.openExternal(url);
     });
     registerUxIpc();
+    registerAiIpc();
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,6 +1130,103 @@ function registerUxIpc() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Yerel yapay zekâ (isteğe bağlı, indirilebilir). Kapalıysa her şey kural tabanlı çalışır.
+// ---------------------------------------------------------------------------
+const AI_PROMPTS = {
+    title: {
+        tr: 'Sen bir tez ve ödev yazma asistanısın. Öğrencinin belgesindeki değişikliği anlatan KISA bir kayıt başlığı yaz. Kurallar: Türkçe, en fazla 10 kelime; sadece değişiklik metninde gerçekten yazanı anlat, bilgi uydurma; hangi bölüme ne eklendiğini/çıkarıldığını söyle; girdiyi aynen kopyalama; tırnak ve açıklama ekleme.',
+        en: 'You are a thesis and homework writing assistant. Write a SHORT save-point title describing the change in the student\'s document. Rules: English, at most 10 words; describe only what is actually in the change text, never invent anything; say which section got what added or removed; do not copy the input verbatim; no quotes, no explanation.'
+    },
+    change: {
+        tr: 'Öğrencinin belgesindeki değişikliği EN FAZLA 2 kısa, sade Türkçe cümleyle anlat: ne eklendi, ne çıkarıldı. Sadece değişiklik metninde yazanı kullan, bilgi uydurma. Madde işareti ve başlık kullanma.',
+        en: 'Explain the change in the student\'s document in AT MOST 2 short, plain English sentences: what was added, what was removed. Use only what is in the change text, never invent anything. No bullet points or headings.'
+    },
+    week: {
+        tr: 'Öğrencinin son 7 günde tezinde/ödevinde yaptıklarını EN FAZLA 3 kısa cümlelik samimi ve motive edici bir Türkçe özetle anlat. İkinci tekil şahıs kullan ("bu hafta ... ekledin"). Sadece listede yazanı kullan, bilgi uydurma.',
+        en: 'Summarize what the student did on their thesis/homework in the last 7 days in AT MOST 3 short, warm, motivating English sentences. Use second person ("this week you added ..."). Use only what is in the list, never invent facts.'
+    }
+};
+
+async function aiTitle(digest) {
+    if (!ai || !prefs().aiTitles || !ai.status().installed || !hasContent(digest)) return null;
+    const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
+    const text = await ai.complete({ system: AI_PROMPTS.title[lang], user: `${digest}\n\n${lang === 'tr' ? 'Başlık:' : 'Title:'}`, maxTokens: 40, temperature: 0.1 });
+    const title = cleanTitle(text);
+    return title && grounded(title, digest) ? title : null;
+}
+
+function aiError(e) {
+    if (e && e.code === 'ECHECKSUM') return T('ai.errChecksum');
+    if (e && e.code === 'ENOTINSTALLED') return T('ai.errNotInstalled');
+    if (e && (e.name === 'AbortError' || /aborted/i.test(e.message))) return T('ai.errCancelled');
+    if (/fetch failed|ENOTFOUND|ECONNRESET|ETIMEDOUT/i.test(String(e && e.message))) return T('ai.errNetwork');
+    return T('ai.errGeneric');
+}
+
+function registerAiIpc() {
+    handle('ai:install', async () => {
+        try {
+            await ai.installAll();
+            return ai.status();
+        } catch (e) {
+            throw new Error(aiError(e));
+        }
+    });
+    handle('ai:cancel', () => {
+        ai.cancelInstall();
+        return true;
+    });
+    handle('ai:remove', async () => {
+        await ai.remove();
+        return ai.status();
+    });
+    // Zaman makinesi: bir kayıttaki değişikliği sade dille özetle
+    handle('ai:summarizeChange', async (id, rel, oid) => {
+        const p = rtOf(id).project;
+        const parent = oid === 'working' ? await p.head() : await p.parentOf(oid);
+        const d = await p.diff(rel, parent, oid);
+        if (!d.supported) throw new Error(T('ai.errUnsupportedFile'));
+        let text = `File: ${rel}\n`;
+        for (const b of d.blocks) {
+            if (b.type === 'add') text += `+ ${b.text}\n`;
+            else if (b.type === 'del') text += `- ${b.text}\n`;
+            else if (b.type === 'mod') {
+                const removed = b.parts.filter(x => x.r).map(x => x.t).join(' ').trim();
+                const added = b.parts.filter(x => x.a).map(x => x.t).join(' ').trim();
+                if (removed) text += `- ${removed}\n`;
+                if (added) text += `+ ${added}\n`;
+            }
+            if (text.length > 2400) break;
+        }
+        const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
+        try {
+            return await ai.complete({ system: AI_PROMPTS.change[lang], user: text.slice(0, 2400), maxTokens: 90, temperature: 0.2 });
+        } catch (e) {
+            throw new Error(aiError(e));
+        }
+    });
+    // Özet: son 7 günün kısa, motive edici özeti
+    handle('ai:weekly', async id => {
+        const list = (await fullHistory(rtOf(id))).filter(h => Date.now() - h.time < 7 * 24 * 3600 * 1000 && h.kind !== 'merge');
+        if (!list.length) throw new Error(T('ai.errNoWeek'));
+        const lines = list
+            .slice(0, 40)
+            .reverse()
+            .map(h => {
+                const w = Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
+                return `${new Date(h.time).toISOString().slice(0, 10)}: ${h.title}${w ? ` (${w > 0 ? '+' : ''}${w})` : ''}`;
+            })
+            .join('\n');
+        const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
+        try {
+            return await ai.complete({ system: AI_PROMPTS.week[lang], user: lines.slice(0, 2400), maxTokens: 120, temperature: 0.3 });
+        } catch (e) {
+            throw new Error(aiError(e));
+        }
+    });
+}
+
 function setupDriveApi() {
     driveApi = new drive.DriveApi(
         () => {
@@ -1175,6 +1281,7 @@ function createWindow() {
                     const img = await mainWindow.webContents.capturePage();
                     fs.writeFileSync(process.env.DRAFTREWIND_SCREENSHOT, img.toPNG());
                     app.isQuitting = true;
+                    if (ai) ai.stop();
                     app.exit(0);
                 }, Number(process.env.DRAFTREWIND_WAIT || 1500));
             }, 2500);
@@ -1255,6 +1362,8 @@ app.whenReady().then(async () => {
         setupDriveApi();
     }
     guardian = new Guardian(path.join(app.getPath('userData'), 'koruyucu'));
+    ai = new LocalAI(path.join(app.getPath('userData'), 'ai'), ev => emit(ev.type, ev));
+    ai.cleanupOrphans();
     registerIpc();
     createWindow();
     createTray();
@@ -1301,10 +1410,15 @@ app.whenReady().then(async () => {
 let finalSnapshotDone = false;
 app.on('before-quit', e => {
     app.isQuitting = true;
+    if (ai) ai.stop(); // yapay zekâ motorunu açık bırakma
     if (finalSnapshotDone || !store) return;
     e.preventDefault();
     finalSnapshotDone = true;
     Promise.race([snapshotAll('auto'), new Promise(r => setTimeout(r, 5000))]).finally(() => app.quit());
+});
+
+app.on('will-quit', () => {
+    if (ai) ai.stop();
 });
 
 app.on('window-all-closed', () => {
