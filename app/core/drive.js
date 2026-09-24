@@ -393,6 +393,33 @@ class DriveApi {
         return out;
     }
 
+    // Değişiklik akışı: Drive "en son bakışından beri neler değişti?" sorusuna tek istekle yanıt verir.
+    // Başlangıç jetonu bir kez alınır; her sorguda yenisi döner. Jeton geçersizse null döner (yeniden başlanır).
+    async changesStartToken() {
+        const d = await this.req('GET', 'https://www.googleapis.com/drive/v3/changes/startPageToken');
+        return d && d.startPageToken ? d.startPageToken : null;
+    }
+
+    async listChanges(pageToken) {
+        const changes = [];
+        let token = pageToken;
+        let next = null;
+        try {
+            do {
+                const d = await this.req('GET', `https://www.googleapis.com/drive/v3/changes?pageToken=${encodeURIComponent(token)}&pageSize=200&includeRemoved=true&fields=nextPageToken,newStartPageToken,changes(fileId,removed,time,file(id,name,md5Checksum,mimeType,parents))`);
+                if (!d) return null;
+                changes.push(...(d.changes || []));
+                token = d.nextPageToken || null;
+                if (d.newStartPageToken) next = d.newStartPageToken;
+            } while (token);
+        } catch (e) {
+            // 400: jeton çok eski ya da bozuk → baştan al
+            if (/\b400\b/.test(String(e.message))) return null;
+            throw e;
+        }
+        return { changes, nextToken: next };
+    }
+
     async createFolder(name, parentId, appProperties) {
         return this.req('POST', 'https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink', {
             headers: { 'Content-Type': 'application/json' },

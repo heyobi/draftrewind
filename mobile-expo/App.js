@@ -14,6 +14,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -28,13 +29,14 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
 import { useLocales } from 'expo-localization';
+import { Directory, File, Paths } from 'expo-file-system';
 
 import * as GH from './src/github';
 import * as G from './src/google';
 import { computeStats, deepStats, latestWords, ago, dayLabel, hm, num, kindOf } from './src/stats';
 import { arrayBufferToBase64, wordHtml, sheetHtml, textHtml, utf8Decode, diffHtml } from './src/viewer';
 import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
-import { pulse, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
+import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
 import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
@@ -47,6 +49,9 @@ const KIND_ICON = { auto: 'clock.arrow.circlepath', star: 'star.fill', rescue: '
 const kindIcon = (k) => KIND_ICON[k] || KIND_ICON.auto;
 // Proje kutucukları için dönüşümlü ikonlar
 const PROJECT_ICONS = ['book.closed.fill', 'graduationcap.fill', 'flask.fill', 'books.vertical.fill', 'pencil.and.outline', 'text.book.closed.fill'];
+// Projenin sıra numarasına göre karo rengi ve ikonu (ana ekran listesi ile proje başlığı aynı görünür)
+const projectLook = (i = 0) => ({ colors: i % 2 ? ['#ec62be', '#a35cf6'] : GRAD, icon: PROJECT_ICONS[i % PROJECT_ICONS.length] });
+const DRIVE_LOOK = { colors: ['#fbbf24', '#f97316'], icon: 'folder.fill' };
 const TYPE = {
   word: { label: 'DOC', colors: ['#2b7cd3', '#185abd'] },
   sheet: { label: 'XLS', colors: ['#21a366', '#107c41'] },
@@ -90,8 +95,12 @@ const warn = () => {
 // Esnek (jöle) dokunma efekti. onLongPress: basılı tutunca (dokunsal geri bildirimle) — ör. belge eylemleri
 function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled, accessibilityLabel }) {
   const scale = useRef(new Animated.Value(1)).current;
+  // flex, dış Pressable'a da uygulanır; yoksa satırdaki kartlar içeriğe göre daralır
+  const flat = StyleSheet.flatten(style) || {};
+  const outer = flat.flex != null ? { flex: flat.flex } : null;
   return (
     <Pressable
+      style={outer}
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
@@ -192,6 +201,35 @@ function AddButton({ c, onPress, busy }) {
         {busy ? <ActivityIndicator color={c.accent} size="small" /> : <Text style={{ color: c.accent, fontSize: 26, fontWeight: '500', marginTop: -2 }}>+</Text>}
       </Glass>
     </Jelly>
+  );
+}
+
+// Ekran başlığı: geri düğmesi + "hangi projedeyim" bloğu (renkli karo, büyük ad, alt satır).
+// Bağlantı gibi değil, belirgin bir kart gibi görünür; açık/koyu temada tema renklerini kullanır.
+function ScreenHeader({ c, onBack, backLabel, right, look, eyebrow, title, subtitle }) {
+  return (
+    <>
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+        <Jelly onPress={onBack} scaleTo={0.92} accessibilityLabel={backLabel}>
+          <Glass c={c} interactive style={[s.pillBtn, s.btnRow, s.backPill]}>
+            <Icon name="chevron.left" size={13} color={c.accent} weight="semibold" />
+            <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{backLabel}</Text>
+          </Glass>
+        </Jelly>
+        <View style={s.flex} />
+        {right || null}
+      </View>
+      <Glass c={c} style={s.headBlock}>
+        <LinearGradient colors={look.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.headTile}>
+          <Icon name={look.icon} size={28} color="#fff" />
+        </LinearGradient>
+        <View style={s.flex}>
+          <Text style={{ color: c.text3, fontSize: 11, fontWeight: '800', letterSpacing: 0.8 }} numberOfLines={1}>{eyebrow}</Text>
+          <Text style={{ color: c.text, fontSize: 22, fontWeight: '800', letterSpacing: -0.4, marginTop: 2 }} numberOfLines={2}>{title}</Text>
+          {subtitle ? <Text style={{ color: c.text2, fontSize: 13, marginTop: 3 }} numberOfLines={1}>{subtitle}</Text> : null}
+        </View>
+      </Glass>
+    </>
   );
 }
 
@@ -552,6 +590,8 @@ function Root() {
   // Dil modül düzeyinde tutulur; alt bileşenler t() ile okur (Root her değişimde yeniden çizer)
   const language = resolveLanguage(prefs.language, locales && locales[0] ? locales[0].languageCode : undefined);
   setLanguage(language);
+  // Dinamik Ada tercihi modül düzeyinde tutulur (pulse() oradan okur)
+  useEffect(() => setIslandEnabled(prefs.island !== false), [prefs.island]);
   const updatePrefs = (patch) => {
     const next = { ...prefs, ...patch };
     savePrefs(next);
@@ -977,6 +1017,16 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
               ['dark', t('theme.dark')],
             ]}
           />
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.island')}</Text>
+          <Glass c={c} style={s.accountRow}>
+            <View style={s.accountIcon}><Icon name="bolt.horizontal.circle.fill" size={22} color={c.text2} /></View>
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('settings.islandToggle')}</Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{t('settings.islandSub')}</Text>
+            </View>
+            <Switch value={prefs.island !== false} onValueChange={(island) => onPrefs({ island })} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.islandToggle')} />
+          </Glass>
+          {!isIslandUsable() ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>{t('settings.islandUnavailable')}</Text> : null}
         </ScrollView>
       </View>
     </Modal>
@@ -1099,10 +1149,10 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
 
       {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.githubHeader')}</Text> : null}
       {(ghList || []).map((p, i) => (
-        <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: p })} scaleTo={0.97} style={{ marginBottom: 10 }}>
+        <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: { ...p, index: i } })} scaleTo={0.97} style={{ marginBottom: 10 }}>
           <Glass c={c} interactive style={s.projRow}>
-            <LinearGradient colors={i % 2 ? ['#ec62be', '#a35cf6'] : GRAD} style={s.projTile}>
-              <Icon name={PROJECT_ICONS[i % PROJECT_ICONS.length]} size={24} color="#fff" />
+            <LinearGradient colors={projectLook(i).colors} style={s.projTile}>
+              <Icon name={projectLook(i).icon} size={24} color="#fff" />
             </LinearGradient>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
@@ -1117,8 +1167,8 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
       {(driveList || []).map((f) => (
         <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }}>
           <Glass c={c} interactive style={s.projRow}>
-            <LinearGradient colors={['#fbbf24', '#f97316']} style={s.projTile}>
-              <Icon name="folder.fill" size={24} color="#fff" />
+            <LinearGradient colors={DRIVE_LOOK.colors} style={s.projTile}>
+              <Icon name={DRIVE_LOOK.icon} size={24} color="#fff" />
             </LinearGradient>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{f.name}</Text>
@@ -1362,6 +1412,9 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   }, [files, language, query, sort, lastChanged]);
   const shownHistory = useMemo(() => (history ? (fileFilter ? history.filter((h) => touchesFile(h, fileFilter)) : history) : []), [history, fileFilter]);
   const maxWeek = stats ? Math.max(1, ...stats.week.map((w) => w.words)) : 1;
+  // Başlık alt satırı: son kayıt zamanı (yüklenene kadar GitHub'daki son gönderim) · dosya sayısı
+  const lastSave = history && history.length ? t('project.lastSave', { ago: ago(history[0].time) }) : project.pushedAt ? t('home.lastBackup', { ago: ago(project.pushedAt) }) : '';
+  const headerSub = [lastSave, files ? t('project.fileCount', { n: files.length, count: files.length }) : ''].filter(Boolean).join(' · ');
 
   let lastDay = '';
   return (
@@ -1384,13 +1437,16 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
           />
         }
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <Pressable onPress={onBack} style={{ paddingVertical: 8, alignSelf: 'flex-start', flex: 1 }} hitSlop={12}>
-            <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }}>‹ {t('nav.projects')}</Text>
-          </Pressable>
-          {files ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
-        </View>
-        <Text style={[s.h1, { color: c.text, marginBottom: 14 }]} numberOfLines={2}>{project.name}</Text>
+        <ScreenHeader
+          c={c}
+          onBack={onBack}
+          backLabel={t('nav.projects')}
+          right={files ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
+          look={projectLook(project.index)}
+          eyebrow={t('project.eyebrow')}
+          title={project.name}
+          subtitle={headerSub}
+        />
 
         {error ? <Text style={{ color: c.red, marginBottom: 12 }}>{error}</Text> : null}
         {!stats && !error ? <ProjectSkeleton c={c} /> : null}
@@ -1847,7 +1903,7 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
 
 function MiniStat({ c, icon, label, value, sub }) {
   return (
-    <Glass c={c} style={{ width: '48%', flexGrow: 1, padding: 14 }}>
+    <Glass c={c} style={{ flexGrow: 1, flexBasis: '45%', padding: 14 }}>
       <Icon name={icon} size={20} color={c.accent} />
       <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }} numberOfLines={1}>{label}</Text>
       <Text style={{ color: c.text, fontSize: 21, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
@@ -1951,6 +2007,11 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
                     <Pressable hitSlop={12} onPress={() => fileActions(f, canDiff)} accessibilityLabel={t('doc.share')}>
                       <Text style={{ color: c.text3, fontSize: 22, fontWeight: '800', paddingHorizontal: 4 }}>···</Text>
                     </Pressable>
+                  ) : null}
+                  {!removed && !canDiff ? (
+                    <Text style={{ color: c.text3, fontSize: 12, lineHeight: 16, width: '100%', marginTop: 10 }}>
+                      {t(kind === 'pdf' ? 'snapshot.noDiffPdf' : kind === 'image' ? 'snapshot.noDiffImage' : 'snapshot.noDiffOther')}
+                    </Text>
                   ) : null}
                   {!removed ? (
                     <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 14 }}>
@@ -2079,14 +2140,16 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
   return (
     <View style={s.flex}>
       <ScrollView style={s.flex} contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          <Pressable onPress={back} style={{ paddingVertical: 8, alignSelf: 'flex-start', flex: 1 }} hitSlop={12}>
-            <Text style={{ color: c.accent, fontSize: 17, fontWeight: '600' }} numberOfLines={1}>‹ {stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}</Text>
-          </Pressable>
-          {!isVersions && items ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
-        </View>
-        <Text style={[s.h1, { color: c.text, marginBottom: 4 }]} numberOfLines={2}>{isVersions ? t('drive.versions') : current.name}</Text>
-        <Text style={{ color: c.text3, marginBottom: 14 }}>{isVersions ? t('drive.versionsSub') : 'Google Drive'}</Text>
+        <ScreenHeader
+          c={c}
+          onBack={back}
+          backLabel={stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}
+          right={!isVersions && items ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
+          look={isVersions ? { colors: DRIVE_LOOK.colors, icon: 'clock.arrow.circlepath' } : DRIVE_LOOK}
+          eyebrow={t('drive.eyebrow')}
+          title={isVersions ? t('drive.versions') : current.name}
+          subtitle={isVersions ? t('drive.versionsSub') : items ? `Google Drive · ${t('drive.itemCount', { n: items.length, count: items.length })}` : 'Google Drive'}
+        />
         {error ? <Text style={{ color: c.red }}>{error}</Text> : null}
         {items === null && !error ? <SkeletonRows c={c} rows={5} /> : null}
         {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : items || []).map((it) => (
@@ -2127,6 +2190,15 @@ function ViewerSheet({ c, target, onClose }) {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(null);
   const bufRef = useRef(null);
+  // PDF önizlemesi için önbelleğe yazılan geçici dosya (görüntüleyici kapanınca silinir)
+  const tempFile = useRef(null);
+  const dropTemp = () => {
+    const f = tempFile.current;
+    tempFile.current = null;
+    try {
+      if (f && f.exists) f.delete();
+    } catch (e) {}
+  };
   // Cihaz üstü Apple Intelligence
   const aiStatus = useAiStatus();
   const webRef = useRef(null);
@@ -2145,6 +2217,7 @@ function ViewerSheet({ c, target, onClose }) {
     aiReq.current++;
     textWaiter.current = null;
     bufRef.current = null;
+    dropTemp();
     let alive = true;
     (async () => {
       try {
@@ -2170,12 +2243,22 @@ function ViewerSheet({ c, target, onClose }) {
         if (island) island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', subtitle: t('pulse.ready'), short: t('pulse.readyShort') });
         if (!alive) return;
         bufRef.current = buf;
-        const b64 = arrayBufferToBase64(buf);
         const libs = await libsJob;
         if (!alive) return;
+        if (kind === 'pdf') {
+          // Çok MB'lık base64 data: adresi WebView'ı çökertiyor; dosyaya yazıp dosya adresinden aç
+          // (iOS WebView PDF'i yerel olarak çizer).
+          const dir = new Directory(Paths.cache, 'Onizleme');
+          dir.create({ intermediates: true, idempotent: true });
+          const file = new File(dir, `${Date.now()}.pdf`);
+          file.write(new Uint8Array(buf));
+          tempFile.current = file;
+          setSource({ uri: file.uri, readAccess: dir.uri });
+          return;
+        }
+        const b64 = arrayBufferToBase64(buf);
         if (kind === 'word') setSource({ html: wordHtml(b64, c.dark, viewerLabels(), libs) });
         else if (kind === 'sheet') setSource({ html: sheetHtml(b64, c.dark, viewerLabels(), libs) });
-        else if (kind === 'pdf') setSource({ uri: `data:application/pdf;base64,${b64}` });
         else if (kind === 'image') setSource({ image: `data:image/${target.name.split('.').pop().toLowerCase()};base64,${b64}` });
         else if (kind === 'text') setSource({ html: textHtml(utf8Decode(buf), c.dark, viewerLabels()) });
         else setError(t('viewer.unsupported'));
@@ -2185,6 +2268,7 @@ function ViewerSheet({ c, target, onClose }) {
     })();
     return () => {
       alive = false;
+      dropTemp();
     };
   }, [target]);
 
@@ -2287,6 +2371,7 @@ function ViewerSheet({ c, target, onClose }) {
             <WebView
               ref={webRef}
               source={source.html ? { html: source.html, baseUrl: 'https://draftrewind.local/' } : { uri: source.uri }}
+              allowingReadAccessToURL={source.readAccess}
               originWhitelist={['*']}
               style={{ flex: 1, backgroundColor: c.bg }}
               onMessage={onWebMessage}
@@ -2343,6 +2428,9 @@ const s = StyleSheet.create({
   accountIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   projRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14 },
   projTile: { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  backPill: { gap: 4, paddingLeft: 9, maxWidth: 220 },
+  headBlock: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14, marginBottom: 14 },
+  headTile: { width: 58, height: 58, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 },
   bar: { width: '100%', maxWidth: 30, borderRadius: 8 },
   seg: { flexDirection: 'row', padding: 4, marginBottom: 6, borderRadius: 16 },

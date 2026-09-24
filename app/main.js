@@ -11,7 +11,7 @@ const { Guardian } = require('./core/guardian');
 const docs = require('./core/docs');
 const github = require('./core/github');
 const drive = require('./core/drive');
-const { LocalAI, cleanTitle, grounded, hasContent } = require('./core/ai');
+const { LocalAI, cleanTitle, grounded, hasContent, digestWords } = require('./core/ai');
 const facts = require('./core/facts');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
@@ -306,6 +306,64 @@ async function doSnapshot(rt, opts) {
 async function afterChange(rt, res) {
     if (res.kind !== 'merge') await syncDrive(rt, res.kind);
     scheduleSync(rt);
+}
+
+// Drive değişiklik akışı (yalnızca hesap modu). Jeton saklanır; ilk çağrıda alınır.
+let drivePollBusy = false;
+async function pollDriveChanges() {
+    const d = store.get('drive', {});
+    if (d.mode !== 'account' || !driveApi || drivePollBusy || !runtimes.size) return;
+    drivePollBusy = true;
+    try {
+        let token = store.get('driveChangesToken', null);
+        if (!token) {
+            token = await driveApi.changesStartToken();
+            if (token) store.set('driveChangesToken', token);
+            return;
+        }
+        const r = await driveApi.listChanges(token);
+        if (!r) {
+            store.set('driveChangesToken', null);
+            return;
+        }
+        if (r.nextToken) store.set('driveChangesToken', r.nextToken);
+        // Bizim yüklemelerimiz de akışta görünür; yalnızca son eşitlememizden SONRAKİ değişiklikler ilgimizi çeker
+        let latest = 0;
+        for (const c of r.changes) latest = Math.max(latest, Date.parse(c.time) || 0);
+        if (!latest) return;
+        for (const rt of runtimes.values()) {
+            const rec = recordOf(rt.project.id);
+            if (!rec || rt.missing) continue;
+            if (latest > (rec.driveAt || 0) + 2000) syncDrive(rt).catch(() => {});
+        }
+    } finally {
+        drivePollBusy = false;
+    }
+}
+
+// Yerel Drive klasörü modu: klasörü izle, değişince (kısa bir bekleme sonrası) eşitle
+let driveWatcher = null;
+let driveWatchTimer = null;
+function watchDriveFolder() {
+    if (driveWatcher) {
+        try { driveWatcher.close(); } catch (e) {}
+        driveWatcher = null;
+    }
+    const d = store.get('drive', {});
+    if (d.mode !== 'folder' || !d.folder) return;
+    const root = path.join(d.folder, 'DraftRewind');
+    if (!fs.existsSync(root)) return;
+    try {
+        driveWatcher = fs.watch(root, { recursive: true }, () => {
+            clearTimeout(driveWatchTimer);
+            driveWatchTimer = setTimeout(() => {
+                for (const rt of runtimes.values()) syncDrive(rt).catch(() => {});
+            }, 5000);
+        });
+        driveWatcher.on('error', () => {});
+    } catch (e) {
+        driveWatcher = null;
+    }
 }
 
 // Drive ile çift yönlü eşitleme (Drive'da yapılan düzenlemeler de bilgisayara gelir)
@@ -879,6 +937,12 @@ function registerIpc() {
         driveApi = null;
         return true;
     });
+    // Bulut sekmesindeki "Şimdi kontrol et": Drive'daki düzenlemeleri hemen al
+    handle('drive:syncNow', async id => {
+        const rt = rtOf(id);
+        await syncDrive(rt);
+        return overviewOf(rt);
+    });
     handle('drive:open', async id => {
         const r = recordOf(id);
         if (!r || !r.driveUrl) throw new Error(T('err.notUploaded'));
@@ -1140,8 +1204,8 @@ function registerUxIpc() {
 // ---------------------------------------------------------------------------
 const AI_PROMPTS = {
     title: {
-        tr: 'Sen bir tez ve ödev yazma asistanısın. Öğrencinin belgesindeki değişikliği anlatan KISA bir kayıt başlığı yaz. Kurallar: Türkçe, en fazla 10 kelime; sadece değişiklik metninde gerçekten yazanı anlat, bilgi uydurma; hangi bölüme ne eklendiğini/çıkarıldığını söyle; girdiyi aynen kopyalama; tırnak, emoji ve açıklama ekleme.',
-        en: 'You are a thesis and homework writing assistant. Write a SHORT save-point title describing the change in the student\'s document. Rules: English, at most 10 words; describe only what is actually in the change text, never invent anything; say which section got what added or removed; do not copy the input verbatim; no quotes, no emojis, no explanation.'
+        tr: 'Sen bir tez ve ödev yazma asistanısın. Öğrencinin belgesindeki değişikliği anlatan KISA bir kayıt başlığı yaz. Kurallar: Türkçe, en fazla 10 kelime; sadece değişiklik metninde gerçekten yazanı anlat, bilgi uydurma; önce bölüm adını, sonra ne yapıldığını (eklendi/çıkarıldı/düzeltildi) ve konusunu söyle; cümleleri kopyalama, konuyu özetle; tırnak, emoji ve açıklama ekleme.',
+        en: 'You are a thesis and homework writing assistant. Write a SHORT save-point title describing the change in the student\'s document. Rules: English, at most 10 words; describe only what is actually in the change text, never invent anything; name the section first, then what was done (added/removed/revised) and its topic; do not copy sentences, summarize their topic in English; no quotes, no emojis, no explanation.'
     },
     change: {
         tr: 'Öğrencinin belgesindeki değişikliği EN FAZLA 2 kısa, sade Türkçe cümleyle anlat: ne eklendi, ne çıkarıldı. Sadece değişiklik metninde yazanı kullan, bilgi uydurma. Madde işareti, başlık ve emoji kullanma.',
@@ -1155,6 +1219,8 @@ const AI_PROMPTS = {
 
 async function aiTitle(digest) {
     if (!ai || !prefs().aiTitles || !ai.status().installed || !hasContent(digest)) return null;
+    // Küçük düzeltmelerde (≤20 kelime) kural tabanlı başlık daha doğru ve anında; modeli yorma
+    if (digestWords(digest) <= 20) return null;
     const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
     const text = await ai.complete({ system: AI_PROMPTS.title[lang], user: `${digest}\n\n${lang === 'tr' ? 'Başlık:' : 'Title:'}`, maxTokens: 40, temperature: 0.1 });
     const title = cleanTitle(text);
@@ -1336,7 +1402,10 @@ function createWindow() {
     mainWindow.on('focus', () => {
         if (Date.now() - lastFocusSync < 60 * 1000) return;
         lastFocusSync = Date.now();
-        for (const rt of runtimes.values()) if (!rt.syncing) runSync(rt);
+        for (const rt of runtimes.values()) {
+            if (!rt.syncing) runSync(rt);
+            syncDrive(rt).catch(() => {});
+        }
     });
     mainWindow.on('close', e => {
         if (app.isQuitting) return;
@@ -1437,10 +1506,15 @@ app.whenReady().then(async () => {
     setInterval(() => {
         for (const rt of runtimes.values()) if (!rt.syncing) runSync(rt);
     }, config.GITHUB_POLL_MS);
-    // Drive'da yapılan düzenlemeleri düzenli olarak kontrol et
+    // Drive'da yapılan düzenlemeleri düzenli olarak kontrol et (tam tarama; yedek yol)
     setInterval(() => {
         for (const rt of runtimes.values()) syncDrive(rt);
     }, config.DRIVE_POLL_MS);
+    // Hesapla bağlıyken: Drive'ın değişiklik akışını sık sık sor; bizim son eşitlememizden sonra
+    // bir şey değişmişse (ör. Drive'da docx düzenlendi) hemen tam eşitleme yap
+    setInterval(() => pollDriveChanges().catch(() => {}), config.DRIVE_CHANGES_POLL_MS);
+    setTimeout(() => pollDriveChanges().catch(() => {}), 20 * 1000);
+    watchDriveFolder();
     setInterval(runGuardian, config.GUARDIAN_INTERVAL_MS);
     setTimeout(runGuardian, 30 * 1000);
 

@@ -70,7 +70,8 @@ contextBridge.exposeInMainWorld('av', {
         useFolder: folder => call('drive:useFolder', folder),
         signIn: () => call('drive:signIn'),
         disconnect: () => call('drive:disconnect'),
-        open: id => call('drive:open', id)
+        open: id => call('drive:open', id),
+        syncNow: id => call('drive:syncNow', id)
     },
 
     setPref: (key, value) => call('prefs:set', key, value),

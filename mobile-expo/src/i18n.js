@@ -23,6 +23,10 @@ const tr = {
   'settings.accounts': 'HESAPLAR',
   'settings.language': 'DİL',
   'settings.theme': 'TEMA',
+  'settings.island': 'DİNAMİK ADA',
+  'settings.islandToggle': 'Dinamik Ada bildirimleri',
+  'settings.islandSub': 'Yeni kayıt, indirme ve yükleme durumu ekranın üstünde kısaca görünür.',
+  'settings.islandUnavailable': 'Bu kurulumda kullanılamıyor (ücretsiz Apple hesabıyla yüklenen sürüm). App Store sürümünde çalışır.',
   'lang.auto': 'Otomatik',
   'theme.system': 'Sistem',
   'theme.light': 'Açık',
@@ -60,6 +64,9 @@ const tr = {
   'project.oldVersion': 'Eski sürüm',
   'project.current': 'Güncel hali',
   'project.whatChanged': 'Bu kayıtta neler değişti',
+  'project.eyebrow': 'ÇALIŞTIĞIN PROJE',
+  'project.lastSave': 'Son kayıt {ago}',
+  'project.fileCount': '{n} dosya',
   'stats.streak': 'Seri',
   'stats.days': '{n} gün',
   'stats.today': 'Bugün',
@@ -75,12 +82,17 @@ const tr = {
   'snapshot.modified': 'güncellendi',
   'snapshot.diff': 'Neler değişti',
   'snapshot.thisVersion': 'Bu hali',
+  'snapshot.noDiffPdf': "PDF'ler metin olarak karşılaştırılmaz; her sürüm ayrı saklanır ve önizlenebilir.",
+  'snapshot.noDiffImage': 'Görseller metin olarak karşılaştırılmaz; her sürüm ayrı saklanır ve önizlenebilir.',
+  'snapshot.noDiffOther': 'Bu dosya türü metin olarak karşılaştırılmaz; her sürüm ayrı saklanır.',
   'snapshot.noFiles': 'Dosya değişikliği yok — bu an işaretlenmiş.',
 
   'drive.versions': 'Sürümler',
   'drive.versionsSub': 'Tarihli kopyalar, en yenisi üstte',
   'drive.versionsFolder': 'Sürümler (eski halleri)',
   'drive.folder': 'Klasör',
+  'drive.eyebrow': 'GOOGLE DRIVE KLASÖRÜ',
+  'drive.itemCount': '{n} öğe',
   'drive.empty': 'Bu klasör boş.',
 
   'viewer.unsupported': 'Bu dosya türü telefonda gösterilemiyor.',
@@ -279,6 +291,10 @@ const en = {
   'settings.accounts': 'ACCOUNTS',
   'settings.language': 'LANGUAGE',
   'settings.theme': 'THEME',
+  'settings.island': 'DYNAMIC ISLAND',
+  'settings.islandToggle': 'Dynamic Island alerts',
+  'settings.islandSub': 'New saves, downloads and uploads show briefly at the top of the screen.',
+  'settings.islandUnavailable': "Not available in this install (version loaded with a free Apple account). It works in the App Store version.",
   'lang.auto': 'Auto',
   'theme.system': 'System',
   'theme.light': 'Light',
@@ -318,6 +334,10 @@ const en = {
   'project.oldVersion': 'Older version',
   'project.current': 'Current version',
   'project.whatChanged': 'What changed in this save',
+  'project.eyebrow': 'CURRENT PROJECT',
+  'project.lastSave': 'Last save {ago}',
+  'project.fileCount': '{n} files',
+  'project.fileCount_one': '1 file',
   'stats.streak': 'Streak',
   'stats.days': '{n} days',
   'stats.days_one': '1 day',
@@ -335,12 +355,18 @@ const en = {
   'snapshot.modified': 'updated',
   'snapshot.diff': 'What changed',
   'snapshot.thisVersion': 'This version',
+  'snapshot.noDiffPdf': "PDFs aren't compared as text; each version is kept and can be previewed.",
+  'snapshot.noDiffImage': "Images aren't compared as text; each version is kept and can be previewed.",
+  'snapshot.noDiffOther': "This file type isn't compared as text; each version is kept.",
   'snapshot.noFiles': 'No file changes. This moment was just marked.',
 
   'drive.versions': 'Versions',
   'drive.versionsSub': 'Dated copies, newest first',
   'drive.versionsFolder': 'Versions (older copies)',
   'drive.folder': 'Folder',
+  'drive.eyebrow': 'GOOGLE DRIVE FOLDER',
+  'drive.itemCount': '{n} items',
+  'drive.itemCount_one': '1 item',
   'drive.empty': 'This folder is empty.',
 
   'viewer.unsupported': "This file type can't be shown on your phone.",
@@ -576,7 +602,7 @@ export function viewerLabels() {
 
 // ---------------------------------------------------------------- tercihler
 // Dil ve tema tercihi uygulamanın klasöründe küçük bir JSON dosyasında saklanır.
-export const DEFAULT_PREFS = { language: 'auto', theme: 'system' };
+export const DEFAULT_PREFS = { language: 'auto', theme: 'system', island: true };
 const prefsFile = () => new File(Paths.document, 'ayarlar.json');
 
 export function loadPrefs() {
@@ -587,6 +613,8 @@ export function loadPrefs() {
     return {
       language: ['auto', 'tr', 'en'].includes(p.language) ? p.language : DEFAULT_PREFS.language,
       theme: ['system', 'light', 'dark'].includes(p.theme) ? p.theme : DEFAULT_PREFS.theme,
+      // Dinamik Ada bildirimleri (varsayılan açık)
+      island: p.island !== false,
     };
   } catch (e) {
     return { ...DEFAULT_PREFS };

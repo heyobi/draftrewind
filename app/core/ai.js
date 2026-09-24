@@ -289,8 +289,21 @@ class LocalAI {
 function cleanTitle(text) {
     let t = String(text || '').replace(/[\p{Extended_Pictographic}️‍]/gu, '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
     t = t.replace(/^(\*\*)?(başlık|title)\s*:?\s*(\*\*)?\s*/i, '').replace(/^["'“”‘’«»*#\-\s]+|["'“”‘’«»*\s]+$/g, '');
-    if (t.length < 4 || t.length > 110) return null;
+    // İki cümle yazdıysa ilkini al; hâlâ uzunsa kelime sınırında kes (iyi başlığı atmak yerine kısalt)
+    if (t.length > 110) {
+        const first = t.match(/^.{20,105}?[.!?](?=\s)/);
+        t = first ? first[0] : t.slice(0, 100).replace(/\s+\S*$/, '') + '…';
+    }
+    t = t.replace(/\.$/, '');
+    if (t.length < 4) return null;
     return t;
+}
+
+// Olgu kartındaki sayılar: küçük değişiklikte (≤20 kelime) yapay zekâ gereksiz, kural tabanlı başlık daha doğru
+function digestWords(digest) {
+    let n = 0;
+    for (const m of String(digest).matchAll(/\(~(\d+) words\)/g)) n += Number(m[1]);
+    return n;
 }
 
 // Uydurma kontrolü: başlıktaki anlamlı kelimelerden en az biri değişiklik metninde geçmeli.
@@ -312,7 +325,11 @@ function grounded(title, source) {
         .filter(w => w.length >= 4)
         .map(w => w.slice(0, 5)) // Türkçe ekler: "bölümüne" ~ "bolum", "çökmesi" ~ "cokme"
         .filter(s => !GENERIC.some(g => s.startsWith(g) || g.startsWith(s)));
-    return stems.some(s => src.includes(s));
+    if (stems.some(s => src.includes(s))) return true;
+    // Arayüz dili belgeden farklıysa (İngilizce başlık, Türkçe tez) kelimeler tutmaz; o zaman
+    // sayılar (2019, 18 mm) ve özel adlar (Landsat, Sentinel) kaynakta geçiyorsa yeterli sayılır
+    const anchors = String(title).match(/\d{2,}|\b\p{Lu}[\p{L}]{3,}\b/gu) || [];
+    return anchors.some(a => src.includes(norm(a)));
 }
 
 // Değişiklik metninde gerçek içerik satırı (+/-) var mı? Sadece "yeni dosya/silindi" ise yapay zekâya gerek yok.
@@ -320,4 +337,4 @@ function hasContent(digest) {
     return /^[+-] \S/m.test(digest);
 }
 
-module.exports = { LocalAI, MODEL, cleanTitle, grounded, hasContent };
+module.exports = { LocalAI, MODEL, cleanTitle, grounded, hasContent, digestWords };

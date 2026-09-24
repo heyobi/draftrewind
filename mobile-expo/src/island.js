@@ -1,5 +1,6 @@
 // Dinamik Ada yardımcıları. Yerel modül yoksa (ör. Expo Go, eski iOS) her şey sessizce devre dışı kalır.
 import { File, Paths } from 'expo-file-system';
+import { loadPrefs } from './i18n';
 
 let Activities = {};
 try {
@@ -14,32 +15,56 @@ try {
 // app.json → expo-widgets.groupIdentifier ile aynı olmalı
 const APP_GROUP = 'group.com.draftrewind.app';
 
-// Yan yükleme (ücretsiz Apple hesabı) App Group'u yeniden adlandırır; o zaman eklenti düzeni
-// okuyamaz ve Dinamik Ada boş siyah bir hap olarak kalır. Grup erişilebilir değilse hiç başlatma
-// ve önceki sürümden takılı kalmış boş etkinlikleri kapat.
+// Yan yükleme (ücretsiz Apple hesabı) App Group'u yeniden adlandırır ya da düşürür; o zaman eklenti
+// düzeni okuyamaz ve Dinamik Ada boş siyah bir hap olarak kalır. Yerel taraf imza profilindeki
+// (embedded.mobileprovision) yetkileri okur; grup tam olarak listede değilse hiç başlatma ve önceki
+// sürümden takılı kalmış boş etkinlikleri kapat.
 const islandUsable = (() => {
   if (!Activities.PulseActivity) return false;
   let ok = false;
   try {
     ok = appGroupReady(APP_GROUP);
   } catch (e) {}
-  if (!ok) {
-    try {
-      for (const a of Activities.PulseActivity.getInstances()) a.end('immediate').catch(() => {});
-    } catch (e) {}
-  }
+  if (!ok) endStale();
   return ok;
 })();
 
-const PulseActivity = islandUsable ? Activities.PulseActivity : null;
+// Önceki oturumdan açık kalmış etkinlikleri kapat (boş hap görünmesin)
+function endStale() {
+  try {
+    for (const a of Activities.PulseActivity.getInstances()) a.end('immediate').catch(() => {});
+  } catch (e) {}
+}
 
+// Ayarlar'daki not için: bu kurulumda Dinamik Ada gerçekten çalışabilir mi?
+export const isIslandUsable = () => islandUsable;
+
+// Kullanıcı tercihi ("Dinamik Ada bildirimleri", varsayılan açık). İlk değer ayar dosyasından okunur;
+// Ayarlar değişince setIslandEnabled ile güncellenir.
 let current = null;
 let endTimer = null;
+let enabled = true;
+try {
+  enabled = loadPrefs().island !== false;
+} catch (e) {}
+
+export function setIslandEnabled(on) {
+  enabled = !!on;
+  if (!enabled && islandUsable) {
+    clearTimeout(endTimer);
+    if (current) current.end('immediate').catch(() => {});
+    current = null;
+    endStale();
+  }
+}
+
+const PulseActivity = islandUsable ? Activities.PulseActivity : null;
 
 // Kısa süreli bildirim: başlar, `ms` sonra kendiliğinden kapanır.
 // Dönen nesneyle içerik güncellenebilir (ör. "indiriliyor" → "hazır").
+// Tercih kapalıysa ya da bu kurulumda Ada kullanılamıyorsa hiçbir şey yapmaz.
 export function pulse(props, ms = 6000) {
-  if (!PulseActivity) return { update() {}, finish() {} };
+  if (!PulseActivity || !enabled) return { update() {}, finish() {} };
   try {
     clearTimeout(endTimer);
     if (current) current.end('immediate').catch(() => {});

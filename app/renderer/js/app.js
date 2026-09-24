@@ -357,13 +357,14 @@
                     <h1 data-action="rename" title="${t('head.renameHint')}">${esc(p.name)}</h1>
                     <div class="path" title="${esc(p.dir)}"><a data-action="open-folder">‎${ic('folderOpen')} ${esc(p.dir)}‎</a></div>
                 </div>
-                <button class="btn star" data-action="star">${t('head.star')}</button>
-                <button class="btn ghost" data-action="settings" title="${t('head.settings')}" style="font-size:18px;padding:8px 10px">${ic('settings')}</button>
+                <button class="btn star" data-action="star" title="${esc(t('head.starTip'))}">${ic('star')} ${t('head.star')}</button>
+                <button class="btn ghost" data-action="help" title="F1">${ic('help')} ${t('head.help')}</button>
+                <button class="btn ghost" data-action="settings">${ic('settings')} ${t('head.settings')}</button>
             </div>
             <div class="tabs">
-                <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home" title="Ctrl+1">${t('tabs.home')}</button>
-                <button class="tab ${S.tab === 'timeline' ? 'active' : ''}" data-action="goto-tab" data-tab="timeline" title="Ctrl+2">${t('tabs.timeline')}${ov && ov.stats ? `<span class="count">${num(ov.stats.snapshots)}</span>` : ''}</button>
-                <button class="tab ${S.tab === 'cloud' ? 'active' : ''}" data-action="goto-tab" data-tab="cloud" title="Ctrl+3">${t('tabs.cloud')}</button>
+                <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home" title="Ctrl+1"><span class="tl">${t('tabs.home')}</span><span class="ts">${t('tabs.homeSub')}</span></button>
+                <button class="tab ${S.tab === 'timeline' ? 'active' : ''}" data-action="goto-tab" data-tab="timeline" title="Ctrl+2"><span class="tl">${t('tabs.timeline')}${ov && ov.stats ? `<span class="count">${num(ov.stats.snapshots)}</span>` : ''}</span><span class="ts">${t('tabs.timelineSub')}</span></button>
+                <button class="tab ${S.tab === 'cloud' ? 'active' : ''}" data-action="goto-tab" data-tab="cloud" title="Ctrl+3"><span class="tl">${t('tabs.cloud')}</span><span class="ts">${t('tabs.cloudSub')}</span></button>
             </div>
             ${
                 ov && ov.missing
@@ -464,6 +465,16 @@
         return `<div class="content">
             <div class="greeting"><h2>${greeting()}${firstName ? `, ${esc(firstName)}` : ''}</h2><p>${motivation(st, goal)}</p></div>
 
+            ${dismissed().guide ? '' : `<div class="card guide">
+                <div class="guide-head"><h3>${t('guide.title')}</h3><button class="dismiss-x" data-action="dismiss" data-key="guide" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button></div>
+                <div class="guide-steps">
+                    <div class="gstep"><span class="gn">1</span><div><b>${t('guide.s1t')}</b><p>${t('guide.s1x')}</p></div></div>
+                    <div class="gstep"><span class="gn">2</span><div><b>${t('guide.s2t')}</b><p>${t('guide.s2x')}</p></div></div>
+                    <div class="gstep"><span class="gn">3</span><div><b>${t('guide.s3t')}</b><p>${t('guide.s3x')}</p><button class="btn sm" data-action="goto-tab" data-tab="timeline">${t('guide.openTimeline')}</button></div></div>
+                    <div class="gstep"><span class="gn">4</span><div><b>${t('guide.s4t')}</b><p>${t('guide.s4x')}</p><button class="btn sm" data-action="goto-tab" data-tab="cloud">${t('tabs.cloud')}</button></div></div>
+                </div>
+            </div>`}
+
             ${rescues.length ? `<div class="banner"><span class="ic">${ic('bolt')}</span><div><div class="t">${tn('home.rescueTitle', rescues.length)}</div><div class="s">${t('home.rescueText')}</div></div><button class="btn sm" data-action="open-file" data-rel="${esc(rescues[0].rel)}">${t('common.open')}</button></div>` : ''}
             ${ov.error ? `<div class="banner error"><span class="ic">${ic('alert')}</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(ov.error)}</div></div></div>` : ''}
             ${unprotected.length ? `<div class="banner error"><span class="ic">${ic('shieldOff')}</span><div><div class="t">${tn('bk.bannerTitle', unprotected.length)}</div><div class="s">${tn(dr ? 'bk.bannerTextDrive' : 'bk.bannerText', unprotected.length)} <span class="bk-list">${esc(unprotected.slice(0, 3).map(r => r.split('/').pop()).join(', '))}${unprotected.length > 3 ? '…' : ''}</span></div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${dr ? t('bk.bannerBtnCheck') : t('bk.bannerBtn')}</button></div>` : ''}
@@ -505,7 +516,7 @@
                                 <div class="fsub">${f.rel.includes('/') ? esc(f.rel.slice(0, f.rel.lastIndexOf('/'))) + ' · ' : ''}${ago(f.mtime)} · ${sizeText(f.size)}</div></div>
                             ${f.words != null ? `<span class="fwords">${tn('common.words', f.words)}</span>` : ''}
                             ${backupBadges(f)}
-                            <div class="factions"><button class="btn sm" data-action="file-history" data-rel="${esc(f.rel)}">${t('files.history')}</button><button class="btn sm more-btn" data-action="file-more" data-rel="${esc(f.rel)}" title="${esc(t('fx.more'))}" aria-label="${esc(t('fx.more'))}">⋯</button></div>
+                            <div class="factions"><button class="btn sm hist" data-action="file-history" data-rel="${esc(f.rel)}" title="${esc(t('files.historyTip'))}">${ic('history')} ${t('files.history')}</button><button class="btn sm more-btn" data-action="file-more" data-rel="${esc(f.rel)}" title="${esc(t('fx.more'))}" aria-label="${esc(t('fx.more'))}">⋯</button></div>
                         </div>`
                               )
                               .join('') +
@@ -545,10 +556,11 @@
             : '';
         return `<div class="content split">
             <div class="tl-side">
-                <div class="tl-filter"><select class="select" id="tl-filter">
+                <div class="tl-filter"><label for="tl-filter">${t('tl.filterLabel')}</label><select class="select" id="tl-filter">
                     <option value="">${t('tl.allFiles')}</option>
                     ${docsFirst.map(f => `<option value="${esc(f.rel)}" ${f.rel === S.tlFilter ? 'selected' : ''}>${esc(f.rel)}</option>`).join('')}
                 </select></div>
+                ${S.tlFilter ? `<div class="tl-only">${ic('doc')}<span>${t('tl.onlyFile')}</span><button class="linkish" data-action="tl-clear-filter">${t('tl.showAllFiles')}</button></div>` : ''}
                 <div class="tl-list">${live}${items || live ? items : `<div class="placeholder" style="height:300px"><div><div class="e">${ic('doc')}</div><p>${t('tl.empty')}</p></div></div>`}</div>
             </div>
             <div class="tl-detail" id="tl-detail">${renderDetail()}</div>
@@ -720,11 +732,11 @@
         if (dr.mode === 'folder') {
             drBody = `<div class="user-row"><span class="avatar-ic">${ic('folder')}</span><div style="min-width:0"><div class="nm">${t('cloud.driveFolder')}</div><div class="lg" style="word-break:break-all">${esc(dr.folder)}\\DraftRewind</div></div></div>
                 <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastCopy', { ago: ago(c.driveAt) }) : t('cloud.copying')}<br>${t('cloud.folderInfo')}</div>
-                <div class="actions"><button class="btn primary" data-action="drive-open">${t('cloud.openDriveFolder')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
+                <div class="actions"><button class="btn primary" data-action="drive-open">${t('cloud.openDriveFolder')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else if (dr.mode === 'account') {
             drBody = `<div class="user-row">${dr.user && dr.user.picture ? `<img src="${esc(dr.user.picture)}">` : `<span class="avatar-ic">${ic('drive')}</span>`}<div><div class="nm">${esc(dr.user ? dr.user.name : t('cloud.googleAccount'))}</div><div class="lg">${esc(dr.user ? dr.user.email : '')}</div></div></div>
-                <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}</div>
-                <div class="actions"><button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
+                <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}<br>${t('cloud.driveAuto')}</div>
+                <div class="actions"><button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else {
             const det = dr.detected.filter(d => d.kind === 'gdrive');
             const other = dr.detected.filter(d => d.kind !== 'gdrive');
@@ -848,6 +860,20 @@
         };
         m.querySelector('[data-x=yes]').onclick = go;
         title.addEventListener('keydown', e => e.key === 'Enter' && go());
+    }
+
+    // "Nasıl yapılır?": her işin nerede olduğunu gösteren kısa tablo + kısayollar (F1)
+    function helpModal() {
+        const rows = t('help.rows');
+        const keys = t('help.keys');
+        openModal(
+            `<div class="modal-ic">${ic('help')}</div><h2>${t('help.title')}</h2><p class="sub">${t('help.sub')}</p>
+            <table class="help-table">${rows.map(([task, where]) => `<tr><td>${esc(task)}</td><td>${esc(where)}</td></tr>`).join('')}</table>
+            <h3 style="margin:16px 0 4px">${t('help.shortcuts')}</h3>
+            <div class="help-keys">${keys.map(([k, what]) => `<span><kbd>${esc(k)}</kbd> ${esc(what)}</span>`).join('')}</div>
+            <div class="foot"><button class="btn primary" data-x="ok">${t('common.ok')}</button></div>`,
+            { wide: true }
+        ).querySelector('[data-x=ok]').onclick = () => closeModal();
     }
 
     function emojiModal() {
@@ -1282,6 +1308,24 @@
             render();
         },
         'show-all-files': () => { S.showAllFiles = true; render(); },
+        'tl-clear-filter': async () => {
+            S.tlFilter = '';
+            S.selectedOid = null;
+            await loadHistory();
+            if (S.history[0]) await selectSnapshot(S.history[0].oid, false);
+            render();
+        },
+        'help': helpModal,
+        // Bulut sekmesi: Drive'daki düzenlemeleri hemen al
+        'drive-check': async (d, el) => {
+            if (el) el.disabled = true;
+            const ov = await run(() => av.drive.syncNow(S.activeId));
+            if (ov) {
+                S.overview = ov;
+                toast(t('cloud.driveChecked'), 'check');
+            }
+            render();
+        },
         'select-snapshot': d => selectSnapshot(d.oid),
         'select-file': d => { S.selectedFile = d.rel; S.diffFull = false; render(); },
         'view-mode': d => { S.viewMode = d.mode; render(); },
@@ -1391,7 +1435,11 @@
             e.preventDefault();
             av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), 'save'));
         }
-        // F5: yenile · Ctrl+1/2/3: sekmeler
+        // F1: nasıl yapılır · F5: yenile · Ctrl+1/2/3: sekmeler
+        if (e.key === 'F1' && S.activeId) {
+            e.preventDefault();
+            helpModal();
+        }
         if (e.key === 'F5') {
             e.preventDefault();
             refresh({ history: S.tab === 'timeline' });

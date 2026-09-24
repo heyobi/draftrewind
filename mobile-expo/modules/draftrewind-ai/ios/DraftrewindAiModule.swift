@@ -22,11 +22,13 @@ public class DraftrewindAiModule: Module {
       return DraftrewindAiModule.supportsLanguage(code)
     }
 
-    // true when this build can really open the given App Group container. Sideloading tools
-    // (free Apple ID) rename App Groups when re-signing; the widget extension then cannot read
-    // the Live Activity layout and the Dynamic Island shows an empty black pill.
+    // true when this build is really entitled to the given App Group. Sideloading tools
+    // (free Apple ID) rename or drop App Groups when re-signing; the widget extension then cannot
+    // read the Live Activity layout and the Dynamic Island shows an empty black pill.
+    // Note: FileManager.containerURL(forSecurityApplicationGroupIdentifier:) is NOT a valid check
+    // on iOS - it returns a URL (and only logs a warning) even without the entitlement.
     Function("appGroupReady") { (identifier: String) -> Bool in
-      return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) != nil
+      return DraftrewindAiModule.appGroupEntitled(identifier)
     }
 
     // Runs a single prompt in a fresh session and resolves with the generated text.
@@ -36,6 +38,40 @@ public class DraftrewindAiModule: Module {
   }
 
   // MARK: - Helpers
+
+  // Reads the entitlements of the provisioning profile the app was signed with
+  // (embedded.mobileprovision: a CMS envelope wrapping an XML plist) and returns true only when
+  // `com.apple.security.application-groups` contains exactly `identifier`.
+  // App Store / TestFlight builds ship without that file; their entitlements are as built → true.
+  private static func appGroupEntitled(_ identifier: String) -> Bool {
+    guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision") else {
+      return true
+    }
+    guard let data = FileManager.default.contents(atPath: path) else {
+      return false
+    }
+    // ISO Latin 1 maps every byte to one character, so the binary envelope decodes losslessly and
+    // the XML slice re-encodes to its exact original bytes.
+    guard let raw = String(data: data, encoding: .isoLatin1) else {
+      return false
+    }
+    guard let start = raw.range(of: "<?xml"),
+          let end = raw.range(of: "</plist>"),
+          start.lowerBound < end.upperBound else {
+      return false
+    }
+    let xml = String(raw[start.lowerBound..<end.upperBound])
+    guard let xmlData = xml.data(using: .isoLatin1) else {
+      return false
+    }
+    guard let plistObject = try? PropertyListSerialization.propertyList(from: xmlData, options: [], format: nil),
+          let plist = plistObject as? [String: Any],
+          let entitlements = plist["Entitlements"] as? [String: Any],
+          let groups = entitlements["com.apple.security.application-groups"] as? [String] else {
+      return false
+    }
+    return groups.contains(identifier)
+  }
 
   private static func currentAvailability() -> String {
     #if canImport(FoundationModels)
