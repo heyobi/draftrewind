@@ -24,6 +24,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { WebView } from 'react-native-webview';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
 import { useLocales } from 'expo-localization';
@@ -584,6 +585,7 @@ function Root() {
   // QR ile eşleştirme: draftrewind://pair?v=1&d=… (Kamera uygulamasıyla okutulur).
   // Jeton hiçbir yerde günlüğe yazılmaz.
   const [pairing, setPairing] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const handledUrl = useRef(null);
   const handleUrl = async (url) => {
     if (!url || !isPairLink(url) || handledUrl.current === url) return;
@@ -636,7 +638,7 @@ function Root() {
           <ActivityIndicator color={c.accent} />
         </View>
       ) : !signedIn ? (
-        <LoginScreen c={c} onGithub={loginGithub} onGoogle={setGoogle} />
+        <LoginScreen c={c} onGithub={loginGithub} onGoogle={setGoogle} onScan={() => setScanning(true)} />
       ) : screen && screen.type === 'gh' ? (
         <ProjectScreen c={c} token={ghToken} project={screen.project} onBack={() => setScreen(null)} onAuthError={logoutGithub} />
       ) : screen && screen.type === 'drive' ? (
@@ -644,7 +646,12 @@ function Root() {
       ) : (
         <HomeScreen c={c} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
       )}
+      <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url)} />
       <SettingsSheet
+        onScan={() => {
+          setAccounts(false);
+          setTimeout(() => setScanning(true), 450);
+        }}
         c={c}
         prefs={prefs}
         onPrefs={updatePrefs}
@@ -755,7 +762,7 @@ function GithubCodeCard({ c, flow, onCancel }) {
   );
 }
 
-function LoginScreen({ c, onGithub, onGoogle }) {
+function LoginScreen({ c, onGithub, onGoogle, onScan }) {
   const insets = useSafeAreaInsets();
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
@@ -785,7 +792,7 @@ function LoginScreen({ c, onGithub, onGoogle }) {
       </View>
       {!gh.flow ? (
         <View style={{ gap: 12 }}>
-          <QrHint c={c} />
+          <QrHint c={c} onScan={onScan} />
           <GradientButton title={gh.busy ? t('common.connecting') : t('login.github')} onPress={gh.start} disabled={gh.busy} />
           <SecondaryButton c={c} title={go.busy ? t('common.connecting') : t('login.google')} onPress={go.start} disabled={go.busy} />
           <Text style={{ color: c.text3, textAlign: 'center', fontSize: 12.5 }}>{t('login.hint')}</Text>
@@ -795,9 +802,61 @@ function LoginScreen({ c, onGithub, onGoogle }) {
   );
 }
 
-// "En hızlısı: QR ile bağlan" kartı
-function QrHint({ c }) {
+// Uygulama içi QR okuyucu (bazı iPhone'larda Kamera uygulaması özel adresleri göstermiyor)
+function QrScanner({ c, visible, onClose, onUrl }) {
+  const [permission, requestPermission] = useCameraPermissions();
+  const done = useRef(false);
+  useEffect(() => {
+    if (visible) done.current = false;
+  }, [visible]);
+  if (!visible) return null;
   return (
+    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={[s.flex, { backgroundColor: '#000' }]}>
+        {permission && permission.granted ? (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            onBarcodeScanned={({ data }) => {
+              if (done.current || !data) return;
+              if (!isPairLink(data)) return; // başka bir QR: okumaya devam et
+              done.current = true;
+              tap(Haptics.ImpactFeedbackStyle.Medium);
+              onClose();
+              onUrl(data);
+            }}
+          />
+        ) : (
+          <View style={[s.center, { padding: 30 }]}>
+            <Text style={{ fontSize: 48 }}>📷</Text>
+            <Text style={{ color: '#fff', fontSize: 16, textAlign: 'center', marginTop: 12, lineHeight: 22 }}>{t('qr.permission')}</Text>
+            <View style={{ marginTop: 20, alignSelf: 'stretch' }}>
+              <GradientButton title={t('qr.allow')} onPress={requestPermission} />
+            </View>
+          </View>
+        )}
+        <View style={{ position: 'absolute', top: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'center' }}>
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 17, flex: 1 }}>{t('qr.title')}</Text>
+          <Pressable onPress={onClose} hitSlop={12}>
+            <Text style={{ color: '#fff', fontWeight: '700', fontSize: 16 }}>{t('common.close')}</Text>
+          </Pressable>
+        </View>
+        {permission && permission.granted ? (
+          <View pointerEvents="none" style={[StyleSheet.absoluteFill, s.center]}>
+            <View style={{ width: 240, height: 240, borderRadius: 28, borderWidth: 3, borderColor: '#ffffffcc' }} />
+            <Text style={{ color: '#fff', marginTop: 18, fontSize: 14, textAlign: 'center', paddingHorizontal: 30 }}>{t('qr.aim')}</Text>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+}
+
+// "En hızlısı: QR ile bağlan" kartı
+function QrHint({ c, onScan }) {
+  return (
+    <Jelly onPress={onScan} scaleTo={0.97} disabled={!onScan}>
     <Glass c={c} tint="#6c5cff22" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, marginBottom: 4 }}>
       <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: 44, height: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
         <Text style={{ fontSize: 22 }}>📷</Text>
@@ -805,8 +864,10 @@ function QrHint({ c }) {
       <View style={s.flex}>
         <Text style={{ color: c.text, fontWeight: '800', fontSize: 14.5 }}>{t('pair.hintTitle')}</Text>
         <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, marginTop: 3 }}>{t('pair.hint')}</Text>
+        {onScan ? <Text style={{ color: c.accent, fontSize: 13.5, fontWeight: '800', marginTop: 6 }}>{t('qr.scanHere')}</Text> : null}
       </View>
     </Glass>
+    </Jelly>
   );
 }
 
@@ -831,7 +892,7 @@ function Segmented({ c, options, value, onChange }) {
 }
 
 // Ayarlar (profil resmine dokununca): hesaplar + dil + tema
-function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle }) {
+function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
   if (!visible) return null;
@@ -858,7 +919,11 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
               <Text style={{ color: ghToken ? c.red : c.accent, fontWeight: '700' }}>{ghToken ? t('account.logout') : gh.busy ? '…' : t('account.connect')}</Text>
             </Pressable>
           </Glass>
-          {!ghToken && !gh.flow ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>📷 {t('pair.settingsHint')}</Text> : null}
+          {!ghToken && !gh.flow ? (
+            <Pressable onPress={onScan} hitSlop={6}>
+              <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>📷 {t('pair.settingsHint')} <Text style={{ color: c.accent, fontWeight: '800' }}>{t('qr.scanHere')}</Text></Text>
+            </Pressable>
+          ) : null}
           {gh.flow ? <GithubCodeCard c={c} flow={gh.flow} onCancel={gh.cancel} /> : null}
 
           <Glass c={c} style={[s.accountRow, { marginTop: 12 }]}>
@@ -1686,10 +1751,10 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
           </View>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
             {ds.badges.map((b) => (
+              // Genişlik dıştaki View'a verilmeli: Jelly'nin Pressable'ı boyutsuz olduğu için yüzde içeride çöküyordu
+              <View key={b.id} style={{ width: '22%', flexGrow: 1 }}>
               <Jelly
-                key={b.id}
                 scaleTo={0.9}
-                style={{ width: '22.5%', flexGrow: 1 }}
                 onPress={() => {
                   if (b.done) success();
                   Alert.alert(`${b.emoji} ${t('badge.' + b.id)}`, t('badge.' + b.id + '.d'));
@@ -1704,6 +1769,7 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
                   </Text>
                 </Glass>
               </Jelly>
+              </View>
             ))}
           </View>
 

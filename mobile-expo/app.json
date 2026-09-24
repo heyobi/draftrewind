@@ -18,7 +18,15 @@
         }
       ],
       "expo-localization",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "DraftRewind, bilgisayarındaki QR kodunu okuyarak giriş yapmak için kamerayı kullanır. / DraftRewind uses the camera to scan the QR code on your computer to sign in.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,
@@ -27,6 +35,12 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSSupportsLiveActivities": true,
         "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "draftrewind",
+              "com.draftrewind.app"
+            ]
+          },
           {
             "CFBundleURLSchemes": [
               "com.googleusercontent.apps.506965274607-chr5jkmhrpkjo1dtp854tg2oirbs80dk"

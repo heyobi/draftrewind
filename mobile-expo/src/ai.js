@@ -128,7 +128,12 @@ const LANG_NAME = { tr: 'Turkish (Türkçe)', en: 'English' };
 function baseInstructions(role, l) {
   return (
     `${role} You help a university student who is writing a thesis, homework or article. ` +
-    `Be warm, clear and concise. Never invent facts that are not in the input. ` +
+    `Style: short, clear, friendly. Start directly with the content. ` +
+    `Never thank the user, never greet, never praise the change itself ("great start", "valuable", "interesting"), no filler sentences. ` +
+    `Never invent facts that are not in the input and never comment on how often the student saved. ` +
+    (l === 'tr'
+      ? 'Write natural Turkish and address the student informally with "sen" (e.g. "ekledin", "yazdın"), never "siz". '
+      : 'Address the student directly as "you". ') +
     `Always answer in ${LANG_NAME[l]}, even if the input is in another language. Do not use Markdown headings or bold text.`
   );
 }
@@ -199,7 +204,8 @@ export async function summarizeChanges(id, name, diff) {
     (diff.first ? ' This is the first version of the file, so everything is new.' : '') +
     ` About ${diff.add || 0} words were added and ${diff.rem || 0} removed.\n` +
     `Lines starting with "+" were added, "-" were removed, "~" were edited ([-old-] was replaced by {+new+}).\n` +
-    `In 2 or 3 friendly sentences, tell the student what they changed (the content, not the markup). ` +
+    `In 1 or 2 short sentences, say what the student added or removed (the content itself, not the markup), ` +
+    `e.g. "Giriş bölümüne araştırmanın amacını anlatan bir paragraf ekledin." No introduction, no evaluation. ` +
     `Answer in ${LANG_NAME[l]}.\n\nCHANGES:\n${AI.truncate(text, AI.MAX_PROMPT_CHARS - 700)}`;
   return run(cacheKey('diff', id, text), instructions, prompt);
 }
@@ -225,15 +231,15 @@ export async function weekRecap(id, history, week, streak) {
   const activeDays = week.filter((d) => d.words > 0).length;
   const data =
     `Words written per day (oldest to today): ${week.map((d) => `${d.label} ${d.words}`).join(', ')}\n` +
-    `Total words this week: ${total}. Active writing days: ${activeDays}/7. Current streak: ${streak} days. Saves this week: ${recent.length}.\n` +
+    `Total words this week: ${total}. Active writing days: ${activeDays}/7. Current streak: ${streak} days.\n` +
     (files.length ? `Most changed files: ${files.join('; ')}\n` : '') +
     (titles.length ? `Save titles:\n${titles.map((x) => `- ${x}`).join('\n')}` : 'No saves this week.');
   const l = await answerLanguage();
   const instructions = baseInstructions('You are an encouraging writing coach.', l);
   const prompt =
     `Here is the student's writing activity for the last 7 days.\n${data}\n\n` +
-    `Write a short, motivating recap in 3 or 4 sentences: what they worked on, how the week went, and one small, ` +
-    `kind suggestion for the next days. If there was little activity, be gentle and encouraging, never guilt-tripping. ` +
-    `You may use at most one emoji. Answer in ${LANG_NAME[l]}.`;
+    `Write a recap in at most 3 short sentences: first what they concretely worked on (from the save titles and files), ` +
+    `then the numbers (words, active days, streak), then one short, kind nudge for the coming days. ` +
+    `If there was little activity, be gentle, never guilt-tripping. At most one emoji. Answer in ${LANG_NAME[l]}.`;
   return run(cacheKey('week', id, data), instructions, AI.truncate(prompt, AI.MAX_PROMPT_CHARS));
 }

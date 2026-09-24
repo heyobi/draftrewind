@@ -111,6 +111,11 @@ const tr = {
   'common.ok': 'Tamam',
 
   'pair.hintTitle': 'En hızlısı: QR kodla bağlan',
+  'qr.scanHere': 'QR kodu burada okut ›',
+  'qr.title': 'QR kodu okut',
+  'qr.aim': 'Bilgisayardaki DraftRewind’da çıkan QR kodu çerçevenin içine getir.',
+  'qr.permission': 'Bilgisayarındaki QR kodu okumak için kamera izni gerekiyor. Kamera sadece QR kodu okumak için kullanılır.',
+  'qr.allow': '📷 Kameraya izin ver',
   'pair.hint': "Bilgisayarında DraftRewind → Bulut & Telefon → 'Telefonu QR ile bağla'yı aç, çıkan kodu iPhone'un Kamera uygulamasıyla okut. Hepsi bu!",
   'pair.settingsHint': "İpucu: Bilgisayardaki DraftRewind'da Bulut & Telefon → 'Telefonu QR ile bağla'yı açıp kodu Kamera ile okutman yeterli.",
   'pair.expiredTitle': 'QR kodunun süresi dolmuş',
@@ -351,6 +356,11 @@ const en = {
   'common.ok': 'OK',
 
   'pair.hintTitle': 'Fastest: connect with a QR code',
+  'qr.scanHere': 'Scan the QR code here ›',
+  'qr.title': 'Scan QR code',
+  'qr.aim': 'Point at the QR code shown in DraftRewind on your computer.',
+  'qr.permission': 'Camera access is needed to scan the QR code on your computer. The camera is only used to read the code.',
+  'qr.allow': '📷 Allow camera',
   'pair.hint': "On your computer open DraftRewind → Cloud & Phone → 'Connect phone with QR' and scan it with the iPhone Camera app. That's it!",
   'pair.settingsHint': "Tip: in DraftRewind on your computer open Cloud & Phone → 'Connect phone with QR' and scan the code with the Camera app.",
   'pair.expiredTitle': 'QR code expired',
