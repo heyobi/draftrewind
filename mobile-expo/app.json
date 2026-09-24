@@ -17,6 +17,14 @@
           "bundleIdentifier": "com.draftrewind.app.widgets"
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "DraftRewind, çektiğin fotoğrafları projene eklemek için kamerayı kullanır. / DraftRewind uses the camera to add the photos you take to your project.",
+          "photosPermission": "DraftRewind, seçtiğin fotoğrafları projene eklemek için fotoğraf arşivine erişir. / DraftRewind accesses your photo library to add the photos you choose to your project.",
+          "microphonePermission": false
+        }
+      ],
       "expo-localization",
       "expo-sharing",
       [

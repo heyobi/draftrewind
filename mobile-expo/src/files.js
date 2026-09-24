@@ -93,6 +93,61 @@ export async function pickFiles() {
   });
 }
 
+// ---------------------------------------------------------------- fotoğraf
+let ImagePicker = null;
+try {
+  ImagePicker = require('expo-image-picker');
+} catch (e) {
+  ImagePicker = null;
+}
+
+// "Foto 2026-09-25 14.05.jpg" (aynı dakikada ikinci fotoğraf uniqueName ile "(2)" alır)
+export function photoName(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `Foto ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}.${pad(d.getMinutes())}.jpg`;
+}
+
+// Seçici sonucunu pickFiles ile aynı biçime çevirir
+function photoAsset(a, name) {
+  let size = a.fileSize;
+  if (size == null) {
+    try {
+      size = new File(a.uri).size;
+    } catch (e) {}
+  }
+  const unknown = size == null;
+  return { uri: a.uri, name, size: unknown ? MAX_UPLOAD + 1 : size, sizeUnknown: unknown, mimeType: a.mimeType || 'image/jpeg' };
+}
+
+const PHOTO_OPTS = { mediaTypes: ['images'], allowsEditing: false, quality: 0.8, base64: false, exif: false };
+
+// Kamera: bir fotoğraf çeker; askMore() true dedikçe bir tane daha. Kamera izni yoksa { denied: true } fırlatır.
+export async function takePhotos(askMore) {
+  if (!ImagePicker) throw new Error(t('upload.cameraUnavailable'));
+  const perm = await ImagePicker.requestCameraPermissionsAsync();
+  if (!perm || !perm.granted) {
+    const e = new Error(t('upload.cameraDenied'));
+    e.denied = true;
+    throw e;
+  }
+  const out = [];
+  for (;;) {
+    const res = await ImagePicker.launchCameraAsync(PHOTO_OPTS);
+    if (!res.canceled && res.assets && res.assets[0]) out.push(photoAsset(res.assets[0], photoName()));
+    if (res.canceled || !(await askMore(out.length))) break;
+  }
+  return out;
+}
+
+// Galeri: birden çok fotoğraf. (iOS'ta sistem seçici izin istemez.)
+export async function pickPhotos() {
+  if (!ImagePicker) throw new Error(t('upload.cameraUnavailable'));
+  const res = await ImagePicker.launchImageLibraryAsync({ ...PHOTO_OPTS, allowsMultipleSelection: true, selectionLimit: 20 });
+  if (res.canceled || !res.assets) return [];
+  const stamp = new Date();
+  return res.assets.map((a, i) => photoAsset(a, photoName(new Date(stamp.getTime() + i * 60000))));
+}
+
 export async function readBytes(asset) {
   return new File(asset.uri).bytes();
 }

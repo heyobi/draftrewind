@@ -37,9 +37,11 @@ import { computeStats, deepStats, latestWords, ago, dayLabel, hm, num, kindOf } 
 import { arrayBufferToBase64, wordHtml, sheetHtml, textHtml, utf8Decode, diffHtml } from './src/viewer';
 import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
 import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
-import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, readBytes, readBase64, discardPicked, mb } from './src/files';
+import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
+import { ensurePermission, checkBackupHealth, dismissBackupCard } from './src/notify';
+import { reportHtml, htmlToPdf, reportFileName, REPORT_MAX_FILES, REPORT_MAX_BLOCKS } from './src/report';
 import { Icon } from './src/Icon';
 import { useAiStatus, shouldShowAiHint, dismissAiHint, aiHintText, aiErrorText, summarizeDocument, summarizeChanges, weekRecap } from './src/ai';
 
@@ -93,7 +95,7 @@ const warn = () => {
 };
 
 // Esnek (jöle) dokunma efekti. onLongPress: basılı tutunca (dokunsal geri bildirimle) — ör. belge eylemleri
-function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled, accessibilityLabel }) {
+function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled, accessibilityLabel, testID }) {
   const scale = useRef(new Animated.Value(1)).current;
   // flex, dış Pressable'a da uygulanır; yoksa satırdaki kartlar içeriğe göre daralır
   const flat = StyleSheet.flatten(style) || {};
@@ -104,6 +106,7 @@ function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled
       disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      testID={testID}
       onPressIn={() => {
         tap();
         Animated.spring(scale, { toValue: scaleTo, friction: 4, tension: 180, useNativeDriver: true }).start();
@@ -193,15 +196,55 @@ function BusyHud({ c, text }) {
   );
 }
 
-// Başlıktaki yuvarlak "+" düğmesi (telefondan dosya ekle)
-function AddButton({ c, onPress, busy }) {
+// Başlıktaki yuvarlak "+" düğmesi (telefondan dosya ekle).
+// onPress tek bir işlemse doğrudan çalışır; options verilirse iOS eylem sayfası açılır (Vazgeç ile kapanır).
+function AddButton({ c, onPress, options, busy }) {
+  const open = () => {
+    if (options && options.length) showActions(c, { title: t('upload.menuTitle'), actions: options });
+    else if (onPress) onPress();
+  };
   return (
-    <Jelly onPress={onPress} disabled={busy} scaleTo={0.88} accessibilityLabel={t('upload.add')}>
+    <Jelly onPress={open} disabled={busy} scaleTo={0.88} accessibilityLabel={t('upload.add')} testID="add-button">
       <Glass c={c} interactive tint={c.accent + '33'} style={s.roundBtn}>
         {busy ? <ActivityIndicator color={c.accent} size="small" /> : <Text style={{ color: c.accent, fontSize: 26, fontWeight: '500', marginTop: -2 }}>+</Text>}
       </Glass>
     </Jelly>
   );
+}
+
+// Gizli WebView: diffHtml'i rapor modunda çalıştırır ve çizilen HTML'i uygulamaya geri verir.
+// Sırayla tek iş: render(html) → Promise<{ html, add, rem, first, unchanged, truncated } | { failed }>
+function useDiffWorker() {
+  const [job, setJob] = useState(null); // { html, key }
+  const waiter = useRef(null);
+  const render = (html) =>
+    new Promise((resolve) => {
+      const key = Date.now() + Math.random();
+      const timer = setTimeout(() => finish({ failed: true, error: 'timeout' }), 45000);
+      const finish = (r) => {
+        clearTimeout(timer);
+        if (waiter.current && waiter.current.key === key) waiter.current = null;
+        setJob(null);
+        resolve(r);
+      };
+      waiter.current = { key, finish };
+      setJob({ html, key });
+    });
+  const onMessage = (e) => {
+    const data = e && e.nativeEvent ? e.nativeEvent.data : '';
+    if (typeof data !== 'string' || data[0] !== '{') return;
+    let m = null;
+    try {
+      m = JSON.parse(data);
+    } catch (err) {}
+    if (m && m.type === 'rendered' && waiter.current) waiter.current.finish(m);
+  };
+  const element = job ? (
+    <View style={{ position: 'absolute', width: 1, height: 1, opacity: 0, left: -10, top: -10 }} pointerEvents="none">
+      <WebView key={job.key} source={{ html: job.html, baseUrl: 'https://draftrewind.local/' }} originWhitelist={['*']} onMessage={onMessage} onError={() => waiter.current && waiter.current.finish({ failed: true })} />
+    </View>
+  ) : null;
+  return { render, element };
 }
 
 // Ekran başlığı: geri düğmesi + "hangi projedeyim" bloğu (renkli karo, büyük ad, alt satır).
@@ -210,7 +253,7 @@ function ScreenHeader({ c, onBack, backLabel, right, look, eyebrow, title, subti
   return (
     <>
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-        <Jelly onPress={onBack} scaleTo={0.92} accessibilityLabel={backLabel}>
+        <Jelly onPress={onBack} scaleTo={0.92} accessibilityLabel={backLabel} testID="back-button">
           <Glass c={c} interactive style={[s.pillBtn, s.btnRow, s.backPill]}>
             <Icon name="chevron.left" size={13} color={c.accent} weight="semibold" />
             <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14 }} numberOfLines={1}>{backLabel}</Text>
@@ -713,7 +756,7 @@ function Root() {
       ) : screen && screen.type === 'drive' ? (
         <DriveScreen c={c} drive={drive} folder={screen.folder} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
       ) : (
-        <HomeScreen c={c} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
+        <HomeScreen c={c} prefs={prefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
       )}
       <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url, true)} />
       <SettingsSheet
@@ -966,10 +1009,21 @@ function Segmented({ c, options, value, onChange }) {
 function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
+  // Yedek uyarıları açılırken bildirim izni istenir; reddedilirse anahtar geri kapanır ve açıklanır
+  const toggleBackupAlerts = async (on) => {
+    if (!on) return onPrefs({ backupAlerts: false });
+    const ok = await ensurePermission();
+    if (!ok) {
+      warn();
+      onPrefs({ backupAlerts: false });
+      return Alert.alert(t('notify.deniedTitle'), t('notify.denied'), [{ text: t('common.ok') }]);
+    }
+    onPrefs({ backupAlerts: true });
+  };
   if (!visible) return null;
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]}>
+      <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]} testID="settings-sheet">
         <View style={s.grabber} />
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 18 }}>
           <Text style={[s.h2, { color: c.text, flex: 1 }]}>{t('settings.title')}</Text>
@@ -1041,6 +1095,17 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             <Switch value={prefs.island !== false} onValueChange={(island) => onPrefs({ island })} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.islandToggle')} />
           </Glass>
           {!isIslandUsable() ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>{t('settings.islandUnavailable')}</Text> : null}
+
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.notifications')}</Text>
+          <Glass c={c} style={s.accountRow}>
+            <View style={s.accountIcon}><Icon name="externaldrive.badge.exclamationmark" size={22} color={c.text2} /></View>
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('settings.backupAlerts')}</Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{t('settings.backupAlertsSub')}</Text>
+            </View>
+            <Switch value={prefs.backupAlerts !== false} onValueChange={toggleBackupAlerts} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.backupAlerts')} testID="backup-alerts-toggle" />
+          </Glass>
+          <View style={{ height: 30 }} />
         </ScrollView>
       </View>
     </Modal>
@@ -1050,7 +1115,7 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
 // ---------------------------------------------------------------------------
 // Ana ekran: GitHub projeleri + Drive klasörleri
 // ---------------------------------------------------------------------------
-function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
+function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
   const insets = useSafeAreaInsets();
   const [ghList, setGhList] = useState(null);
   const [driveList, setDriveList] = useState(null);
@@ -1062,6 +1127,13 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
     savePendingNews(null);
     setNews(null);
   };
+  // "3 gündür yeni kayıt yok" kartı: { newest } ya da null. O gün kapatılınca gizlenir.
+  const [stale, setStale] = useState(null);
+  const dismissStale = () => {
+    dismissBackupCard();
+    setStale(null);
+  };
+  const backupAlerts = prefs ? prefs.backupAlerts !== false : true;
 
   const load = useCallback(async () => {
     setError(null);
@@ -1071,6 +1143,11 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         GH.listProjects(ghToken)
           .then(async (list) => {
             setGhList(list);
+            // Yedek sağlığı: en yeni kayıt projelerin son gönderim zamanlarından
+            const newest = list.reduce((m, p) => Math.max(m, p.pushedAt || 0), 0);
+            checkBackupHealth(newest, backupAlerts)
+              .then((r) => setStale(r.stale && r.showCard ? { newest: r.newest } : null))
+              .catch(() => {});
             const found = await announceNewSaves(ghToken, list);
             if (found && found.length) setNews(found);
           })
@@ -1090,13 +1167,13 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
           })
       );
     await Promise.all(jobs);
-  }, [ghToken, drive]);
+  }, [ghToken, drive, backupAlerts]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  // Uygulama arka plandan her öne geldiğinde yenile (yeni kayıt bildirimi için şart)
+  // Uygulama arka plandan her öne geldiğinde yenile (yeni kayıt bildirimi ve yedek sağlığı kontrolü için şart)
   const lastLoad = useRef(Date.now());
   useEffect(() => {
     const sub = AppState.addEventListener('change', (st) => {
@@ -1136,10 +1213,23 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
           <Text style={{ color: c.text2, fontSize: 15 }}>{greet}</Text>
           <Text style={[s.h1, { color: c.text }]}>{name ? t('home.hello', { name: name.split(' ')[0] }) : t('home.myProjects')}</Text>
         </View>
-        <Jelly onPress={onAccounts} scaleTo={0.9}>
+        <Jelly onPress={onAccounts} scaleTo={0.9} accessibilityLabel={t('settings.title')} testID="settings-button">
           {avatar ? <Image source={{ uri: avatar }} style={s.avatar} /> : <View style={[s.avatar, { backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }]}><Icon name="person.fill" size={20} color={c.accent} /></View>}
         </Jelly>
       </View>
+
+      {stale ? (
+        <Jelly onPress={dismissStale} scaleTo={0.97} style={{ marginBottom: 14 }} accessibilityLabel={t('notify.staleBody')} testID="stale-card">
+          <Glass c={c} tint="#f9731644" style={{ padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <Icon name="externaldrive.badge.exclamationmark" size={26} color="#f97316" />
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>{t('notify.staleBody')}</Text>
+              <Text style={{ color: c.text2, fontSize: 13, marginTop: 3 }} numberOfLines={2}>{t('home.staleSub', { ago: ago(stale.newest) })}</Text>
+            </View>
+            <Text style={{ color: c.text3 }} accessibilityLabel={t('common.close')}>✕</Text>
+          </Glass>
+        </Jelly>
+      ) : null}
 
       {news ? (
         <Jelly onPress={dismissNews} scaleTo={0.97} style={{ marginBottom: 14 }}>
@@ -1163,7 +1253,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
 
       {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.githubHeader')}</Text> : null}
       {(ghList || []).map((p, i) => (
-        <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: { ...p, index: i } })} scaleTo={0.97} style={{ marginBottom: 10 }}>
+        <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: { ...p, index: i } })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={p.name} testID="project-row">
           <Glass c={c} interactive style={s.projRow}>
             <LinearGradient colors={projectLook(i).colors} style={s.projTile}>
               <Icon name={projectLook(i).icon} size={24} color="#fff" />
@@ -1179,7 +1269,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
 
       {driveList && driveList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
       {(driveList || []).map((f) => (
-        <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }}>
+        <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={f.name} testID="project-row">
           <Glass c={c} interactive style={s.projRow}>
             <LinearGradient colors={DRIVE_LOOK.colors} style={s.projTile}>
               <Icon name={DRIVE_LOOK.icon} size={24} color="#fff" />
@@ -1338,13 +1428,24 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       ],
     });
 
-  // Telefondan dosya ekleme → "Telefondan eklenenler/" klasörüne tek kayıt olarak
-  const addFiles = async () => {
+  // Kameradan sonra "Bir tane daha?" sorusu (Alert ile evet/hayır)
+  const askAnotherPhoto = (n) =>
+    new Promise((resolve) =>
+      Alert.alert(t('upload.anotherTitle'), t('upload.anotherBody', { n, count: n }), [
+        { text: t('upload.anotherNo'), style: 'cancel', onPress: () => resolve(false) },
+        { text: t('upload.anotherYes'), onPress: () => resolve(true) },
+      ])
+    );
+
+  // Telefondan dosya/fotoğraf ekleme → "Telefondan eklenenler/" klasörüne tek kayıt olarak.
+  // pick: dosya seçici, kamera ya da galeri — hepsi aynı yükleme yolunu kullanır.
+  const addFiles = async (pick = pickFiles) => {
     let picked;
     try {
-      picked = await pickFiles();
+      picked = await pick();
     } catch (e) {
-      Alert.alert(t('upload.failedTitle'), e.message);
+      warn();
+      Alert.alert(e && e.denied ? t('upload.cameraDeniedTitle') : t('upload.failedTitle'), e && e.message ? e.message : String(e), [{ text: t('common.ok') }]);
       return;
     }
     if (!picked.length) return;
@@ -1456,7 +1557,19 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
           c={c}
           onBack={onBack}
           backLabel={t('nav.projects')}
-          right={files ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
+          right={
+            files ? (
+              <AddButton
+                c={c}
+                busy={uploading}
+                options={[
+                  { label: t('upload.files'), onPress: () => addFiles(pickFiles) },
+                  { label: t('upload.takePhoto'), onPress: () => addFiles(() => takePhotos(askAnotherPhoto)) },
+                  { label: t('upload.choosePhotos'), onPress: () => addFiles(pickPhotos) },
+                ]}
+              />
+            ) : null
+          }
           look={projectLook(project.index)}
           eyebrow={t('project.eyebrow')}
           title={project.name}
@@ -1533,7 +1646,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
             {tab === 'time' && fileFilter && !shownHistory.length ? <EmptyState c={c} icon="clock.arrow.circlepath" title={t('empty.noChanges')} body={t('history.empty')} /> : null}
 
             {tab === 'time'
-              ? shownHistory.map((h) => {
+              ? shownHistory.map((h, idx) => {
                   const d = dayLabel(h.time);
                   const header = d !== lastDay ? d : null;
                   lastDay = d;
@@ -1541,7 +1654,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                   return (
                     <View key={h.oid}>
                       {header ? <Text style={[s.dayHeader, { color: c.text3 }]}>{header.toUpperCase()}</Text> : null}
-                      <Jelly onPress={() => setSnapshot(h)} scaleTo={0.98} style={{ marginBottom: 8 }}>
+                      <Jelly onPress={() => setSnapshot(h)} scaleTo={0.98} style={{ marginBottom: 8 }} accessibilityLabel={h.title} testID={idx === 0 ? 'snapshot-row' : undefined}>
                         <Glass c={c} interactive tint={h.kind === 'star' ? '#ffb93833' : undefined} style={s.tlItem}>
                           <View style={[s.node, { backgroundColor: h.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
                             <Icon name={kindIcon(h.kind)} size={14} color={h.kind === 'star' ? '#fff' : c.accent} weight="semibold" />
@@ -1932,10 +2045,14 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   const [parent, setParent] = useState(null);
   const [busy, setBusy] = useState(null);
   const aiStatus = useAiStatus();
+  const worker = useDiffWorker();
+  const reportReq = useRef(0);
   useEffect(() => {
     if (!snapshot) return;
     setFiles(null);
     setParent(null);
+    reportReq.current++;
+    setBusy(null);
     GH.commitFiles(token, project, snapshot.oid)
       .then((r) => {
         setFiles(r.files);
@@ -1947,6 +2064,54 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   const d = new Date(snapshot.time);
   // "Neler değişti?": en çok değişen karşılaştırılabilir (Word/metin) dosyanın farkı açılır ve özetlenir
   const sdelta = snapshot.delta || {};
+  const diffable = (f) => f.status !== 'removed' && (kindOf(f.path) === 'word' || kindOf(f.path) === 'text');
+  const reportFiles = files ? files.filter(diffable).sort((a, b) => Math.abs(sdelta[b.path] || 0) - Math.abs(sdelta[a.path] || 0)) : [];
+
+  // Değişiklik raporu: farklar gizli WebView'da sırayla çizilir → tek PDF → paylaşım sayfası.
+  // İlk REPORT_MAX_FILES dosya ve dosya başına REPORT_MAX_BLOCKS blokla sınırlı (koca tez telefonu kilitlemesin).
+  const sendReport = async () => {
+    if (!reportFiles.length || busy) return;
+    const id = ++reportReq.current;
+    const alive = () => id === reportReq.current;
+    const chosen = reportFiles.slice(0, REPORT_MAX_FILES);
+    try {
+      const libs = await loadViewerLibs(LIBS_FOR.diff);
+      const items = [];
+      for (let i = 0; i < chosen.length; i++) {
+        if (!alive()) return;
+        const f = chosen[i];
+        const name = f.path.split('/').pop();
+        setBusy(t('report.preparing', { i: i + 1, n: chosen.length }));
+        let item = { name, status: f.status, failed: true };
+        try {
+          const [oldBuf, newBuf] = await Promise.all([
+            // Yalnızca "önceki sürümde yoktu" (404) boş sayılır; ağ hatası gerçek hata olarak görünür
+            f.status === 'added' || !parent ? Promise.resolve(null) : GH.fileContent(token, project, f.path, parent).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))),
+            GH.fileContent(token, project, f.path, snapshot.oid),
+          ]);
+          if (!alive()) return;
+          const html = diffHtml(oldBuf ? arrayBufferToBase64(oldBuf) : null, arrayBufferToBase64(newBuf), kindOf(name), false, viewerLabels(), libs, { report: true, maxBlocks: REPORT_MAX_BLOCKS });
+          const r = await worker.render(html);
+          if (!alive()) return;
+          if (r && !r.failed) item = { name, status: f.status, html: r.html || '', add: r.add || 0, rem: r.rem || 0, unchanged: !!r.unchanged, truncated: !!r.truncated };
+        } catch (e) {
+          if (e && e.auth) throw e;
+        }
+        items.push(item);
+      }
+      setBusy(t('report.rendering'));
+      const pdf = await htmlToPdf(reportHtml({ projectName: project.name, snapshot, items, totalFiles: reportFiles.length }));
+      if (!alive()) return;
+      setBusy(null);
+      success();
+      await shareBuffer(reportFileName(project.name, snapshot.time), pdf);
+    } catch (e) {
+      if (!alive()) return;
+      setBusy(null);
+      warn();
+      Alert.alert(t('report.failedTitle'), e && e.message ? e.message : String(e), [{ text: t('common.ok') }]);
+    }
+  };
   const aiFile =
     aiStatus === 'available' && files
       ? files
@@ -1968,7 +2133,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
     });
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]}>
+      <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]} testID="snapshot-sheet">
         <View style={s.grabber} />
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
           <View style={[s.snapIcon, { backgroundColor: snapshot.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
@@ -1996,6 +2161,21 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
           />
         ) : files ? (
           <AiHint c={c} status={aiStatus} style={{ marginTop: 16 }} />
+        ) : null}
+
+        {reportFiles.length ? (
+          <Jelly onPress={sendReport} scaleTo={0.97} style={{ marginTop: 12 }} disabled={!!busy} accessibilityLabel={t('report.send')} testID="send-report-button">
+            <Glass c={c} interactive tint={c.accent + '22'} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 }}>
+              <View style={[s.aiIcon, { backgroundColor: c.accentSoft }]}>
+                <Icon name="paperplane.fill" size={15} color={c.accent} weight="semibold" />
+              </View>
+              <View style={s.flex}>
+                <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>{t('report.send')}</Text>
+                <Text style={{ color: c.text2, fontSize: 12.5, marginTop: 2 }} numberOfLines={2}>{t('report.sub')}</Text>
+              </View>
+              <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
+            </Glass>
+          </Jelly>
         ) : null}
 
         <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('snapshot.changed')}</Text>
@@ -2053,6 +2233,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
           {files && files.length === 0 ? <EmptyState c={c} icon={kindIcon(snapshot.kind)} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
         </ScrollView>
       </View>
+      {worker.element}
       <BusyHud c={c} text={busy} />
       <ViewerSheet c={c} target={viewer} onClose={onCloseViewer} />
     </Modal>

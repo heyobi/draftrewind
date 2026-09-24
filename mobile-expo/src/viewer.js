@@ -118,8 +118,12 @@ export function utf8Decode(buf) {
 
 // Renkli karşılaştırma: eski ve yeni hali paragraf paragraf (Word) ya da satır satır karşılaştırır.
 // oldB64 null ise dosya bu kayıtta eklenmiştir.
-export function diffHtml(oldB64, newB64, kind, dark, labels, libs) {
+// opts.report: rapor modu — en fazla opts.maxBlocks blok çizilir ve sonuç HTML'i uygulamaya
+// { type: 'rendered', html, add, rem, first, unchanged, truncated } mesajıyla gönderilir (PDF raporu için).
+export function diffHtml(oldB64, newB64, kind, dark, labels, libs, opts) {
   const L = labelsOf(labels);
+  const report = !!(opts && opts.report);
+  const maxBlocks = report ? Math.max(1, (opts && opts.maxBlocks) || 300) : 0;
   const c = dark
     ? { bg: '#0f0f17', card: '#1a1a28', text: '#eeedfb', dim: '#9e9cb8', add: '#173222', addT: '#4ade80', del: '#3a1a1e', delT: '#f87171' }
     : { bg: '#f3f2fb', card: '#ffffff', text: '#1c1a33', dim: '#7c7a98', add: '#dcfce7', addT: '#15803d', del: '#fee2e2', delT: '#b91c1c' };
@@ -173,9 +177,10 @@ async function lines(b64,kind){
   }
   var show=blocks.map(function(){return false;});
   blocks.forEach(function(bk,i){if(bk.t!=='same')for(var k=i-1;k<=i+1;k++)if(k>=0&&k<blocks.length)show[k]=true;});
-  var html='',hidden=0;
+  var html='',hidden=0,maxBlocks=${maxBlocks},drawn=0,truncated=false;
   function flush(){if(hidden)html+='<div class="gap">'+esc(fmt(hidden===1?L.sameParagraphsOne:L.sameParagraphs,hidden))+'</div>';hidden=0;}
-  blocks.forEach(function(bk,i){if(!show[i]){hidden++;return;}flush();
+  blocks.forEach(function(bk,i){if(!show[i]){hidden++;return;}
+    if(maxBlocks&&drawn>=maxBlocks){truncated=true;return;}drawn++;flush();
     if(bk.t==='same')html+='<p class="same">'+esc(bk.s)+'</p>';
     else if(bk.t==='add')html+='<p class="padd">'+esc(bk.s)+'</p>';
     else if(bk.t==='del')html+='<p class="pdel">'+esc(bk.s)+'</p>';
@@ -195,9 +200,13 @@ async function lines(b64,kind){
   });
   try{window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify({type:'diff',text:cmp.join('\\n'),add:add,rem:rem,first:${oldB64 ? 'false' : 'true'}}));}catch(e){}
   var sum='<div class="sum">'+(${oldB64 ? 'false' : 'true'}?'<span class="chip n">'+esc(L.firstVersion)+'</span>':'')+(add?'<span class="chip a">'+esc(fmt(add===1?L.wordsOne:L.words,'+'+add))+'</span>':'')+(rem?'<span class="chip d">'+esc(fmt(rem===1?L.wordsOne:L.words,'−'+rem))+'</span>':'')+'</div>';
+  var changed=blocks.some(function(b){return b.t!=='same'});
   document.getElementById('msg').remove();
-  document.getElementById('out').innerHTML=blocks.some(function(b){return b.t!=='same'})?sum+'<div class="doc">'+html+'</div>':'<div id="msg">'+esc(L.unchanged)+'</div>';
+  document.getElementById('out').innerHTML=changed?sum+'<div class="doc">'+html+'</div>':'<div id="msg">'+esc(L.unchanged)+'</div>';
+  if(${report ? 'true' : 'false'}){try{window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify({type:'rendered',html:changed?html:'',add:add,rem:rem,first:${oldB64 ? 'false' : 'true'},unchanged:!changed,truncated:truncated}));}catch(e){}}
   done();
-}catch(e){document.getElementById('msg').textContent=L.compareFailed+e;done();}})();
+}catch(e){document.getElementById('msg').textContent=L.compareFailed+e;
+  if(${report ? 'true' : 'false'}){try{window.ReactNativeWebView&&window.ReactNativeWebView.postMessage(JSON.stringify({type:'rendered',failed:true,error:String(e)}));}catch(e2){}}
+  done();}})();
 </script></body></html>`;
 }
