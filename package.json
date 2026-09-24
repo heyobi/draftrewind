@@ -1,6 +1,6 @@
 {
   "name": "draftrewind",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "DraftRewind — tez, ödev ve makaleleri otomatik kaydeden; zaman makinesi ve bulut yedekli sürüm kontrolü",
   "main": "app/main.js",
   "scripts": {
