@@ -30,10 +30,6 @@ becomes a restore point you can look at, compare and go back to. No Git, no "com
 
 ![Cloud and phone](docs/screenshots/cloud.png)
 
-**Updates** — the free Windows edition asks before it installs anything.
-
-![Update dialog](docs/screenshots/update.png)
-
 ## Get it
 
 | Platform | Official (paid, supports development) | Free |
