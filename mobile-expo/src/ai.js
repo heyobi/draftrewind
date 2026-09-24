@@ -194,19 +194,63 @@ export function parseSummary(out) {
 
 // ------------------------------------------------------------------ 2) neler değişti?
 // changes: "+ eklenen paragraf" / "- silinen paragraf" / "~ [-eski-]{+yeni+}" satırları
+// Diff satırlarını işaretsiz, düz metne ayırır: eklenen / çıkarılan / değişen (eski → yeni)
+export function parseChanges(text) {
+  const added = [], removed = [], edited = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('+ ')) added.push(line.slice(2).trim());
+    else if (line.startsWith('- ')) removed.push(line.slice(2).trim());
+    else if (line.startsWith('~ ')) {
+      const body = line.slice(2);
+      const olds = [...body.matchAll(/\[-([\s\S]*?)-\]/g)].map((m) => m[1].trim()).filter(Boolean);
+      const news = [...body.matchAll(/\{\+([\s\S]*?)\+\}/g)].map((m) => m[1].trim()).filter(Boolean);
+      edited.push({ old: olds.join(' '), new: news.join(' ') });
+    }
+  }
+  return { added, removed, edited };
+}
+
+const wc = (s) => (String(s).match(/[\p{L}\p{N}]+/gu) || []).length;
+const quote = (s, n = 90) => `“${s.length > n ? s.slice(0, n - 1).trim() + '…' : s}”`;
+
+// Küçük değişiklikleri yapay zekâsız, şablonla ve hatasız anlatır (≤ 20 kelime)
+function templateSummary(p) {
+  const words = [...p.added, ...p.removed, ...p.edited.map((e) => `${e.old} ${e.new}`)].reduce((a, s) => a + wc(s), 0);
+  if (words > 20) return null;
+  const parts = [];
+  if (p.added.length === 1) parts.push(t('ai.tpl.addedOne', { text: quote(p.added[0]) }));
+  else if (p.added.length > 1) parts.push(t('ai.tpl.addedMany', { n: p.added.length }));
+  if (p.removed.length === 1) parts.push(t('ai.tpl.removedOne', { text: quote(p.removed[0]) }));
+  else if (p.removed.length > 1) parts.push(t('ai.tpl.removedMany', { n: p.removed.length }));
+  for (const e of p.edited.slice(0, 2)) {
+    if (e.old && e.new) parts.push(t('ai.tpl.replaced', { old: quote(e.old, 50), new: quote(e.new, 50) }));
+    else if (e.new) parts.push(t('ai.tpl.addedOne', { text: quote(e.new) }));
+    else if (e.old) parts.push(t('ai.tpl.removedOne', { text: quote(e.old) }));
+  }
+  return parts.length ? parts.join(' ') : null;
+}
+
 export async function summarizeChanges(id, name, diff) {
   const text = String((diff && diff.text) || '').trim();
   if (!text) return t('ai.noChanges');
+  const p = parseChanges(text);
+  const simple = templateSummary(p);
+  if (simple) return simple;
   const l = await answerLanguage();
   const instructions = baseInstructions('You explain what changed between two versions of a document.', l);
+  // Modele işaret (+, -, ~) değil düz metin verilir; küçük model işaretleri içerik sanabiliyor
+  const sections = [];
+  if (p.added.length) sections.push(`ADDED TEXT:\n${p.added.map((s) => `• ${s}`).join('\n')}`);
+  if (p.removed.length) sections.push(`REMOVED TEXT:\n${p.removed.map((s) => `• ${s}`).join('\n')}`);
+  if (p.edited.length) sections.push(`REWORDED:\n${p.edited.map((e) => `• "${e.old}" became "${e.new}"`).join('\n')}`);
+  const body = sections.join('\n\n');
   const prompt =
-    `These are the changes made to "${name}" in one save.` +
+    `The student saved a new version of "${name}".` +
     (diff.first ? ' This is the first version of the file, so everything is new.' : '') +
-    ` About ${diff.add || 0} words were added and ${diff.rem || 0} removed.\n` +
-    `Lines starting with "+" were added, "-" were removed, "~" were edited ([-old-] was replaced by {+new+}).\n` +
-    `In 1 or 2 short sentences, say what the student added or removed (the content itself, not the markup), ` +
-    `e.g. "Giriş bölümüne araştırmanın amacını anlatan bir paragraf ekledin." No introduction, no evaluation. ` +
-    `Answer in ${LANG_NAME[l]}.\n\nCHANGES:\n${AI.truncate(text, AI.MAX_PROMPT_CHARS - 700)}`;
+    `\nIn 1 or 2 short sentences, say what they added, removed or reworded — describe the content itself ` +
+    `(e.g. "Giriş bölümüne araştırmanın amacını anlatan bir paragraf ekledin."). No introduction, no evaluation. ` +
+    `Answer in ${LANG_NAME[l]}.\n\n${AI.truncate(body, AI.MAX_PROMPT_CHARS - 700)}`;
   return run(cacheKey('diff', id, text), instructions, prompt);
 }
 
