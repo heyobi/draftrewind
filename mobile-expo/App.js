@@ -19,7 +19,9 @@ import {
   TextInput,
   View,
   useColorScheme,
+  useWindowDimensions,
 } from 'react-native';
+import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -39,6 +41,7 @@ import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
 import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
 import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
+import * as WS from './src/workspace';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
 import { ensurePermission, checkBackupHealth, dismissBackupCard } from './src/notify';
 import { reportHtml, htmlToPdf, reportFileName, REPORT_MAX_FILES, REPORT_MAX_BLOCKS } from './src/report';
@@ -133,7 +136,7 @@ function Jelly({ children, onPress, onLongPress, style, scaleTo = 0.96, disabled
 }
 
 // iOS eylem sayfası (Android'de basit uyarı penceresi). actions: [{ label, onPress, destructive }]
-function showActions(c, { title, message, actions }) {
+function showActions(c, { title, message, actions, onCancel }) {
   const list = actions.filter(Boolean);
   if (Platform.OS === 'ios') {
     const destructive = list.findIndex((a) => a.destructive);
@@ -148,10 +151,11 @@ function showActions(c, { title, message, actions }) {
       },
       (i) => {
         if (i < list.length) list[i].onPress();
+        else if (onCancel) onCancel();
       }
     );
   } else {
-    Alert.alert(title, message, [...list.map((a) => ({ text: a.label, onPress: a.onPress })), { text: t('common.cancel'), style: 'cancel' }]);
+    Alert.alert(title, message, [...list.map((a) => ({ text: a.label, onPress: a.onPress })), { text: t('common.cancel'), style: 'cancel', onPress: onCancel }]);
   }
 }
 
@@ -275,6 +279,38 @@ function ScreenHeader({ c, onBack, backLabel, right, look, eyebrow, title, subti
     </>
   );
 }
+
+// iPad'de telefon düzeni ortalanmış, en fazla 720 pt genişlikte bir sütunda durur (kenarlara yayılmaz)
+const WIDE_MAX = 720;
+function Centered({ children, style }) {
+  const { width } = useWindowDimensions();
+  const wide = width > WIDE_MAX + 40;
+  return <View style={[s.flex, wide && { width: WIDE_MAX, alignSelf: 'center' }, style]}>{children}</View>;
+}
+
+// Otomatik gönderim sonrası kısa bildirim + atlanan dosyalar / çakışmalar için uyarılar (ortak)
+function reportSync(r, project, onAuthError) {
+  if (!r) return;
+  const push = r.push;
+  if (push && push.pushed.length + push.removed.length) {
+    success();
+    const n = push.pushed.length + push.removed.length;
+    pulse({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.pushed', { n, count: n }), subtitle: project.name, short: t('ws.pushedShort') }, 5000);
+  }
+  const skipped = (push && push.skipped) || (r.pending && r.pending.skipped) || [];
+  if (skipped.length) {
+    warn();
+    Alert.alert(t('ws.skippedTitle'), skipped.map((x) => t(x.reason === 'tooBig' ? 'ws.skippedTooBig' : 'ws.skippedUnreadable', { name: x.path.split('/').pop() })).join('\n\n'), [{ text: t('common.ok') }]);
+  }
+  if (r.pull && r.pull.conflicts.length) {
+    warn();
+    Alert.alert(t('ws.conflictTitle'), r.pull.conflicts.map((x) => t('ws.conflict', { name: x.path.split('/').pop(), copy: x.copy.split('/').pop() })).join('\n\n'), [{ text: t('common.ok') }]);
+  }
+  if (r.pullError && r.pullError.auth && onAuthError) onAuthError();
+}
+
+// Hata nesnesini kullanıcıya gösterilecek metne çevirir (ham iz yok)
+const errText = (e) => (e && e.message ? e.message : String(e || ''));
 
 // iOS 26'da Liquid Glass, diğerlerinde klasik kart
 function Glass({ c, style, children, tint, interactive }) {
@@ -692,8 +728,58 @@ function Root() {
   const handledUrl = useRef(null);
   // fromScanner: uygulama içi kamera. Dışarıdan gelen bağlantı (başka uygulama/site) açık oturumu
   // sormadan değiştiremez; kullanıcı onaylar.
+  // Başka uygulamadan "DraftRewind'da aç" ile gelen belge (file://…): çalışma alanına alınır ve gönderilir
+  const [syncTick, setSyncTick] = useState(0);
+  const importingRef = useRef(false);
+  const handleIncomingFile = async (url) => {
+    if (!ghToken || importingRef.current) return;
+    importingRef.current = true;
+    const name = safeName(decodeURIComponent((url.split('?')[0].split('#')[0].split('/').pop() || '').replace(/\/+$/, '')) || 'belge');
+    try {
+      const projects = await GH.listProjects(ghToken);
+      if (!projects.length) {
+        warn();
+        Alert.alert(t('ws.incomingFailed'), t('ws.noProjects'), [{ text: t('common.ok') }]);
+        return;
+      }
+      // Aynı adlı izlenen dosyası olan tek proje varsa doğrudan oraya; yoksa sor
+      const hits = WS.findTracked(projects, name);
+      let target = hits.length === 1 ? hits[0] : null;
+      if (!target) {
+        const choice = await new Promise((resolve) =>
+          showActions(c, {
+            title: t('ws.incomingChoose'),
+            message: name,
+            actions: projects.map((p) => ({ label: p.name, onPress: () => resolve(p) })),
+            onCancel: () => resolve(null),
+          })
+        );
+        if (!choice) return;
+        const hit = hits.find((h) => h.project.repo === choice.repo);
+        target = { project: choice, path: hit ? hit.path : null };
+      }
+      const path = await WS.importIncoming(target.project, url, name, target.path);
+      success();
+      pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: t('ws.incomingTitle'), subtitle: t('ws.incomingBody', { name: path.split('/').pop(), project: target.project.name }), short: t('ws.pushedShort') }, 8000);
+      const r = await WS.syncProject(ghToken, target.project, { auto: true });
+      reportSync(r, target.project, logoutGithub);
+      if (!r.push) Alert.alert(t('ws.incomingTitle'), `${path.split('/').pop()} → ${target.project.name}`, [{ text: t('common.ok') }]);
+      setSyncTick((n) => n + 1);
+    } catch (e) {
+      warn();
+      if (e && e.auth) logoutGithub();
+      else Alert.alert(t('ws.incomingFailed'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      importingRef.current = false;
+    }
+  };
   const handleUrl = async (url, fromScanner = false) => {
-    if (!url || !isPairLink(url) || handledUrl.current === url) return;
+    if (!url || handledUrl.current === url) return;
+    if (/^file:/i.test(url)) {
+      handledUrl.current = url;
+      return handleIncomingFile(url);
+    }
+    if (!isPairLink(url)) return;
     handledUrl.current = url;
     let info;
     try {
@@ -750,19 +836,21 @@ function Root() {
     <View style={{ flex: 1, backgroundColor: c.bg }}>
       <StatusBar style={dark ? 'light' : 'dark'} />
       <Ambient c={c} />
-      {!ready ? (
-        <View style={s.center}>
-          <ActivityIndicator color={c.accent} />
-        </View>
-      ) : !signedIn ? (
-        <LoginScreen c={c} onGithub={loginGithub} onGoogle={setGoogle} onScan={() => setScanning(true)} />
-      ) : screen && screen.type === 'gh' ? (
-        <ProjectScreen c={c} token={ghToken} project={screen.project} onBack={() => setScreen(null)} onAuthError={logoutGithub} />
-      ) : screen && screen.type === 'drive' ? (
-        <DriveScreen c={c} drive={drive} folder={screen.folder} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
-      ) : (
-        <HomeScreen c={c} prefs={prefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
-      )}
+      <Centered>
+        {!ready ? (
+          <View style={s.center}>
+            <ActivityIndicator color={c.accent} />
+          </View>
+        ) : !signedIn ? (
+          <LoginScreen c={c} onGithub={loginGithub} onGoogle={setGoogle} onScan={() => setScanning(true)} />
+        ) : screen && screen.type === 'gh' ? (
+          <ProjectScreen c={c} prefs={prefs} token={ghToken} project={screen.project} syncTick={syncTick} onBack={() => setScreen(null)} onAuthError={logoutGithub} />
+        ) : screen && screen.type === 'drive' ? (
+          <DriveScreen c={c} drive={drive} folder={screen.folder} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
+        ) : (
+          <HomeScreen c={c} prefs={prefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} syncTick={syncTick} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
+        )}
+      </Centered>
       <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url, true)} />
       <SettingsSheet
         onScan={() => {
@@ -1110,6 +1198,16 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             </View>
             <Switch value={prefs.backupAlerts !== false} onValueChange={toggleBackupAlerts} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.backupAlerts')} testID="backup-alerts-toggle" />
           </Glass>
+
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.workspace')}</Text>
+          <Glass c={c} style={s.accountRow}>
+            <View style={s.accountIcon}><Icon name="arrow.up.doc.fill" size={22} color={c.text2} /></View>
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('settings.autoPush')}</Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{t('settings.autoPushSub')}</Text>
+            </View>
+            <Switch value={prefs.autoPush !== false} onValueChange={(autoPush) => onPrefs({ autoPush })} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.autoPush')} testID="auto-push-toggle" />
+          </Glass>
           <View style={{ height: 30 }} />
         </ScrollView>
       </View>
@@ -1120,12 +1218,64 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
 // ---------------------------------------------------------------------------
 // Ana ekran: GitHub projeleri + Drive klasörleri
 // ---------------------------------------------------------------------------
-function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
+function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
   const insets = useSafeAreaInsets();
   const [ghList, setGhList] = useState(null);
   const [driveList, setDriveList] = useState(null);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const autoPush = prefs ? prefs.autoPush !== false : true;
+
+  // Bu cihazda çalışma alanı olan projeler: Word'de kaydedilenler ana ekrana dönünce de gönderilsin
+  const syncLocal = async (list) => {
+    let pushed = 0;
+    let changed = false;
+    for (const p of list) {
+      const st = WS.status(p);
+      if (!st.count && !st.full) continue;
+      try {
+        const r = await WS.syncProject(ghToken, p, { auto: autoPush });
+        if (r && r.push) pushed += r.push.pushed.length + r.push.removed.length;
+        if (r && ((r.push && r.push.commit) || (r.pull && r.pull.moved))) changed = true;
+        if (r && r.pull && r.pull.conflicts.length) reportSync({ pull: r.pull }, p);
+      } catch (e) {
+        if (e && e.auth) return onAuthErrorGh();
+      }
+    }
+    if (pushed) {
+      success();
+      pulse({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.pushed', { n: pushed, count: pushed }), subtitle: t('ws.pushedSub'), short: t('ws.pushedShort') }, 5000);
+    }
+    return changed;
+  };
+
+  // "Yeni proje": ad sor → GitHub'da masaüstüyle aynı depo → yerel klasör → listeye gelir
+  const newProject = () => {
+    if (creating) return;
+    const create = async (raw) => {
+      const name = String(raw || '').trim();
+      if (!name) return;
+      setCreating(true);
+      try {
+        const p = await GH.createProject(ghToken, name, t('home.newProjectReadme'));
+        WS.ensureProjectDir(p);
+        const st = WS.loadState(p);
+        st.full = true;
+        WS.saveState(p, st);
+        success();
+        Alert.alert(t('home.newProjectCreated', { name }), t('home.newProjectCreatedBody', { path: WS.filesPath(p) }), [{ text: t('common.ok') }]);
+        await load();
+      } catch (e) {
+        warn();
+        if (e && e.auth) onAuthErrorGh();
+        else Alert.alert(t('home.newProjectFailed'), errText(e), [{ text: t('common.ok') }]);
+      } finally {
+        setCreating(false);
+      }
+    };
+    if (Alert.prompt) Alert.prompt(t('home.newProject'), t('home.newProjectPrompt'), [{ text: t('common.cancel'), style: 'cancel' }, { text: t('home.newProjectCreate'), onPress: create }], 'plain-text', '', 'default');
+  };
   // Kapatılmamış "yeni kayıtlar" kartı uygulama yeniden açılsa da kalır; kapatınca bir daha gelmez
   const [news, setNews] = useState(loadPendingNews);
   const dismissNews = () => {
@@ -1155,6 +1305,8 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccoun
               .catch(() => {});
             const found = await announceNewSaves(ghToken, list);
             if (found && found.length) setNews(found);
+            // Yerel düzenlemeler gönderildiyse "son yedek" zamanı değişmiştir: listeyi tazele
+            if (await syncLocal(list)) GH.listProjects(ghToken).then(setGhList).catch(() => {});
           })
           .catch((e) => {
             if (e.auth) onAuthErrorGh();
@@ -1172,7 +1324,8 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccoun
           })
       );
     await Promise.all(jobs);
-  }, [ghToken, drive, backupAlerts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ghToken, drive, backupAlerts, autoPush, syncTick]);
 
   useEffect(() => {
     load();
@@ -1256,7 +1409,17 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccoun
       {error ? <Text style={{ color: c.red, marginVertical: 10 }}>{error}</Text> : null}
       {loading && !(ghList && ghList.length) && !(driveList && driveList.length) ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
 
-      {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.githubHeader')}</Text> : null}
+      {ghToken && ghList ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 }}>
+          {ghList.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>{t('home.githubHeader')}</Text> : <View style={s.flex} />}
+          <Jelly onPress={newProject} disabled={creating} scaleTo={0.92} accessibilityLabel={t('home.newProject')} testID="new-project-button">
+            <Glass c={c} interactive tint={c.accent + '33'} style={[s.pillBtn, s.btnRow, { gap: 5, paddingLeft: 10 }]}>
+              {creating ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="plus" size={13} color={c.accent} weight="bold" />}
+              <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14 }}>{t('home.newProject')}</Text>
+            </Glass>
+          </Jelly>
+        </View>
+      ) : null}
       {(ghList || []).map((p, i) => (
         <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: { ...p, index: i } })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={p.name} testID="project-row">
           <Glass c={c} interactive style={s.projRow}>
@@ -1358,7 +1521,7 @@ async function doAnnounceNewSaves(token, list) {
 // ---------------------------------------------------------------------------
 const touchesFile = (h, path) => (h.changed || []).includes(path) || (h.delta && h.delta[path] !== undefined) || (h.deleted || []).includes(path);
 
-function ProjectScreen({ c, token, project, onBack, onAuthError }) {
+function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError }) {
   const insets = useSafeAreaInsets();
   const [history, setHistory] = useState(null);
   const [files, setFiles] = useState(null);
@@ -1375,6 +1538,12 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   const [uploading, setUploading] = useState(false);
   const scrollRef = useRef(null);
   const tabsY = useRef(0);
+  // Yerel çalışma alanı (bu cihazdaki dosyalar) durumu ve eşitleme
+  const [ws, setWs] = useState(() => WS.status(project));
+  const [syncing, setSyncing] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const syncRef = useRef(false);
+  const autoPush = prefs ? prefs.autoPush !== false : true;
 
   const load = useCallback(async () => {
     try {
@@ -1386,14 +1555,108 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       if (e.auth) onAuthError();
       setError(e.message);
     }
-  }, [token, project]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, project, syncTick]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  const refreshWs = () => setWs(WS.status(project));
+
+  // Eşitleme: önce bilgisayardan gelenler, sonra bu cihazda değişenler (otomatik gönderim açıksa ya da elle).
+  // Aynı anda tek iş; sonuçta geçmiş yenilenir ve kısa bildirim gösterilir.
+  const runSync = async ({ manual } = {}) => {
+    if (syncRef.current) return;
+    syncRef.current = true;
+    if (manual) setSyncing(true);
+    try {
+      const r = await WS.syncProject(token, project, { auto: manual || autoPush });
+      reportSync(r, project, onAuthError);
+      if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.title'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
+      if (r && r.pull && r.pull.updated.length) {
+        const n = r.pull.updated.length;
+        pulse({ icon: 'arrow.down.circle.fill', color: '#38bdf8', title: t('ws.pulled', { n, count: n }), subtitle: project.name, short: t('ws.downloadDoneShort') }, 5000);
+      }
+      refreshWs();
+      if (r && ((r.push && r.push.commit) || (r.pull && r.pull.moved))) await load();
+    } catch (e) {
+      warn();
+      if (e && e.auth) onAuthError();
+      else Alert.alert(t('ws.pushFailedTitle'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      syncRef.current = false;
+      setSyncing(false);
+    }
+  };
+  const runSyncRef = useRef(runSync);
+  runSyncRef.current = runSync;
+
+  // Açılışta ve uygulama öne geldiğinde (Word'den dönünce) eşitle
+  useEffect(() => {
+    runSyncRef.current();
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') runSyncRef.current();
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.repo]);
+
   const sizeOf = (path) => ((files || []).find((f) => f.path === path) || {}).size || 0;
   const baseName = (path) => path.split('/').pop();
+
+  // "Düzenle (Word/Pages ile)": dosya çalışma alanına iner (yoksa), sistemin "Şununla aç" sayfası açılır.
+  // Word/Pages belgeyi klasörümüzden yerinde açar; kaydedince runSync gönderir.
+  const editFile = async (f) => {
+    if (f.size > MAX_UPLOAD) {
+      warn();
+      return Alert.alert(t('ws.editFailed'), t('ws.tooBig', { name: baseName(f.path) }), [{ text: t('common.ok') }]);
+    }
+    const flags = WS.loadFlags();
+    if (!flags.editHint) {
+      WS.saveFlags({ ...flags, editHint: true });
+      await new Promise((resolve) => Alert.alert(t('ws.editHintTitle'), t('ws.editHint'), [{ text: t('common.ok'), onPress: resolve }]));
+    }
+    setBusy(t('ws.preparing'));
+    try {
+      const file = await WS.ensureLocal(token, project, f);
+      setBusy(null);
+      refreshWs();
+      const { mimeType, UTI } = fileType(f.path);
+      await Sharing.shareAsync(file.uri, { mimeType, UTI, dialogTitle: baseName(f.path) });
+    } catch (e) {
+      setBusy(null);
+      warn();
+      if (e && e.auth) onAuthError();
+      else Alert.alert(t('ws.editFailed'), errText(e), [{ text: t('common.ok') }]);
+    }
+  };
+
+  // "Bu projeyi iPad'e/telefona indir": tüm dosyalar çalışma alanına (Dinamik Ada'da ilerleme)
+  const downloadProject = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    const island = pulse({ icon: 'arrow.down.circle', color: '#38bdf8', title: project.name, subtitle: t('pulse.downloading'), short: t('pulse.downloadingShort') }, 180000);
+    try {
+      const r = await WS.downloadProject(token, project, {
+        onProgress: (i, n) => island.update({ subtitle: t('ws.downloading', { i: i + 1, n }), short: t('ws.downloadingShort', { i: i + 1, n }) }),
+      });
+      const n = r.updated.length;
+      success();
+      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.downloadDone', { n, count: n }), subtitle: t('ws.downloadDoneSub', { path: WS.filesPath(project) }), short: t('ws.downloadDoneShort') }, 5000);
+      refreshWs();
+      reportSync({ pull: r }, project, onAuthError);
+      Alert.alert(t('ws.downloadDone', { n, count: n }), t('ws.filesHint', { path: WS.filesPath(project) }), [{ text: t('common.ok') }]);
+    } catch (e) {
+      island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: errText(e), short: t('pulse.failedShort') });
+      warn();
+      if (e && e.auth) onAuthError();
+      else Alert.alert(t('ws.downloadFailed'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      setDownloading(false);
+    }
+  };
+  const editable = (path) => ['word', 'sheet', 'slides', 'text'].includes(kindOf(path));
   const openFile = (path, ref, time) =>
     setViewer({
       name: baseName(path),
@@ -1428,6 +1691,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       title: baseName(path),
       actions: [
         { label: t('doc.preview'), onPress: () => openFile(path, null) },
+        editable(path) && { label: t('ws.edit'), onPress: () => editFile((files || []).find((f) => f.path === path) || { path, size: sizeOf(path) }) },
         { label: t('doc.share'), onPress: () => shareFile(path, null) },
         { label: t('doc.history'), onPress: () => showHistory(path) },
       ],
@@ -1552,7 +1816,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
             tintColor={c.accent}
             onRefresh={async () => {
               setRefreshing(true);
-              await load();
+              await Promise.all([load(), runSync()]);
               setRefreshing(false);
             }}
           />
@@ -1612,6 +1876,32 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                 </View>
               </Glass>
             </Jelly>
+
+            <Glass c={c} style={{ padding: 14, marginTop: 10 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Icon name={Platform.isPad ? 'ipad' : 'iphone'} size={16} color={c.accent} weight="semibold" />
+                <Text style={{ color: c.text, fontWeight: '700', fontSize: 15, flex: 1 }}>{t('ws.title')}</Text>
+                {syncing ? <ActivityIndicator color={c.accent} size="small" /> : null}
+              </View>
+              <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush) }) : t('ws.statusNone')}</Text>
+              {ws.count ? <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('ws.filesHint', { path: WS.filesPath(project) })}</Text> : null}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                <Jelly onPress={downloadProject} disabled={downloading || syncing} scaleTo={0.97} style={s.flex} accessibilityLabel={t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')} testID="download-project-button">
+                  <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
+                    {downloading ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="arrow.down.circle" size={16} color={c.accent} weight="semibold" />}
+                    <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, flexShrink: 1 }} numberOfLines={2}>{t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')}</Text>
+                  </View>
+                </Jelly>
+                {ws.count ? (
+                  <Jelly onPress={() => runSync({ manual: true })} disabled={syncing || downloading} scaleTo={0.97} accessibilityLabel={t('ws.syncNow')} testID="sync-now-button">
+                    <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
+                      <Icon name="arrow.up.circle" size={16} color={c.accent} weight="semibold" />
+                      <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5 }}>{syncing ? t('ws.syncing') : t('ws.syncNow')}</Text>
+                    </View>
+                  </Jelly>
+                ) : null}
+              </View>
+            </Glass>
 
             <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
               <Glass c={c} style={[s.seg, { marginTop: 14 }]}>
@@ -1722,6 +2012,11 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                             {sort === 'changed' && lastChanged[f.path] ? ` · ${ago(lastChanged[f.path])}` : ''}
                           </Text>
                         </View>
+                        {editable(f.path) ? (
+                          <Pressable onPress={() => editFile(f)} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('ws.edit')} testID="edit-file-button" style={[s.editBtn, { backgroundColor: c.accentSoft }]}>
+                            <Icon name="square.and.pencil" size={15} color={c.accent} weight="semibold" />
+                          </Pressable>
+                        ) : null}
                         <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
                       </Glass>
                     </Jelly>
@@ -2640,6 +2935,7 @@ const s = StyleSheet.create({
   pillBtn: { height: 32, borderRadius: 16, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, height: 44, borderRadius: 14 },
   actionBtn: { height: 50, borderRadius: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  editBtn: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   snapIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   dayHeader: { fontSize: 12, fontWeight: '700', letterSpacing: 0.6, marginTop: 16, marginBottom: 8, marginLeft: 4 },
   tlItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18 },

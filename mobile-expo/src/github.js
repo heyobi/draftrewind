@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { File, Paths } from 'expo-file-system';
 import * as Legacy from 'expo-file-system/legacy';
 import { t } from './i18n';
+import { buildTreeEntries, buildMessage, slugify, toBase64, utf8Encode } from './wsCore';
 
 // Masaüstü uygulamasıyla aynı OAuth uygulaması (device flow açık olmalı).
 export const GITHUB_CLIENT_ID = 'Ov23liD2VS140X5UplHW';
@@ -182,7 +183,18 @@ export async function listSnapshots(token, p, pages = 3, since) {
 
 export async function listFiles(token, p, ref) {
   const t = await api(token, `/repos/${p.owner}/${p.repo}/git/trees/${ref || p.branch}?recursive=1`);
-  return t.tree.filter((e) => e.type === 'blob').map((e) => ({ path: e.path, size: e.size }));
+  return t.tree.filter((e) => e.type === 'blob').map((e) => ({ path: e.path, size: e.size, sha: e.sha }));
+}
+
+// Dalın uç kaydı (sha). Boş depoda (hiç kayıt yok) null döner.
+export async function branchHead(token, p) {
+  const res = await fetch(`${API}/repos/${p.owner}/${p.repo}/git/ref/heads/${encodeURIComponent(p.branch)}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+  });
+  if (res.status === 404 || res.status === 409) return null;
+  if (!res.ok) throw await failure(res);
+  const ref = await res.json();
+  return ref.object ? ref.object.sha : null;
 }
 
 export async function commitFiles(token, p, oid) {
@@ -291,6 +303,15 @@ async function postBlob(token, path, base64) {
 // files: [{ path, read: async () => base64 }] — içerik sırayla okunur, bellekte hep tek dosya durur.
 // onProgress(i): i. dosya yüklenmeye başladı. Dönen: { done: [path], failed: [{ path, error }] }
 export async function addFiles(token, p, files, makeMessage, onProgress) {
+  const r = await commitChanges(token, p, files, [], (paths) => makeMessage(paths), onProgress);
+  return { done: r.done.map((d) => d.path), failed: r.failed };
+}
+
+// Genel kayıt: yeni/değişen dosyalar (bloblar) + silinen yollar, hepsi TEK kayıtta.
+// files: [{ path, read: async () => base64 }], removals: [path]
+// makeMessage(uploadedPaths, removedPaths) → kayıt mesajı. onProgress(i): i. dosya yüklenmeye başladı.
+// Dönen: { done: [{ path, sha }], removed: [path], failed: [{ path, error }], commit: sha | null }
+export async function commitChanges(token, p, files, removals, makeMessage, onProgress) {
   const base = `/repos/${p.owner}/${p.repo}`;
   const blobs = [];
   const failed = [];
@@ -299,26 +320,67 @@ export async function addFiles(token, p, files, makeMessage, onProgress) {
     try {
       const content = await files[i].read();
       const blob = await postBlob(token, `${base}/git/blobs`, content);
-      blobs.push({ path: files[i].path, mode: '100644', type: 'blob', sha: blob.sha });
+      blobs.push({ path: files[i].path, sha: blob.sha });
     } catch (e) {
       if (e.auth) throw e;
       failed.push({ path: files[i].path, error: e });
     }
   }
-  if (!blobs.length) return { done: [], failed };
-  const message = makeMessage(blobs.map((b) => b.path));
+  const wanted = [...new Set(removals || [])];
+  if (!blobs.length && !wanted.length) return { done: [], removed: [], failed, commit: null };
   // Masaüstü aynı anda kayıt gönderirse dal ilerlemiş olabilir: güncel uçtan yeniden dene
   for (let attempt = 0; ; attempt++) {
     const ref = await send(token, 'GET', `${base}/git/ref/heads/${encodeURIComponent(p.branch)}`);
     const head = ref.object.sha;
     const commit = await send(token, 'GET', `${base}/git/commits/${head}`);
-    const tree = await send(token, 'POST', `${base}/git/trees`, { base_tree: commit.tree.sha, tree: blobs });
+    // Ağaçta olmayan bir yolu silmeye çalışmak 422 verir: silinecekler güncel ağaca göre süzülür
+    let removed = [];
+    if (wanted.length) {
+      const current = await send(token, 'GET', `${base}/git/trees/${commit.tree.sha}?recursive=1`);
+      const present = new Set((current.tree || []).filter((e) => e.type === 'blob').map((e) => e.path));
+      removed = wanted.filter((path) => present.has(path));
+    }
+    const entries = buildTreeEntries(blobs, removed);
+    if (!entries.length) return { done: [], removed: [], failed, commit: null };
+    const message = makeMessage(blobs.map((b) => b.path), removed);
+    const tree = await send(token, 'POST', `${base}/git/trees`, { base_tree: commit.tree.sha, tree: entries });
     const next = await send(token, 'POST', `${base}/git/commits`, { message, tree: tree.sha, parents: [head] });
     try {
       await send(token, 'PATCH', `${base}/git/refs/heads/${encodeURIComponent(p.branch)}`, { sha: next.sha, force: false });
-      return { done: blobs.map((b) => b.path), failed };
+      return { done: blobs, removed, failed, commit: next.sha };
     } catch (e) {
       if (e.status !== 422 || attempt >= 2) throw e;
     }
   }
+}
+
+// Telefondan yeni proje: masaüstünün ensureRepo'suyla birebir aynı depo (gizli, açıklama, etiketler).
+// Ad alınmışsa -2, -3… denenir. İlk kayıt olarak küçük bir README.txt konur ki dal var olsun.
+// readme: dosya içeriği (dile göre). Dönen: listProjects ile aynı biçimde proje nesnesi.
+export async function createProject(token, name, readme) {
+  const base = `draftrewind-${slugify(name)}`;
+  let repo = null;
+  for (let i = 0; i < 20 && !repo; i++) {
+    const candidate = i === 0 ? base : `${base}-${i + 1}`;
+    try {
+      repo = await send(token, 'POST', '/user/repos', {
+        name: candidate,
+        private: true,
+        auto_init: false,
+        description: `${name} — DraftRewind ile otomatik yedeklenir`,
+      });
+    } catch (e) {
+      if (e.status !== 422) throw e;
+    }
+  }
+  if (!repo) throw new Error(t('home.newProjectNameTaken'));
+  const full = repo.full_name;
+  await send(token, 'PUT', `/repos/${full}/topics`, { names: ['draftrewind', 'acadamiv'] });
+  // İlk kayıt: içerik API'si boş depoda da çalışır ve "main" dalını oluşturur
+  const message = buildMessage({ title: t('home.newProjectCommit'), changed: ['README.txt'], deleted: [] });
+  await send(token, 'PUT', `/repos/${full}/contents/README.txt`, { message, content: toBase64(utf8Encode(readme)), branch: 'main' });
+  try {
+    if (repo.default_branch !== 'main') await send(token, 'PATCH', `/repos/${full}`, { default_branch: 'main' });
+  } catch (e) {}
+  return { owner: repo.owner.login, repo: repo.name, name, pushedAt: Date.now(), private: true, branch: 'main' };
 }

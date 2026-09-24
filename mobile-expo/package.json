@@ -25,6 +25,7 @@
     "expo-symbols": "~57.0.3",
     "expo-web-browser": "~57.0.3",
     "expo-widgets": "~57.0.21",
+    "jszip": "^3.10.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",

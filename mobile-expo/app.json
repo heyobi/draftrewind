@@ -43,6 +43,23 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSSupportsLiveActivities": true,
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true,
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Document",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "org.openxmlformats.wordprocessingml.document",
+              "org.openxmlformats.spreadsheetml.sheet",
+              "org.openxmlformats.presentationml.presentation",
+              "com.adobe.pdf",
+              "public.plain-text",
+              "public.text",
+              "public.data"
+            ]
+          }
+        ],
         "CFBundleURLTypes": [
           {
             "CFBundleURLSchemes": [
