@@ -22,6 +22,13 @@ public class DraftrewindAiModule: Module {
       return DraftrewindAiModule.supportsLanguage(code)
     }
 
+    // true when this build can really open the given App Group container. Sideloading tools
+    // (free Apple ID) rename App Groups when re-signing; the widget extension then cannot read
+    // the Live Activity layout and the Dynamic Island shows an empty black pill.
+    Function("appGroupReady") { (identifier: String) -> Bool in
+      return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier) != nil
+    }
+
     // Runs a single prompt in a fresh session and resolves with the generated text.
     AsyncFunction("generate") { (instructions: String, prompt: String) async throws -> String in
       return try await DraftrewindAiModule.runGenerate(instructions: instructions, prompt: prompt)

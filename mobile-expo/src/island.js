@@ -6,7 +6,32 @@ try {
   Activities = require('./FocusActivity');
 } catch (e) {}
 
-const PulseActivity = Activities.PulseActivity || null;
+let appGroupReady = () => false;
+try {
+  appGroupReady = require('../modules/draftrewind-ai').appGroupReady;
+} catch (e) {}
+
+// app.json → expo-widgets.groupIdentifier ile aynı olmalı
+const APP_GROUP = 'group.com.draftrewind.app';
+
+// Yan yükleme (ücretsiz Apple hesabı) App Group'u yeniden adlandırır; o zaman eklenti düzeni
+// okuyamaz ve Dinamik Ada boş siyah bir hap olarak kalır. Grup erişilebilir değilse hiç başlatma
+// ve önceki sürümden takılı kalmış boş etkinlikleri kapat.
+const islandUsable = (() => {
+  if (!Activities.PulseActivity) return false;
+  let ok = false;
+  try {
+    ok = appGroupReady(APP_GROUP);
+  } catch (e) {}
+  if (!ok) {
+    try {
+      for (const a of Activities.PulseActivity.getInstances()) a.end('immediate').catch(() => {});
+    } catch (e) {}
+  }
+  return ok;
+})();
+
+const PulseActivity = islandUsable ? Activities.PulseActivity : null;
 
 let current = null;
 let endTimer = null;

@@ -1297,26 +1297,36 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
     const taken = new Set((files || []).map((f) => f.path));
     const done = [];
     let failure = null;
-    for (let i = 0; i < n; i++) {
-      const a = ok[i];
-      if (i > 0) island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) });
-      try {
+    try {
+      // Aynı adlı dosya varsa "ad (2).uzantı"; seçilenlerin kendi arasında çakışması da önlenir
+      const jobs = [];
+      for (const a of ok) {
         const name = await uniqueName(safeName(a.name), async (candidate) => {
           const p = `${PHONE_FOLDER}/${candidate}`;
           return taken.has(p) || (await GH.pathExists(token, project, p));
         });
         const path = `${PHONE_FOLDER}/${name}`;
-        const content = await readBase64(a);
-        const message = `${t('upload.fromPhone')}: ${name}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: [path] })}`;
-        await GH.uploadFile(token, project, path, content, message);
         taken.add(path);
-        done.push(name);
-      } catch (e) {
-        failure = e;
-        if (e.auth) break;
-      } finally {
-        discardPicked(a);
+        jobs.push({ path, read: () => readBase64(a) });
       }
+      const nameOf = (path) => path.slice(PHONE_FOLDER.length + 1);
+      const r = await GH.addFiles(
+        token,
+        project,
+        jobs,
+        (paths) => {
+          const names = paths.map(nameOf);
+          const title = names.length <= 2 ? names.join(', ') : t('upload.doneMany', { n: names.length });
+          return `${t('upload.fromPhone')}: ${title}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: paths })}`;
+        },
+        (i) => i > 0 && island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) })
+      );
+      done.push(...r.done.map(nameOf));
+      if (r.failed.length) failure = new Error(r.failed.map((f) => `${nameOf(f.path)}: ${f.error.message}`).join('\n\n'));
+    } catch (e) {
+      failure = e;
+    } finally {
+      ok.forEach(discardPicked);
     }
     setUploading(false);
     if (done.length) {

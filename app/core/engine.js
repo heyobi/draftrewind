@@ -63,7 +63,9 @@ function parseMessage(message) {
         } catch (e) {}
     }
     const [title, ...rest] = body.split('\n');
-    return { title: title.trim(), note: rest.join('\n').trim(), meta };
+    // Eski sürümlerin başlıklarındaki emojiler (ör. "⚡ Kaydedilmemiş…") gösterilmez
+    const clean = title.replace(/[\p{Extended_Pictographic}️‍]/gu, '').replace(/\s{2,}/g, ' ').trim();
+    return { title: clean, note: rest.join('\n').trim(), meta };
 }
 
 class Project {

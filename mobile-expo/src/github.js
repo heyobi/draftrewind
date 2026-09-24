@@ -141,7 +141,9 @@ export function parseMessage(message) {
     } catch (e) {}
   }
   const [title, ...rest] = body.split('\n');
-  return { title: title.trim(), note: rest.join('\n').trim(), meta };
+  // Eski sürümlerin başlıklarındaki emojiler (ör. telefon simgeli "Telefondan eklendi") gösterilmez
+  const clean = title.replace(/[\p{Extended_Pictographic}️‍]/gu, '').replace(/\s{2,}/g, ' ').trim();
+  return { title: clean, note: rest.join('\n').trim(), meta };
 }
 
 // since (epoch ms, isteğe bağlı): yalnızca bu andan sonraki kayıtlar (istatistikler için daha çok sayfa çekilebilir)
@@ -205,18 +207,67 @@ export async function pathExists(token, p, path) {
   return true;
 }
 
-// Telefondan dosya ekleme: tek bir kayıt (commit) olarak depoya yazar. content: base64.
-export async function uploadFile(token, p, path, content, message) {
-  const res = await fetch(`${API}/repos/${p.owner}/${p.repo}/contents/${encPath(path)}`, {
-    method: 'PUT',
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, content, branch: p.branch }),
-  });
+// GitHub'ın kendi hata metnini okunur bir hataya çevirir (yalnızca "403" demek yetmiyor)
+async function failure(res) {
   if (res.status === 401) {
     const e = new Error(t('err.sessionExpired'));
     e.auth = true;
-    throw e;
+    return e;
   }
-  if (!res.ok) throw new Error(t('err.github', { status: res.status }));
+  let msg = '';
+  try {
+    msg = String((await res.json()).message || '');
+  } catch (e) {}
+  if (res.status === 413 || /too large|exceeds|size/i.test(msg)) return new Error(t('err.githubTooLarge'));
+  if ((res.status === 403 || res.status === 429) && (/rate limit/i.test(msg) || res.headers.get('x-ratelimit-remaining') === '0')) return new Error(t('err.githubRateLimit'));
+  const e = new Error(msg ? `${t('err.github', { status: res.status })}: ${msg}` : t('err.github', { status: res.status }));
+  e.status = res.status;
+  return e;
+}
+
+async function send(token, method, path, body) {
+  const res = await fetch(API + path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw await failure(res);
   return res.json();
+}
+
+// Telefondan dosya ekleme. "contents" API'si büyük dosyaları (ör. video) 403 ile reddediyor;
+// bu yüzden Git veri API'si kullanılır: her dosya ayrı bir blob (100 MB'a kadar), hepsi TEK kayıtta.
+// files: [{ path, read: async () => base64 }] — içerik sırayla okunur, bellekte hep tek dosya durur.
+// onProgress(i): i. dosya yüklenmeye başladı. Dönen: { done: [path], failed: [{ path, error }] }
+export async function addFiles(token, p, files, makeMessage, onProgress) {
+  const base = `/repos/${p.owner}/${p.repo}`;
+  const blobs = [];
+  const failed = [];
+  for (let i = 0; i < files.length; i++) {
+    if (onProgress) onProgress(i);
+    try {
+      const content = await files[i].read();
+      const blob = await send(token, 'POST', `${base}/git/blobs`, { content, encoding: 'base64' });
+      blobs.push({ path: files[i].path, mode: '100644', type: 'blob', sha: blob.sha });
+    } catch (e) {
+      if (e.auth) throw e;
+      failed.push({ path: files[i].path, error: e });
+    }
+  }
+  if (!blobs.length) return { done: [], failed };
+  const message = makeMessage(blobs.map((b) => b.path));
+  // Masaüstü aynı anda kayıt gönderirse dal ilerlemiş olabilir: güncel uçtan yeniden dene
+  for (let attempt = 0; ; attempt++) {
+    const ref = await send(token, 'GET', `${base}/git/ref/heads/${encodeURIComponent(p.branch)}`);
+    const head = ref.object.sha;
+    const commit = await send(token, 'GET', `${base}/git/commits/${head}`);
+    const tree = await send(token, 'POST', `${base}/git/trees`, { base_tree: commit.tree.sha, tree: blobs });
+    const next = await send(token, 'POST', `${base}/git/commits`, { message, tree: tree.sha, parents: [head] });
+    try {
+      await send(token, 'PATCH', `${base}/git/refs/heads/${encodeURIComponent(p.branch)}`, { sha: next.sha, force: false });
+      return { done: blobs.map((b) => b.path), failed };
+    } catch (e) {
+      if (e.status !== 422 || attempt >= 2) throw e;
+    }
+  }
 }

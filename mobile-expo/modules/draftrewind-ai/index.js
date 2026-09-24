@@ -74,3 +74,14 @@ export async function generate(instructions, prompt) {
 }
 
 export default { availability, supportsLanguage, generate, truncate, isNativeModuleLoaded, MAX_PROMPT_CHARS };
+
+// true when the App Group used by the widget extension is reachable (false on most sideloaded
+// installs, where re-signing renames the group). Unknown (no native module) → false.
+export function appGroupReady(identifier) {
+  if (!Native || typeof Native.appGroupReady !== 'function') return false;
+  try {
+    return !!Native.appGroupReady(identifier);
+  } catch (e) {
+    return false;
+  }
+}
