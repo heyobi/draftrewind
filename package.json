@@ -1,0 +1,83 @@
+{
+  "name": "draftrewind",
+  "version": "1.0.0",
+  "description": "DraftRewind — tez, ödev ve makaleleri otomatik kaydeden; zaman makinesi ve bulut yedekli sürüm kontrolü",
+  "main": "app/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis",
+    "dist:store": "electron-builder --win appx",
+    "notices": "node scripts/third-party-notices.js"
+  },
+  "keywords": [
+    "git",
+    "academic",
+    "word",
+    "excel",
+    "diff",
+    "desktop",
+    "thesis"
+  ],
+  "author": "DraftRewind",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "diff": "^9.0.0",
+    "docx-preview": "^0.4.1",
+    "isomorphic-git": "^1.42.2",
+    "jszip": "^3.10.2"
+  },
+  "build": {
+    "appId": "com.draftrewind.app",
+    "productName": "DraftRewind",
+    "files": [
+      "app/**/*",
+      "!app/assets/make-icon.js",
+      "app/core/google-oauth.json",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+      "TRADEMARKS.md",
+      "app/core/github-oauth.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "app/assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "DraftRewind",
+      "license": "LICENSE",
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "DraftRewind-Setup-${version}.${ext}"
+    },
+    "copyright": "Copyright © 2026 DraftRewind",
+    "appx": {
+      "identityName": "PARTNER_CENTER_IDENTITY_NAME",
+      "publisher": "CN=PARTNER_CENTER_PUBLISHER_ID",
+      "publisherDisplayName": "DraftRewind",
+      "applicationId": "DraftRewind",
+      "displayName": "DraftRewind",
+      "backgroundColor": "#6c5cff",
+      "languages": [
+        "en-US",
+        "tr-TR"
+      ]
+    }
+  },
+  "productName": "DraftRewind",
+  "homepage": "https://draftrewind.com"
+}

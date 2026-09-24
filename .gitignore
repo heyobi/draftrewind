@@ -1,0 +1,20 @@
+# Dependencies & build output
+node_modules/
+dist/
+build/
+
+# OAuth secrets (see app/core/config.js)
+app/core/google-oauth.json
+app/core/github-oauth.json
+client_secret_*.json
+
+# Office / LibreOffice lock files
+~$*.docx
+~$*.xlsx
+~$*.pptx
+.~lock.*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
