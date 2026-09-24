@@ -90,7 +90,9 @@ jobs:
           cd e2e/out
           FLOW=smoke.yaml
           if [ "$HAS_TEST_TOKEN" = "true" ]; then FLOW=signed-in.yaml; fi
-          maestro --device "${{ steps.sim.outputs.udid }}" test "../$FLOW" --format junit --output ../report.xml || echo "::warning::Maestro flow reported failures (see screenshots)"
+          maestro --device "${{ steps.sim.outputs.udid }}" test "../$FLOW" --format junit --output ../report.xml --test-output-dir "$PWD" || echo "::warning::Maestro flow reported failures (see screenshots)"
+          # Bazı Maestro sürümleri görüntüleri kendi klasörüne yazar; hepsini buraya topla
+          find "$HOME/.maestro/tests" -name "*.png" -newer ../smoke.yaml -exec cp {} . ; 2>/dev/null || true
           ls -la
 
       - name: Upload screenshots
