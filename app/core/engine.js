@@ -63,7 +63,7 @@ function parseMessage(message) {
         } catch (e) {}
     }
     const [title, ...rest] = body.split('\n');
-    // Eski sürümlerin başlıklarındaki emojiler (ör. "⚡ Kaydedilmemiş…") gösterilmez
+    // Eski sürümlerin başlıklarındaki emojiler (ör. şimşek simgeli "Kaydedilmemiş…") gösterilmez
     const clean = title.replace(/[\p{Extended_Pictographic}️‍]/gu, '').replace(/\s{2,}/g, ' ').trim();
     return { title: clean, note: rest.join('\n').trim(), meta };
 }
@@ -203,7 +203,8 @@ class Project {
         return out;
     }
 
-    async hashWorking(files) {
+    // headFiles: kilitli ve önbelleği olmayan dosya için geçmişteki hali (silindi sanılmasın)
+    async hashWorking(files, headFiles = null) {
         const result = new Map();
         const nextCache = {};
         for (const [rel, f] of files) {
@@ -224,6 +225,8 @@ class Project {
                 if (c) {
                     result.set(rel, c.oid);
                     nextCache[rel] = c;
+                } else if (headFiles && headFiles.has(rel)) {
+                    result.set(rel, headFiles.get(rel));
                 }
                 continue;
             }
@@ -293,9 +296,9 @@ class Project {
 
     async status() {
         const files = this.scanWorkingFiles();
-        const working = await this.hashWorking(files);
         const head = await this.head();
         const headFiles = await this.treeFiles(head);
+        const working = await this.hashWorking(files, headFiles);
         return { head, working, files, headFiles, changes: this.diffMaps(headFiles, working) };
     }
 
@@ -383,7 +386,8 @@ class Project {
                 }
                 const oid = await git.writeBlob({ fs, gitdir: this.gitdir, blob: buf });
                 tree.set(rel, oid);
-                buffers.set(rel, buf);
+                // Zayıf bilgisayar: yalnızca kelime sayılan belgeler ya da küçük dosyalar bellekte kalır
+                buffers.set(rel, docs.countsWords(rel) || buf.length <= 8 * 1024 * 1024 ? buf : null);
             }
 
             // Kelime istatistikleri (mobil uygulama da bu bilgiyi okur)
@@ -395,6 +399,7 @@ class Project {
                 delete words[rel];
             }
             for (const [rel, buf] of buffers) {
+                if (!buf) continue;
                 const n = await docs.countWords(rel, buf);
                 if (n == null) continue;
                 delta[rel] = n - (words[rel] || 0);
@@ -409,7 +414,7 @@ class Project {
                 const files = [];
                 for (const rel of realChanged) {
                     const newBuf = buffers.get(rel);
-                    if (newBuf.length > 30 * 1024 * 1024) continue;
+                    if (!newBuf || newBuf.length > 30 * 1024 * 1024) continue;
                     const oldOid = st.headFiles.get(rel);
                     const oldBuf = oldOid ? Buffer.from((await git.readBlob({ fs, gitdir: this.gitdir, oid: oldOid })).blob) : null;
                     files.push({ rel, oldBuf, newBuf });

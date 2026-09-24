@@ -10,8 +10,10 @@ const { parseMessage } = require('../app/core/engine');
 
 let srv;
 let url;
+let srvRoot;
 before(async () => {
     const root = h.tmpDir('drw-git-');
+    srvRoot = root;
     h.initBareRepo(path.join(root, 'ogrenci', 'draftrewind-tezim.git'));
     srv = await h.startGitServer(root);
     url = `http://127.0.0.1:${srv.port}/ogrenci/draftrewind-tezim.git`;
@@ -90,4 +92,35 @@ test('GitHub eşitleme: iki bilgisayar, ileri sarma ve ayrışan düzenlemede "(
     const r6 = await github.sync(pc1, 'token', { url });
     assert.equal(r6.pushed, false);
     assert.equal(r6.pulled, 0);
+});
+
+// Kaydedilmiş ama henüz kayıt noktası olmamış yerel düzenleme, çekilen sürümün altında kalmamalı
+test('GitHub çekme: kayıt noktasına girmemiş yerel düzenleme ezilmez, silinmez', async () => {
+    const pc1 = await computer('pc1b');
+    const pc2 = await computer('pc2b');
+    pc1.meta = { github: { owner: 'ogrenci', repo: 'draftrewind-ikinci' } };
+    pc2.meta = { github: { owner: 'ogrenci', repo: 'draftrewind-ikinci' } };
+    const url2 = url.replace('draftrewind-tezim', 'draftrewind-ikinci');
+    h.initBareRepo(path.join(srvRoot, 'ogrenci', 'draftrewind-ikinci.git'));
+
+    h.write(path.join(pc1.dir, 'tez.txt'), 'ilk hal');
+    h.write(path.join(pc1.dir, 'notlar.txt'), 'silinecek');
+    await pc1.snapshot();
+    await github.sync(pc1, 'token', { url: url2 });
+    await github.sync(pc2, 'token', { url: url2 });
+
+    // pc2: tez.txt'yi değiştirir, notlar.txt'yi siler, gönderir
+    h.write(path.join(pc2.dir, 'tez.txt'), 'pc2 sürümü');
+    fs.unlinkSync(path.join(pc2.dir, 'notlar.txt'));
+    await pc2.snapshot();
+    await github.sync(pc2, 'token', { url: url2 });
+
+    // pc1: aynı dosyaları kaydeder ama kayıt noktası alınmadan eşitleme gelir (ileri sarma yolu)
+    h.write(path.join(pc1.dir, 'tez.txt'), 'pc1 kaydetti, kayıt noktası yok');
+    h.write(path.join(pc1.dir, 'notlar.txt'), 'pc1 notlara yazdı');
+    const r = await github.sync(pc1, 'token', { url: url2 });
+    assert.equal(r.pulled >= 1, true);
+    assert.equal(read(pc1, 'tez.txt'), 'pc1 kaydetti, kayıt noktası yok');
+    assert.equal(read(pc1, 'tez (diğer cihazdan).txt'), 'pc2 sürümü');
+    assert.equal(read(pc1, 'notlar.txt'), 'pc1 notlara yazdı');
 });

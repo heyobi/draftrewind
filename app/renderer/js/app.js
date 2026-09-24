@@ -222,11 +222,15 @@
             const ov = await av.projects.overview(id);
             if (id !== S.activeId) return;
             S.overview = ov;
+            S.overviewError = null;
+            S.overviewRetries = 0;
             checkGoal(ov);
         } catch (e) {
-            // Proje henüz başlatılıyor olabilir
+            // Proje henüz başlatılıyor olabilir; ama sonsuza dek denemek yerine hatayı göster
             S.overview = null;
-            setTimeout(() => refresh(), 1200);
+            S.overviewRetries = (S.overviewRetries || 0) + 1;
+            if (S.overviewRetries <= 6) setTimeout(() => refresh(), 1200);
+            else S.overviewError = e.message;
         }
     }
 
@@ -370,7 +374,9 @@
                 ov && ov.missing
                     ? renderMissing()
                     : !ov
-                      ? `<div class="content"><div class="skeleton" style="height:110px;margin-bottom:14px"></div><div class="skeleton" style="height:220px"></div></div>`
+                      ? S.overviewError
+                          ? `<div class="content"><div class="banner error"><span class="ic">${ic('alert')}</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(S.overviewError)}</div></div><button class="btn sm" data-action="retry-overview">${t('common.retry')}</button></div></div>`
+                          : `<div class="content"><div class="skeleton" style="height:110px;margin-bottom:14px"></div><div class="skeleton" style="height:220px"></div></div>`
                       : S.tab === 'home'
                         ? renderHome(ov)
                         : S.tab === 'timeline'
@@ -1308,6 +1314,7 @@
             render();
         },
         'show-all-files': () => { S.showAllFiles = true; render(); },
+        'retry-overview': () => { S.overviewRetries = 0; S.overviewError = null; render(); refresh(); },
         'tl-clear-filter': async () => {
             S.tlFilter = '';
             S.selectedOid = null;
@@ -1433,7 +1440,7 @@
         if (e.key === 'Escape') closeModal();
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && S.activeId) {
             e.preventDefault();
-            av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), 'save'));
+            av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), 'save')).catch(err => toast(err.message, 'error', 5000));
         }
         // F1: nasıl yapılır · F5: yenile · Ctrl+1/2/3: sekmeler
         if (e.key === 'F1' && S.activeId) {

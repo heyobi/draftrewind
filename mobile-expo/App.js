@@ -642,7 +642,9 @@ function Root() {
   const [pairing, setPairing] = useState(false);
   const [scanning, setScanning] = useState(false);
   const handledUrl = useRef(null);
-  const handleUrl = async (url) => {
+  // fromScanner: uygulama içi kamera. Dışarıdan gelen bağlantı (başka uygulama/site) açık oturumu
+  // sormadan değiştiremez; kullanıcı onaylar.
+  const handleUrl = async (url, fromScanner = false) => {
     if (!url || !isPairLink(url) || handledUrl.current === url) return;
     handledUrl.current = url;
     let info;
@@ -653,6 +655,18 @@ function Root() {
       const expired = e && e.code === 'expired';
       Alert.alert(t(expired ? 'pair.expiredTitle' : 'pair.invalidTitle'), t(expired ? 'pair.expired' : 'pair.invalid'), [{ text: t('common.ok') }]);
       return;
+    }
+    if (!fromScanner && ghUser) {
+      const ok = await new Promise((resolve) =>
+        Alert.alert(t('pair.replaceTitle'), t('pair.replaceText', { next: info.login || '?', current: ghUser.login }), [
+          { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+          { text: t('pair.replaceOk'), onPress: () => resolve(true) },
+        ])
+      );
+      if (!ok) {
+        handledUrl.current = null;
+        return;
+      }
     }
     setPairing(true);
     try {
@@ -701,7 +715,7 @@ function Root() {
       ) : (
         <HomeScreen c={c} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
       )}
-      <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url)} />
+      <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url, true)} />
       <SettingsSheet
         onScan={() => {
           setAccounts(false);
@@ -1302,7 +1316,8 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       aiId: `${project.owner}/${project.repo}@${ref}:${path}`,
       autoAi: !!autoAi,
       diff: {
-        loadOld: () => (parentRef ? GH.fileContent(token, project, path, parentRef).catch(() => null) : Promise.resolve(null)),
+        // Yalnızca "önceki sürümde yoktu" (404) boş sayılır; ağ hatası gerçek hata olarak görünür
+        loadOld: () => (parentRef ? GH.fileContent(token, project, path, parentRef).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))) : Promise.resolve(null)),
         loadNew: () => GH.fileContent(token, project, path, ref),
       },
     });
@@ -1338,7 +1353,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
     tooBig.forEach(discardPicked);
     if (tooBig.length) {
       warn();
-      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => t('upload.tooBig', { name: a.name, size: mb(a.size) })).join('\n\n'), [{ text: t('common.ok') }]);
+      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => (a.sizeUnknown ? t('upload.sizeUnknown', { name: a.name }) : t('upload.tooBig', { name: a.name, size: mb(a.size) }))).join('\n\n'), [{ text: t('common.ok') }]);
     }
     if (!ok.length) return;
     setUploading(true);
@@ -2099,7 +2114,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
     tooBig.forEach(discardPicked);
     if (tooBig.length) {
       warn();
-      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => t('upload.tooBig', { name: a.name, size: mb(a.size) })).join('\n\n'), [{ text: t('common.ok') }]);
+      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => (a.sizeUnknown ? t('upload.sizeUnknown', { name: a.name }) : t('upload.tooBig', { name: a.name, size: mb(a.size) }))).join('\n\n'), [{ text: t('common.ok') }]);
     }
     if (!ok.length) return;
     setUploading(true);

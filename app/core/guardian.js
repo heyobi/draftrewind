@@ -105,7 +105,7 @@ class Guardian {
                 const project = item.root
                     ? projects.find(p => path.resolve(p.dir) + path.sep === item.root) ||
                       projects.find(p => item.root.toLowerCase().startsWith(path.resolve(p.dir).toLowerCase()))
-                    : projects[0]; // Adı konmamış yeni belge: ilk projeye kurtar
+                    : projects.length === 1 ? projects[0] : null; // Adı konmamış yeni belge: yalnızca tek proje varsa oraya
                 if (!project) continue;
                 const rescueDir = path.join(project.dir, config.RESCUE_DIR);
                 const baseName = item.root ? path.basename(item.doc, path.extname(item.doc)) : item.name;

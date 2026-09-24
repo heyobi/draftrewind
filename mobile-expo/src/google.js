@@ -57,13 +57,16 @@ export async function loadGoogle() {
 export async function saveGoogle(session) {
   migrateSecretFile(legacyTokenFile(), tokenFile());
   const raw = session ? JSON.stringify(session) : null;
+  // Dosya kopyası yalnızca anahtar zinciri çalışmadığında yazılır; çalışıyorsa eski kopya silinir
+  let stored = false;
   try {
     if (raw) await SecureStore.setItemAsync(KEY, raw);
     else await SecureStore.deleteItemAsync(KEY);
+    stored = true;
   } catch (e) {}
   try {
     const f = tokenFile();
-    if (raw) f.write(raw);
+    if (raw && !stored) f.write(raw);
     else if (f.exists) f.delete();
   } catch (e) {}
 }

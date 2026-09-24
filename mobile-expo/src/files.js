@@ -87,7 +87,9 @@ export async function pickFiles() {
         size = new File(a.uri).size;
       } catch (e) {}
     }
-    return { uri: a.uri, name: a.name || a.uri.split('/').pop(), size: size || 0, mimeType: a.mimeType };
+    // Boyutu öğrenilemeyen dosya (ör. bazı sağlayıcılar) belleğe alınmaz: sınırı aşmış sayılır
+    const unknown = size == null;
+    return { uri: a.uri, name: a.name || a.uri.split('/').pop(), size: unknown ? MAX_UPLOAD + 1 : size, sizeUnknown: unknown, mimeType: a.mimeType };
   });
 }
 

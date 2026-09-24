@@ -7,7 +7,7 @@ const path = require('path');
 const git = require('isomorphic-git');
 const http = require('isomorphic-git/http/node');
 const config = require('./config');
-const { BRANCH } = require('./engine');
+const { BRANCH, readLimitedSync } = require('./engine');
 
 const API = 'https://api.github.com';
 const UA = 'DraftRewind-Desktop';
@@ -205,26 +205,50 @@ function conflictName(rel) {
     return `${rel.slice(0, rel.length - ext.length)} (diğer cihazdan)${ext}`;
 }
 
+// Çalışma klasöründeki dosya, geçmişteki (HEAD) halinden farklı mı? Kaydedilmiş ama henüz kayıt
+// noktası alınmamış düzenlemeler böyle anlaşılır; okunamıyorsa (kilitli) "farklı" sayılır (güvenli taraf).
+async function localDiffers(project, rel, headOid) {
+    const abs = path.join(project.dir, ...rel.split('/'));
+    if (!fs.existsSync(abs)) return false;
+    if (!headOid) return true;
+    try {
+        const { oid } = await git.hashBlob({ object: readLimitedSync(abs) });
+        return oid !== headOid;
+    } catch (e) {
+        return true;
+    }
+}
+
+// Windows/macOS'ta ad yalnızca büyük/küçük harf olarak değişmişse aynı dosyadır; silme yanlış olur
+function sameNameOtherCase(rel, map) {
+    const low = rel.toLowerCase();
+    for (const k of map.keys()) if (k !== rel && k.toLowerCase() === low) return true;
+    return false;
+}
+
 // Uzak kayıt yerelin devamıysa: sadece değişen dosyaları klasöre yaz.
+// Yerelde henüz kayıt noktası olmamış bir düzenleme varsa üstüne yazılmaz; uzak hali kopya olarak gelir.
 async function applyRemote(project, localOid, remoteOid) {
     const before = await project.treeFiles(localOid);
     const after = await project.treeFiles(remoteOid);
     let n = 0;
+    // Önce silmeler (büyük/küçük harf değişimi ve yerel düzenleme korunur)
+    for (const rel of before.keys()) {
+        if (after.has(rel) || sameNameOtherCase(rel, after)) continue;
+        if (await localDiffers(project, rel, before.get(rel))) continue; // yerelde yeni düzenleme var: kalsın
+        try { fs.unlinkSync(path.join(project.dir, ...rel.split('/'))); } catch (e) {}
+    }
     for (const [rel, oid] of after) {
         if (before.get(rel) === oid) continue;
         const { blob } = await git.readBlob({ fs, gitdir: project.gitdir, oid });
+        const keepLocal = await localDiffers(project, rel, before.get(rel));
         try {
-            writeWorkingFile(project, rel, Buffer.from(blob));
+            writeWorkingFile(project, keepLocal ? conflictName(rel) : rel, Buffer.from(blob));
         } catch (e) {
             // Dosya açık/kilitli: yanına kopya bırak
             writeWorkingFile(project, conflictName(rel), Buffer.from(blob));
         }
         n++;
-    }
-    for (const rel of before.keys()) {
-        if (!after.has(rel)) {
-            try { fs.unlinkSync(path.join(project.dir, ...rel.split('/'))); } catch (e) {}
-        }
     }
     return n;
 }
@@ -243,18 +267,27 @@ async function mergeDiverged(project, localOid, remoteOid) {
         const b = base.get(rel), m = mine.get(rel), t = theirs.get(rel);
         if (m === t || t === b) continue; // diğer taraf değiştirmemiş
         if (m === b) {
-            // Sadece diğer cihaz değiştirmiş → onu al
+            // Sadece diğer cihaz değiştirmiş → onu al (yerelde kayıt noktasına girmemiş düzenleme varsa kopya olarak)
+            const keepLocal = await localDiffers(project, rel, m);
             if (t) {
                 const { blob } = await git.readBlob({ fs, gitdir, oid: t });
-                writeWorkingFile(project, rel, Buffer.from(blob));
+                if (keepLocal) {
+                    const copy = conflictName(rel);
+                    writeWorkingFile(project, copy, Buffer.from(blob));
+                    result.set(copy, t);
+                    conflicts.push(copy);
+                } else {
+                    writeWorkingFile(project, rel, Buffer.from(blob));
+                }
                 result.set(rel, t);
-            } else {
+            } else if (!keepLocal && !sameNameOtherCase(rel, theirs)) {
                 try { fs.unlinkSync(path.join(project.dir, ...rel.split('/'))); } catch (e) {}
                 result.delete(rel);
             }
             pulled++;
             continue;
         }
+
         // İki taraf da değiştirmiş: yerel kalsın, diğeri kopya olarak eklensin
         if (t) {
             const copy = conflictName(rel);

@@ -308,6 +308,19 @@ async function afterChange(rt, res) {
     scheduleSync(rt);
 }
 
+// Eşitleme bittikten sonra akış jetonunu tazele: bizim yüklemelerimiz "yeni değişiklik" sanılmasın
+// (saat farkı olan bilgisayarlarda aksi halde her 45 sn'de bir tam eşitleme tetiklenirdi)
+let driveTokenRefresh = null;
+function refreshDriveChangesToken() {
+    const d = store.get('drive', {});
+    if (d.mode !== 'account' || !driveApi || driveTokenRefresh) return;
+    driveTokenRefresh = driveApi
+        .changesStartToken()
+        .then(t => t && store.set('driveChangesToken', t))
+        .catch(() => {})
+        .finally(() => { driveTokenRefresh = null; });
+}
+
 // Drive değişiklik akışı (yalnızca hesap modu). Jeton saklanır; ilk çağrıda alınır.
 let drivePollBusy = false;
 async function pollDriveChanges() {
@@ -394,6 +407,7 @@ async function syncDrive(rt, kind = 'auto') {
         const fresh = recordOf(rt.project.id) || record;
         Object.assign(fresh, { driveFolderId: record.driveFolderId, driveFolderName: record.driveFolderName, driveState: state, driveUrl: info.url, driveAt: Date.now(), driveError: null });
         saveProjectRecord(fresh);
+        refreshDriveChangesToken();
     } catch (e) {
         const fresh = recordOf(rt.project.id);
         if (fresh) {
@@ -440,6 +454,7 @@ async function runSync(rt) {
     if (rt.syncing) return scheduleSync(rt, 10000);
     rt.syncing = true;
     emit('cloud', { projectId: rt.project.id, syncing: true });
+    try { await doSnapshot(rt, { kind: 'auto' }); } catch (e) {}
     let record = recordOf(rt.project.id);
     try {
         if (!record.github) {
@@ -1176,6 +1191,12 @@ function registerUxIpc() {
             }
         });
         const record = { id, name: res.repo, dir: res.dir, createdAt: Date.now() };
+        // Kullanıcının kendi deposuysa (ör. başka bilgisayardaki DraftRewind yedeği) aynı depoya bağlan;
+        // aksi halde ensureRepo ikinci bir yedek deposu açar ve iki bilgisayar birbirini göremezdi
+        const me = store.get('githubUser');
+        if (me && me.login && res.owner && res.owner.toLowerCase() === String(me.login).toLowerCase()) {
+            record.github = { owner: res.owner, repo: res.repo, url: `https://github.com/${res.owner}/${res.repo}` };
+        }
         store.set('projects', [...projects(), record]);
         store.set('activeId', id);
         const rt = await startProject(record);
@@ -1515,12 +1536,12 @@ app.whenReady().then(async () => {
     setInterval(() => pollDriveChanges().catch(() => {}), config.DRIVE_CHANGES_POLL_MS);
     setTimeout(() => pollDriveChanges().catch(() => {}), 20 * 1000);
     watchDriveFolder();
-    setInterval(runGuardian, config.GUARDIAN_INTERVAL_MS);
-    setTimeout(runGuardian, 30 * 1000);
+    setInterval(() => runGuardian().catch(() => {}), config.GUARDIAN_INTERVAL_MS);
+    setTimeout(() => runGuardian().catch(() => {}), 30 * 1000);
 
     // Uyku, ekran kilidi, kapanma: hemen kaydet
     const emergency = () => {
-        runGuardian().finally(() => snapshotAll('auto'));
+        runGuardian().catch(() => {}).finally(() => snapshotAll('auto'));
     };
     powerMonitor.on('suspend', emergency);
     powerMonitor.on('lock-screen', emergency);

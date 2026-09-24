@@ -41,13 +41,16 @@ export async function loadToken() {
 
 export async function saveToken(token) {
   migrateSecretFile(legacyTokenFile(), tokenFile());
+  // Dosya kopyası yalnızca anahtar zinciri çalışmadığında yazılır; çalışıyorsa eski kopya silinir
+  let stored = false;
   try {
     if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
     else await SecureStore.deleteItemAsync(TOKEN_KEY);
+    stored = true;
   } catch (e) {}
   try {
     const f = tokenFile();
-    if (token) f.write(token);
+    if (token && !stored) f.write(token);
     else if (f.exists) f.delete();
   } catch (e) {}
 }
@@ -105,7 +108,11 @@ async function api(token, path, { raw } = {}) {
     e.auth = true;
     throw e;
   }
-  if (!res.ok) throw new Error(t('err.github', { status: res.status }));
+  if (!res.ok) {
+    const e = new Error(t('err.github', { status: res.status }));
+    e.status = res.status;
+    throw e;
+  }
   return raw ? res.arrayBuffer() : res.json();
 }
 
