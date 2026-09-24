@@ -1488,7 +1488,7 @@ function createWindow() {
             setTimeout(async () => {
                 // Güncelleme diyaloglarını sahte olayla göster: available | downloaded
                 const fake = process.env.DRAFTREWIND_FAKE_UPDATE;
-                if (fake === 'available') emit('update', { state: 'available', version: '1.1.0', notes: 'Yeni: Drive düzenlemeleri 1 dakikada gelir.\nDüzeltme: PDF önizleme.' });
+                if (fake === 'available') emit('update', { state: 'available', version: '1.1.0', notes: 'New: edits made in Google Drive arrive within a minute.\nFixed: PDF preview on iPhone.' });
                 if (fake === 'downloaded') emit('update', { state: 'downloaded', version: '1.1.0' });
                 if (process.env.DRAFTREWIND_EVAL) await mainWindow.webContents.executeJavaScript(process.env.DRAFTREWIND_EVAL).catch(e => console.error(e));
                 setTimeout(async () => {
