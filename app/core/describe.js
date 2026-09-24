@@ -158,9 +158,11 @@ async function describeSnapshot(files, delta) {
     return { title, body };
 }
 
-// Yapay zekâya verilecek kısa değişiklik metni: dosya, bölüm, eklenen (+) / çıkan (-) satırlar.
-// Zayıf bilgisayarlarda hızlı kalsın diye ~1800 karakterle sınırlıdır.
+// Yapay zekâya verilecek değişiklik kartı. Ham diff değil: tüm diff kodla taranır, sayılar,
+// dokunulan bölümler ve birkaç paragrafın ilk cümlesi çıkarılır (facts.js). Belge ne kadar uzun
+// olursa olsun kart küçük kalır; zayıf model başı kesik bir metinden yanlış başlık uydurmaz.
 async function changeDigest(files, limit = 1800) {
+    const { changeFacts, factsText } = require('./facts');
     let out = '';
     for (const f of files.slice(0, 3)) {
         const kind = docs.kindOf(f.rel);
@@ -178,33 +180,28 @@ async function changeDigest(files, limit = 1800) {
         }
         const [a, b] = await Promise.all([docs.extractLines(f.rel, f.oldBuf), docs.extractLines(f.rel, f.newBuf)]);
         if (!a || !b) continue;
-        let section = null;
-        if (kind === 'word') {
-            const st = await docs.wordStructure(f.newBuf);
-            section = st ? st : null;
-        }
-        out += `File: ${f.rel}\n`;
-        let pos = 0;
+        const section = kind === 'word' ? await docs.wordStructure(f.newBuf) : null;
         const headingBefore = idx => {
             if (!section) return null;
             for (let i = Math.min(idx, section.length - 1); i >= 0; i--) if (section[i].heading) return section[i].text;
             return null;
         };
-        let lastHeading = null;
+        const added = [];
+        const removed = [];
+        const sections = [];
+        let pos = 0;
         for (const c of Diff.diffArrays(a, b)) {
             if (!c.added && !c.removed) {
                 pos += c.value.length;
                 continue;
             }
             const h = headingBefore(pos);
-            if (h && h !== lastHeading) {
-                out += `Section: ${h}\n`;
-                lastHeading = h;
-            }
-            for (const line of c.value) out += `${c.added ? '+' : '-'} ${line.slice(0, 300)}\n`;
+            if (h) sections.push(h);
+            (c.added ? added : removed).push(...c.value);
             if (c.added) pos += c.value.length;
-            if (out.length > limit) break;
         }
+        if (!added.length && !removed.length) continue;
+        out += factsText(changeFacts({ added, removed, sections }), f.rel) + '\n';
         if (out.length > limit) break;
     }
     return out.slice(0, limit);

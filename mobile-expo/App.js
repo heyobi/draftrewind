@@ -38,10 +38,15 @@ import { pulse, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './s
 import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
+import { Icon } from './src/Icon';
 import { useAiStatus, shouldShowAiHint, dismissAiHint, aiHintText, aiErrorText, summarizeDocument, summarizeChanges, weekRecap } from './src/ai';
 
 const GRAD = ['#6c5cff', '#a35cf6', '#ec62be'];
-const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝', mobile: '📱' };
+// Kayıt türü → SF Symbol adı
+const KIND_ICON = { auto: 'clock.arrow.circlepath', star: 'star.fill', rescue: 'bolt.fill', restore: 'arrow.uturn.backward', merge: 'arrow.triangle.merge', mobile: 'iphone' };
+const kindIcon = (k) => KIND_ICON[k] || KIND_ICON.auto;
+// Proje kutucukları için dönüşümlü ikonlar
+const PROJECT_ICONS = ['book.closed.fill', 'graduationcap.fill', 'flask.fill', 'books.vertical.fill', 'pencil.and.outline', 'text.book.closed.fill'];
 const TYPE = {
   word: { label: 'DOC', colors: ['#2b7cd3', '#185abd'] },
   sheet: { label: 'XLS', colors: ['#21a366', '#107c41'] },
@@ -202,20 +207,22 @@ function Glass({ c, style, children, tint, interactive }) {
   return <View style={[s.glassBase, { backgroundColor: c.surface, borderColor: c.border, borderWidth: StyleSheet.hairlineWidth }, style]}>{children}</View>;
 }
 
-function GradientButton({ title, onPress, disabled }) {
+function GradientButton({ title, onPress, disabled, icon }) {
   return (
     <Jelly onPress={onPress} disabled={disabled}>
-      <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.gradBtn}>
+      <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.gradBtn, icon && s.btnRow]}>
+        {icon ? <Icon name={icon} size={18} color="#fff" weight="semibold" /> : null}
         <Text style={s.gradBtnText}>{title}</Text>
       </LinearGradient>
     </Jelly>
   );
 }
 
-function SecondaryButton({ c, title, onPress, disabled }) {
+function SecondaryButton({ c, title, onPress, disabled, icon }) {
   return (
     <Jelly onPress={onPress} disabled={disabled}>
-      <Glass c={c} interactive style={s.secBtn}>
+      <Glass c={c} interactive style={[s.secBtn, icon && s.btnRow]}>
+        {icon ? <Icon name={icon} size={18} color={c.text} weight="semibold" /> : null}
         <Text style={{ color: c.text, fontSize: 16, fontWeight: '700' }}>{title}</Text>
       </Glass>
     </Jelly>
@@ -226,7 +233,7 @@ function FileBadge({ name, size = 40, folder }) {
   if (folder) {
     return (
       <LinearGradient colors={['#fbbf24', '#f59e0b']} style={{ width: size, height: size, borderRadius: size * 0.27, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ fontSize: size * 0.45 }}>📁</Text>
+        <Icon name="folder.fill" size={size * 0.48} color="#fff" />
       </LinearGradient>
     );
   }
@@ -328,10 +335,10 @@ function ProjectSkeleton({ c }) {
 }
 
 // Tutarlı boş durum kartı
-function EmptyState({ c, emoji, title, body, style }) {
+function EmptyState({ c, icon, title, body, style }) {
   return (
     <Glass c={c} style={[{ alignItems: 'center', paddingVertical: 26, paddingHorizontal: 20, marginTop: 10 }, style]}>
-      <Text style={{ fontSize: 40 }}>{emoji}</Text>
+      <Icon name={icon} size={36} color={c.text3} weight="regular" />
       {title ? <Text style={{ color: c.text, fontSize: 17, fontWeight: '700', marginTop: 8, textAlign: 'center' }}>{title}</Text> : null}
       {body ? <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>{body}</Text> : null}
     </Glass>
@@ -341,12 +348,15 @@ function EmptyState({ c, emoji, title, body, style }) {
 // ---------------------------------------------------------------------------
 // Apple Intelligence (cihaz üstü) arayüz parçaları
 // ---------------------------------------------------------------------------
-// Degrade "✨ …" düğmesi
+// Degrade yapay zekâ düğmesi (başında sihirli değnek ikonu)
 function AiButton({ c, title, sub, onPress, style, compact }) {
   return (
     <Jelly onPress={onPress} scaleTo={0.95} style={style} accessibilityLabel={title}>
       <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[s.aiBtn, compact && { height: 44, paddingHorizontal: 18 }]}>
-        <Text style={{ color: '#fff', fontWeight: '800', fontSize: compact ? 15 : 15.5 }} numberOfLines={1}>{title}</Text>
+        <View style={s.btnRow}>
+          <Icon name="wand.and.stars" size={compact ? 15 : 16} color="#fff" weight="semibold" />
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: compact ? 15 : 15.5 }} numberOfLines={1}>{title}</Text>
+        </View>
         {sub ? <Text style={{ color: '#ffffffcc', fontSize: 12, marginTop: 1 }} numberOfLines={1}>{sub}</Text> : null}
       </LinearGradient>
     </Jelly>
@@ -368,7 +378,7 @@ function AiThinking({ c, lines = 4 }) {
   }, []);
   return (
     <View accessibilityLiveRegion="polite" accessibilityLabel={t('ai.thinking')}>
-      <Animated.Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, opacity: glow, marginBottom: 12 }}>✨ {t('ai.thinking')}</Animated.Text>
+      <Animated.Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, opacity: glow, marginBottom: 12 }}>{t('ai.thinking')}</Animated.Text>
       <Shimmer c={c} style={{ gap: 9 }}>
         {Array.from({ length: lines }).map((_, i) => (
           <Bone key={i} c={c} w={i === lines - 1 ? '55%' : `${[100, 94, 97][i % 3]}%`} h={12} />
@@ -379,7 +389,12 @@ function AiThinking({ c, lines = 4 }) {
 }
 
 function AiFootnote({ c }) {
-  return <Text style={{ color: c.text3, fontSize: 11.5, marginTop: 14, lineHeight: 16 }}>🔒 {t('ai.footnote')}</Text>;
+  return (
+    <View style={{ flexDirection: 'row', gap: 6, marginTop: 14 }}>
+      <Icon name="lock.fill" size={11} color={c.text3} style={{ marginTop: 2 }} />
+      <Text style={{ color: c.text3, fontSize: 11.5, lineHeight: 16, flex: 1 }}>{t('ai.footnote')}</Text>
+    </View>
+  );
 }
 
 // Apple Intelligence kullanılamıyorsa bir kez gösterilen küçük, dostça not (asla hata değil)
@@ -388,7 +403,7 @@ function AiHint({ c, status, style }) {
   if (!shouldShowAiHint(status)) return null;
   return (
     <Glass c={c} tint="#6c5cff1f" style={[{ flexDirection: 'row', alignItems: 'flex-start', gap: 10, padding: 14 }, style]}>
-      <Text style={{ fontSize: 18 }}>✨</Text>
+      <Icon name="wand.and.stars" size={18} color={c.accent} />
       <View style={s.flex}>
         <Text style={{ color: c.text, fontWeight: '700', fontSize: 13.5 }}>Apple Intelligence</Text>
         <Text style={{ color: c.text2, fontSize: 12.5, lineHeight: 17, marginTop: 2 }}>{aiHintText(status)}</Text>
@@ -426,7 +441,7 @@ function AiPanel({ c, ai, onClose, onRetry }) {
         <Glass c={c} style={{ borderRadius: 26, padding: 18, maxHeight: '100%' }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
             <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.aiIcon}>
-              <Text style={{ fontSize: 15 }}>✨</Text>
+              <Icon name="wand.and.stars" size={15} color="#fff" weight="semibold" />
             </LinearGradient>
             <Text style={{ color: c.text, fontWeight: '800', fontSize: 17, flex: 1, marginLeft: 10 }} numberOfLines={1}>{ai.title}</Text>
             <Pressable onPress={close} hitSlop={12}>
@@ -438,7 +453,7 @@ function AiPanel({ c, ai, onClose, onRetry }) {
               <AiThinking c={c} lines={ai.points ? 5 : 3} />
             ) : ai.status === 'error' ? (
               <View style={{ alignItems: 'center', paddingVertical: 6 }}>
-                <Text style={{ fontSize: 30 }}>🌙</Text>
+                <Icon name="moon.zzz.fill" size={28} color={c.text3} />
                 <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>{ai.error}</Text>
                 {onRetry ? (
                   <Pressable onPress={() => (tap(), onRetry())} hitSlop={10} style={{ marginTop: 10 }}>
@@ -472,7 +487,7 @@ function AiPanel({ c, ai, onClose, onRetry }) {
   );
 }
 
-// İstatistik sayfasındaki "✨ Haftam" kartı
+// İstatistik sayfasındaki "Haftam" kartı
 function AiWeekCard({ c, status, project, history, streak }) {
   const [state, setState] = useState(null); // null | { status, text?, error? }
   const req = useRef(0);
@@ -497,7 +512,7 @@ function AiWeekCard({ c, status, project, history, streak }) {
     <Glass c={c} tint="#6c5cff1a" style={{ padding: 16, marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
         <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={s.aiIcon}>
-          <Text style={{ fontSize: 15 }}>✨</Text>
+          <Icon name="wand.and.stars" size={15} color="#fff" weight="semibold" />
         </LinearGradient>
         <Text style={{ color: c.text, fontWeight: '800', fontSize: 16, marginLeft: 10, flex: 1 }}>{t('ai.weekTitle')}</Text>
       </View>
@@ -782,19 +797,21 @@ function LoginScreen({ c, onGithub, onGoogle, onScan }) {
   return (
     <View style={[s.flex, { paddingTop: insets.top + 30, paddingBottom: insets.bottom + 20, paddingHorizontal: 24 }]}>
       <View style={[s.flex, { justifyContent: 'center' }]}>
-        <Animated.Text style={{ fontSize: 76, textAlign: 'center', transform: [{ rotate }] }}>⏪</Animated.Text>
+        <Animated.View style={{ alignSelf: 'center', transform: [{ rotate }] }}>
+          <Icon name="clock.arrow.circlepath" size={72} color={c.accent} weight="medium" />
+        </Animated.View>
         <Text style={[s.h1, { color: c.text, textAlign: 'center', marginTop: 14 }]}>DraftRewind</Text>
         <Text style={{ color: c.text2, textAlign: 'center', fontSize: 16, lineHeight: 23, marginTop: 8 }}>
           {t('login.tagline')}
         </Text>
         {gh.flow ? <GithubCodeCard c={c} flow={gh.flow} onCancel={gh.cancel} /> : null}
-        {gh.error || go.error ? <Text style={{ color: c.red, textAlign: 'center', marginTop: 16 }}>😕 {gh.error || go.error}</Text> : null}
+        {gh.error || go.error ? <Text style={{ color: c.red, textAlign: 'center', marginTop: 16 }}>{gh.error || go.error}</Text> : null}
       </View>
       {!gh.flow ? (
         <View style={{ gap: 12 }}>
           <QrHint c={c} onScan={onScan} />
-          <GradientButton title={gh.busy ? t('common.connecting') : t('login.github')} onPress={gh.start} disabled={gh.busy} />
-          <SecondaryButton c={c} title={go.busy ? t('common.connecting') : t('login.google')} onPress={go.start} disabled={go.busy} />
+          <GradientButton icon="chevron.left.forwardslash.chevron.right" title={gh.busy ? t('common.connecting') : t('login.github')} onPress={gh.start} disabled={gh.busy} />
+          <SecondaryButton c={c} icon="externaldrive.fill" title={go.busy ? t('common.connecting') : t('login.google')} onPress={go.start} disabled={go.busy} />
           <Text style={{ color: c.text3, textAlign: 'center', fontSize: 12.5 }}>{t('login.hint')}</Text>
         </View>
       ) : null}
@@ -829,10 +846,10 @@ function QrScanner({ c, visible, onClose, onUrl }) {
           />
         ) : (
           <View style={[s.center, { padding: 30 }]}>
-            <Text style={{ fontSize: 48 }}>📷</Text>
+            <Icon name="camera.fill" size={44} color="#fff" />
             <Text style={{ color: '#fff', fontSize: 16, textAlign: 'center', marginTop: 12, lineHeight: 22 }}>{t('qr.permission')}</Text>
             <View style={{ marginTop: 20, alignSelf: 'stretch' }}>
-              <GradientButton title={t('qr.allow')} onPress={requestPermission} />
+              <GradientButton icon="camera.fill" title={t('qr.allow')} onPress={requestPermission} />
             </View>
           </View>
         )}
@@ -859,7 +876,7 @@ function QrHint({ c, onScan }) {
     <Jelly onPress={onScan} scaleTo={0.97} disabled={!onScan}>
     <Glass c={c} tint="#6c5cff22" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, marginBottom: 4 }}>
       <LinearGradient colors={GRAD} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: 44, height: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center' }}>
-        <Text style={{ fontSize: 22 }}>📷</Text>
+        <Icon name="qrcode.viewfinder" size={22} color="#fff" weight="semibold" />
       </LinearGradient>
       <View style={s.flex}>
         <Text style={{ color: c.text, fontWeight: '800', fontSize: 14.5 }}>{t('pair.hintTitle')}</Text>
@@ -910,7 +927,7 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
           <Text style={[s.dayHeader, { color: c.text3, marginTop: 0 }]}>{t('settings.accounts')}</Text>
 
           <Glass c={c} style={s.accountRow}>
-            <Text style={{ fontSize: 28 }}>🐙</Text>
+            <View style={s.accountIcon}><Icon name="chevron.left.forwardslash.chevron.right" size={22} color={c.text2} /></View>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>GitHub</Text>
               <Text style={{ color: c.text3 }}>{ghToken ? `@${ghUser ? ghUser.login : '…'}` : t('account.notConnected')}</Text>
@@ -921,13 +938,13 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
           </Glass>
           {!ghToken && !gh.flow ? (
             <Pressable onPress={onScan} hitSlop={6}>
-              <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>📷 {t('pair.settingsHint')} <Text style={{ color: c.accent, fontWeight: '800' }}>{t('qr.scanHere')}</Text></Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>{t('pair.settingsHint')} <Text style={{ color: c.accent, fontWeight: '800' }}>{t('qr.scanHere')}</Text></Text>
             </Pressable>
           ) : null}
           {gh.flow ? <GithubCodeCard c={c} flow={gh.flow} onCancel={gh.cancel} /> : null}
 
           <Glass c={c} style={[s.accountRow, { marginTop: 12 }]}>
-            {google && google.user && google.user.picture ? <Image source={{ uri: google.user.picture }} style={{ width: 32, height: 32, borderRadius: 16 }} /> : <Text style={{ fontSize: 28 }}>📁</Text>}
+            {google && google.user && google.user.picture ? <Image source={{ uri: google.user.picture }} style={{ width: 32, height: 32, borderRadius: 16 }} /> : <View style={s.accountIcon}><Icon name="externaldrive.fill" size={22} color={c.text2} /></View>}
             <View style={s.flex}>
               <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>Google Drive</Text>
               <Text style={{ color: c.text3 }}>{google ? google.user.email : t('account.notConnected')}</Text>
@@ -936,7 +953,7 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
               <Text style={{ color: google ? c.red : c.accent, fontWeight: '700' }}>{google ? t('account.logout') : go.busy ? '…' : t('account.connect')}</Text>
             </Pressable>
           </Glass>
-          {gh.error || go.error ? <Text style={{ color: c.red, marginTop: 14 }}>😕 {gh.error || go.error}</Text> : null}
+          {gh.error || go.error ? <Text style={{ color: c.red, marginTop: 14 }}>{gh.error || go.error}</Text> : null}
 
           <Text style={[s.dayHeader, { color: c.text3, marginTop: 26 }]}>{t('settings.language')}</Text>
           <Segmented
@@ -1056,14 +1073,14 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
           <Text style={[s.h1, { color: c.text }]}>{name ? t('home.hello', { name: name.split(' ')[0] }) : t('home.myProjects')}</Text>
         </View>
         <Jelly onPress={onAccounts} scaleTo={0.9}>
-          {avatar ? <Image source={{ uri: avatar }} style={s.avatar} /> : <View style={[s.avatar, { backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }]}><Text>👤</Text></View>}
+          {avatar ? <Image source={{ uri: avatar }} style={s.avatar} /> : <View style={[s.avatar, { backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }]}><Icon name="person.fill" size={20} color={c.accent} /></View>}
         </Jelly>
       </View>
 
       {news ? (
         <Jelly onPress={dismissNews} scaleTo={0.97} style={{ marginBottom: 14 }}>
           <Glass c={c} tint="#6c5cff44" style={{ padding: 16, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-            <Text style={{ fontSize: 28 }}>✨</Text>
+            <Icon name="bell.badge.fill" size={26} color={c.accent} />
             <View style={s.flex}>
               <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>
                 {news.length === 1 ? t('home.newSavesOne', { name: news[0].name, count: news[0].count }) : t('home.newSavesMany', { n: news.length })}
@@ -1077,7 +1094,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         </Jelly>
       ) : null}
 
-      {error ? <Text style={{ color: c.red, marginVertical: 10 }}>😕 {error}</Text> : null}
+      {error ? <Text style={{ color: c.red, marginVertical: 10 }}>{error}</Text> : null}
       {loading && !(ghList && ghList.length) && !(driveList && driveList.length) ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
 
       {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.githubHeader')}</Text> : null}
@@ -1085,7 +1102,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: p })} scaleTo={0.97} style={{ marginBottom: 10 }}>
           <Glass c={c} interactive style={s.projRow}>
             <LinearGradient colors={i % 2 ? ['#ec62be', '#a35cf6'] : GRAD} style={s.projTile}>
-              <Text style={{ fontSize: 24 }}>{['📘', '🎓', '🧪', '📗', '🔭', '📙'][i % 6]}</Text>
+              <Icon name={PROJECT_ICONS[i % PROJECT_ICONS.length]} size={24} color="#fff" />
             </LinearGradient>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
@@ -1096,12 +1113,12 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         </Jelly>
       ))}
 
-      {driveList && driveList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>📁 GOOGLE DRIVE</Text> : null}
+      {driveList && driveList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
       {(driveList || []).map((f) => (
         <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }}>
           <Glass c={c} interactive style={s.projRow}>
             <LinearGradient colors={['#fbbf24', '#f97316']} style={s.projTile}>
-              <Text style={{ fontSize: 24 }}>📁</Text>
+              <Icon name="folder.fill" size={24} color="#fff" />
             </LinearGradient>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{f.name}</Text>
@@ -1112,7 +1129,7 @@ function HomeScreen({ c, ghToken, ghUser, google, drive, onOpen, onAccounts, onA
         </Jelly>
       ))}
 
-      {empty ? <EmptyState c={c} emoji="🌱" title={t('home.emptyTitle')} body={t('home.emptyBody')} /> : null}
+      {empty ? <EmptyState c={c} icon="leaf.fill" title={t('home.emptyTitle')} body={t('home.emptyBody')} /> : null}
     </ScrollView>
   );
 }
@@ -1227,7 +1244,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
       aiId: `${project.owner}/${project.repo}@${ref || 'HEAD'}:${path}`,
       load: () => GH.fileContent(token, project, path, ref),
     });
-  // autoAi: "✨ Neler değişti?" ile açıldıysa özet kendiliğinden başlar
+  // autoAi: "Neler değişti?" ile açıldıysa özet kendiliğinden başlar
   const openDiff = (path, ref, parentRef, autoAi) =>
     setViewer({
       name: baseName(path),
@@ -1290,7 +1307,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
         });
         const path = `${PHONE_FOLDER}/${name}`;
         const content = await readBase64(a);
-        const message = `📱 ${t('upload.fromPhone')}: ${name}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: [path] })}`;
+        const message = `${t('upload.fromPhone')}: ${name}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: [path] })}`;
         await GH.uploadFile(token, project, path, content, message);
         taken.add(path);
         done.push(name);
@@ -1365,15 +1382,15 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
         </View>
         <Text style={[s.h1, { color: c.text, marginBottom: 14 }]} numberOfLines={2}>{project.name}</Text>
 
-        {error ? <Text style={{ color: c.red, marginBottom: 12 }}>😕 {error}</Text> : null}
+        {error ? <Text style={{ color: c.red, marginBottom: 12 }}>{error}</Text> : null}
         {!stats && !error ? <ProjectSkeleton c={c} /> : null}
 
         {stats ? (
           <>
             <View style={{ flexDirection: 'row', gap: 10 }}>
-              <StatCard c={c} emoji="🔥" label={t('stats.streak')} value={t('stats.days', { n: stats.streak, count: stats.streak })} hot onPress={() => setStatsOpen(true)} />
-              <StatCard c={c} emoji="✍️" label={t('stats.today')} value={`+${num(Math.max(0, stats.today))}`} onPress={() => setStatsOpen(true)} />
-              <StatCard c={c} emoji="📚" label={t('stats.words')} value={num(stats.total)} onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} icon="flame.fill" label={t('stats.streak')} value={t('stats.days', { n: stats.streak, count: stats.streak })} hot onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} icon="pencil.line" label={t('stats.today')} value={`+${num(Math.max(0, stats.today))}`} onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} icon="text.word.spacing" label={t('stats.words')} value={num(stats.total)} onPress={() => setStatsOpen(true)} />
             </View>
 
             <Jelly onPress={() => setStatsOpen(true)} scaleTo={0.98} style={{ marginTop: 10 }}>
@@ -1432,7 +1449,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                 </Pressable>
               </Glass>
             ) : null}
-            {tab === 'time' && fileFilter && !shownHistory.length ? <EmptyState c={c} emoji="🕰️" title={t('empty.noChanges')} body={t('history.empty')} /> : null}
+            {tab === 'time' && fileFilter && !shownHistory.length ? <EmptyState c={c} icon="clock.arrow.circlepath" title={t('empty.noChanges')} body={t('history.empty')} /> : null}
 
             {tab === 'time'
               ? shownHistory.map((h) => {
@@ -1446,7 +1463,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                       <Jelly onPress={() => setSnapshot(h)} scaleTo={0.98} style={{ marginBottom: 8 }}>
                         <Glass c={c} interactive tint={h.kind === 'star' ? '#ffb93833' : undefined} style={s.tlItem}>
                           <View style={[s.node, { backgroundColor: h.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
-                            <Text style={{ fontSize: 15 }}>{KIND_ICON[h.kind] || '💾'}</Text>
+                            <Icon name={kindIcon(h.kind)} size={14} color={h.kind === 'star' ? '#fff' : c.accent} weight="semibold" />
                           </View>
                           <View style={s.flex}>
                             <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5, lineHeight: 19 }} numberOfLines={2}>{h.title}</Text>
@@ -1467,7 +1484,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
               : (
                 <>
                   <Glass c={c} style={[s.searchBox, { marginTop: 8 }]}>
-                    <Text style={{ color: c.text3, fontSize: 15 }}>🔍</Text>
+                    <Icon name="magnifyingglass" size={16} color={c.text3} />
                     <TextInput
                       value={query}
                       onChangeText={setQuery}
@@ -1493,7 +1510,7 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
                       ]}
                     />
                   </View>
-                  {query && !visibleFiles.length ? <EmptyState c={c} emoji="🔍" title={t('empty.noResults')} body={t('docs.noMatch', { q: query.trim() })} /> : null}
+                  {query && !visibleFiles.length ? <EmptyState c={c} icon="magnifyingglass" title={t('empty.noResults')} body={t('docs.noMatch', { q: query.trim() })} /> : null}
                   {visibleFiles.map((f) => (
                     <Jelly key={f.path} onPress={() => openFile(f.path, null)} onLongPress={() => docActions(f.path)} scaleTo={0.98} style={{ marginTop: 8 }}>
                       <Glass c={c} interactive style={s.tlItem}>
@@ -1537,11 +1554,11 @@ function ProjectScreen({ c, token, project, onBack, onAuthError }) {
   );
 }
 
-function StatCard({ c, emoji, label, value, hot, onPress }) {
+function StatCard({ c, icon, label, value, hot, onPress }) {
   return (
     <Jelly onPress={onPress} scaleTo={0.94} style={s.flex}>
       <Glass c={c} interactive style={{ padding: 14 }}>
-        <Text style={{ fontSize: 20 }}>{emoji}</Text>
+        <Icon name={icon} size={20} color={hot ? '#ff7a45' : c.accent} />
         <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{label}</Text>
         <Text style={{ color: hot ? '#ff7a45' : c.text, fontSize: 20, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
           {value}
@@ -1623,14 +1640,14 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
         <ScrollView contentContainerStyle={{ padding: 20, paddingTop: 10, paddingBottom: 50 }}>
           <View style={{ flexDirection: 'row', gap: 10 }}>
             <Glass c={c} tint="#ff7a4522" style={[s.flex, { padding: 16 }]}>
-              <Text style={{ fontSize: 26 }}>🔥</Text>
+              <Icon name="flame.fill" size={24} color="#ff7a45" />
               <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{t('stats.currentStreak')}</Text>
               <Text style={{ color: '#ff7a45', fontSize: 24, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
                 {t('stats.days', { n: ds.streak, count: ds.streak })}
               </Text>
             </Glass>
             <Glass c={c} tint="#ffb93822" style={[s.flex, { padding: 16 }]}>
-              <Text style={{ fontSize: 26 }}>🏅</Text>
+              <Icon name="trophy.fill" size={24} color="#f59e0b" />
               <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }}>{t('stats.bestStreak')}</Text>
               <Text style={{ color: c.text, fontSize: 24, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>
                 {t('stats.days', { n: ds.bestStreak, count: ds.bestStreak })}
@@ -1638,7 +1655,7 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
             </Glass>
           </View>
 
-          {/* ✨ Haftam (cihaz üstü Apple Intelligence) */}
+          {/* Haftam (cihaz üstü Apple Intelligence) */}
           <AiWeekCard c={c} status={aiStatus} project={project} history={hist} streak={ds.streak} />
 
           {/* GitHub tarzı ısı haritası */}
@@ -1738,10 +1755,10 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
 
           {/* Küçük özet kutuları */}
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 12 }}>
-            <MiniStat c={c} emoji="🚀" label={t('stats.bestDay')} value={ds.bestDay ? `+${num(ds.bestDay.words)}` : t('stats.none')} sub={ds.bestDay ? shortDate(ds.bestDay.time) : ''} />
-            <MiniStat c={c} emoji="⏰" label={t('stats.bestHour')} value={ds.bestHour != null ? `${pad2(ds.bestHour)}:00` : t('stats.none')} sub={ds.bestHour != null ? `${pad2(ds.bestHour)}:00–${pad2((ds.bestHour + 1) % 24)}:00` : ''} />
-            <MiniStat c={c} emoji="📈" label={t('stats.avgActive')} value={num(ds.avgActive)} sub={t('stats.avgUnit')} />
-            <MiniStat c={c} emoji="💾" label={t('stats.savePoints')} value={num(ds.saves)} sub={t('stats.words') + ': ' + num(ds.total)} />
+            <MiniStat c={c} icon="bolt.fill" label={t('stats.bestDay')} value={ds.bestDay ? `+${num(ds.bestDay.words)}` : t('stats.none')} sub={ds.bestDay ? shortDate(ds.bestDay.time) : ''} />
+            <MiniStat c={c} icon="clock.fill" label={t('stats.bestHour')} value={ds.bestHour != null ? `${pad2(ds.bestHour)}:00` : t('stats.none')} sub={ds.bestHour != null ? `${pad2(ds.bestHour)}:00–${pad2((ds.bestHour + 1) % 24)}:00` : ''} />
+            <MiniStat c={c} icon="chart.line.uptrend.xyaxis" label={t('stats.avgActive')} value={num(ds.avgActive)} sub={t('stats.avgUnit')} />
+            <MiniStat c={c} icon="clock.arrow.circlepath" label={t('stats.savePoints')} value={num(ds.saves)} sub={t('stats.words') + ': ' + num(ds.total)} />
           </View>
 
           {/* Rozetler */}
@@ -1757,12 +1774,12 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
                 scaleTo={0.9}
                 onPress={() => {
                   if (b.done) success();
-                  Alert.alert(`${b.emoji} ${t('badge.' + b.id)}`, t('badge.' + b.id + '.d'));
+                  Alert.alert(t('badge.' + b.id), t('badge.' + b.id + '.d'));
                 }}
               >
                 <Glass c={c} tint={b.done ? '#ffb93826' : undefined} style={{ alignItems: 'center', paddingVertical: 12, paddingHorizontal: 4, borderRadius: 18 }}>
                   <View style={{ width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', backgroundColor: b.done ? '#ffb93833' : c.dark ? '#ffffff10' : '#1c1a330d' }}>
-                    <Text style={{ fontSize: 22, opacity: b.done ? 1 : 0.28 }}>{b.done ? b.emoji : '🔒'}</Text>
+                    <Icon name={b.done ? b.icon : 'lock.fill'} size={b.done ? 22 : 18} color={b.done ? '#f59e0b' : c.text3} style={{ opacity: b.done ? 1 : 0.6 }} />
                   </View>
                   <Text style={{ color: b.done ? c.text : c.text3, fontSize: 11.5, fontWeight: '700', marginTop: 6, textAlign: 'center' }} numberOfLines={2}>
                     {t('badge.' + b.id)}
@@ -1779,7 +1796,7 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
             ds.milestones.map((m) => (
               <Glass key={m.oid} c={c} tint="#ffb93822" style={[s.tlItem, { marginBottom: 8 }]}>
                 <View style={[s.node, { backgroundColor: '#ffb938' }]}>
-                  <Text style={{ fontSize: 15 }}>⭐</Text>
+                  <Icon name="star.fill" size={14} color="#fff" weight="semibold" />
                 </View>
                 <View style={s.flex}>
                   <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={2}>{m.title}</Text>
@@ -1818,10 +1835,10 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
   );
 }
 
-function MiniStat({ c, emoji, label, value, sub }) {
+function MiniStat({ c, icon, label, value, sub }) {
   return (
     <Glass c={c} style={{ width: '48%', flexGrow: 1, padding: 14 }}>
-      <Text style={{ fontSize: 20 }}>{emoji}</Text>
+      <Icon name={icon} size={20} color={c.accent} />
       <Text style={{ color: c.text3, fontSize: 12, fontWeight: '600', marginTop: 6 }} numberOfLines={1}>{label}</Text>
       <Text style={{ color: c.text, fontSize: 21, fontWeight: '800', marginTop: 2 }} numberOfLines={1} adjustsFontSizeToFit>{value}</Text>
       {sub ? <Text style={{ color: c.text3, fontSize: 11.5, marginTop: 1 }} numberOfLines={1}>{sub}</Text> : null}
@@ -1847,7 +1864,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   }, [snapshot]);
   if (!snapshot) return null;
   const d = new Date(snapshot.time);
-  // "✨ Neler değişti?": en çok değişen karşılaştırılabilir (Word/metin) dosyanın farkı açılır ve özetlenir
+  // "Neler değişti?": en çok değişen karşılaştırılabilir (Word/metin) dosyanın farkı açılır ve özetlenir
   const sdelta = snapshot.delta || {};
   const aiFile =
     aiStatus === 'available' && files
@@ -1873,7 +1890,9 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
       <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]}>
         <View style={s.grabber} />
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-          <Text style={{ fontSize: 34 }}>{KIND_ICON[snapshot.kind] || '💾'}</Text>
+          <View style={[s.snapIcon, { backgroundColor: snapshot.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
+            <Icon name={kindIcon(snapshot.kind)} size={22} color={snapshot.kind === 'star' ? '#fff' : c.accent} weight="semibold" />
+          </View>
           <View style={s.flex}>
             <Text style={{ color: c.text, fontSize: 19, fontWeight: '800' }}>{snapshot.title}</Text>
             <Text style={{ color: c.text3, marginTop: 4 }}>
@@ -1927,13 +1946,15 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
                     <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 14 }}>
                       {canDiff ? (
                         <Jelly style={s.flex} onPress={() => onOpenDiff(f.path, snapshot.oid, f.status === 'added' ? null : parent)}>
-                          <View style={[s.actionBtn, { backgroundColor: c.greenSoft }]}>
+                          <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.greenSoft }]}>
+                            <Icon name="arrow.left.arrow.right" size={15} color={c.green} weight="semibold" />
                             <Text style={{ color: c.green, fontWeight: '800', fontSize: 15 }}>{t('snapshot.diff')}</Text>
                           </View>
                         </Jelly>
                       ) : null}
                       <Jelly style={s.flex} onPress={() => onOpenFile(f.path, snapshot.oid, snapshot.time)}>
-                        <View style={[s.actionBtn, { backgroundColor: c.accentSoft }]}>
+                        <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft }]}>
+                          <Icon name="doc.text" size={15} color={c.accent} weight="semibold" />
                           <Text style={{ color: c.accent, fontWeight: '800', fontSize: 15 }}>{t('snapshot.thisVersion')}</Text>
                         </View>
                       </Jelly>
@@ -1943,7 +1964,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
               </Card>
             );
           })}
-          {files && files.length === 0 ? <EmptyState c={c} emoji={KIND_ICON[snapshot.kind] || '⭐'} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
+          {files && files.length === 0 ? <EmptyState c={c} icon={kindIcon(snapshot.kind)} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
         </ScrollView>
       </View>
       <BusyHud c={c} text={busy} />
@@ -2056,7 +2077,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
         </View>
         <Text style={[s.h1, { color: c.text, marginBottom: 4 }]} numberOfLines={2}>{isVersions ? t('drive.versions') : current.name}</Text>
         <Text style={{ color: c.text3, marginBottom: 14 }}>{isVersions ? t('drive.versionsSub') : 'Google Drive'}</Text>
-        {error ? <Text style={{ color: c.red }}>😕 {error}</Text> : null}
+        {error ? <Text style={{ color: c.red }}>{error}</Text> : null}
         {items === null && !error ? <SkeletonRows c={c} rows={5} /> : null}
         {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : items || []).map((it) => (
           <Jelly
@@ -2078,7 +2099,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
             </Glass>
           </Jelly>
         ))}
-        {items && items.length === 0 ? <EmptyState c={c} emoji="📂" title={t('empty.folder')} body={t('drive.empty')} /> : null}
+        {items && items.length === 0 ? <EmptyState c={c} icon="folder" title={t('empty.folder')} body={t('drive.empty')} /> : null}
         {items && items.some((it) => !it.folder) ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
       </ScrollView>
       <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} />
@@ -2211,7 +2232,7 @@ function ViewerSheet({ c, target, onClose }) {
     }
   };
 
-  // Kayıt ayrıntısındaki "✨ Neler değişti?" ile açıldıysa özet kendiliğinden başlar
+  // Kayıt ayrıntısındaki "Neler değişti?" ile açıldıysa özet kendiliğinden başlar
   useEffect(() => {
     if (target && target.autoAi && diffInfo && diffInfo.text && aiStatus === 'available' && !ai) runAi('diff');
   }, [diffInfo, aiStatus]);
@@ -2244,7 +2265,7 @@ function ViewerSheet({ c, target, onClose }) {
         </View>
         {error ? (
           <View style={s.center}>
-            <Text style={{ fontSize: 40 }}>😕</Text>
+            <Icon name="exclamationmark.triangle.fill" size={36} color={c.text3} />
             <Text style={{ color: c.text2, marginTop: 8, textAlign: 'center', paddingHorizontal: 30 }}>{error}</Text>
           </View>
         ) : source && source.image ? (
@@ -2305,9 +2326,11 @@ const s = StyleSheet.create({
   orb: { position: 'absolute', width: 380, height: 380, borderRadius: 190 },
   gradBtn: { height: 54, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   gradBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  btnRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   secBtn: { height: 54, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   codeBox: { width: 34, height: 46, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   avatar: { width: 44, height: 44, borderRadius: 22 },
+  accountIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   projRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 14 },
   projTile: { width: 52, height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
   accountRow: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 },
@@ -2318,6 +2341,7 @@ const s = StyleSheet.create({
   pillBtn: { height: 32, borderRadius: 16, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
   searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, height: 44, borderRadius: 14 },
   actionBtn: { height: 50, borderRadius: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
+  snapIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   dayHeader: { fontSize: 12, fontWeight: '700', letterSpacing: 0.6, marginTop: 16, marginBottom: 8, marginLeft: 4 },
   tlItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, borderRadius: 18 },
   node: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },

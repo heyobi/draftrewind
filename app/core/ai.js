@@ -287,7 +287,7 @@ class LocalAI {
 
 // Model çıktısını tek satırlık başlığa indirger (tırnak, "Başlık:" öneki, markdown temizlenir)
 function cleanTitle(text) {
-    let t = String(text || '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+    let t = String(text || '').replace(/[\p{Extended_Pictographic}️‍]/gu, '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
     t = t.replace(/^(\*\*)?(başlık|title)\s*:?\s*(\*\*)?\s*/i, '').replace(/^["'“”‘’«»*#\-\s]+|["'“”‘’«»*\s]+$/g, '');
     if (t.length < 4 || t.length > 110) return null;
     return t;

@@ -30,7 +30,7 @@ function init({ app, emit, icon }) {
         announced = version;
         const text = T('update.readyText', { version });
         try {
-            emit('toast', { icon: '🎁', text });
+            emit('toast', { icon: 'gift', text });
         } catch (e) {}
         try {
             const { Notification } = require('electron');

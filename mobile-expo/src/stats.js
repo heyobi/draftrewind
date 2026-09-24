@@ -159,15 +159,16 @@ export function deepStats(history, { now = new Date(), weeks = 16, weekStart = 1
   const milestones = history.filter((h) => h.kind === 'star').map((h) => ({ oid: h.oid, title: h.title, note: h.note, time: h.time }));
   const streak = currentStreak(active, today);
 
+  // icon: SF Symbol adı (App.js'te Icon ile çizilir)
   const badges = [
-    { id: 'first1k', emoji: '🌱', done: total >= 1000 },
-    { id: 'streak7', emoji: '🔥', done: best >= 7 },
-    { id: 'bigDay', emoji: '🚀', done: !!bestDay && bestDay.words >= 1000 },
-    { id: '10k', emoji: '🏆', done: total >= 10000 },
-    { id: 'star', emoji: '⭐', done: milestones.length > 0 },
-    { id: 'night', emoji: '🦉', done: nightOwl },
-    { id: 'early', emoji: '🐦', done: earlyBird },
-    { id: 'saves100', emoji: '💯', done: history.filter(isWriting).length >= 100 },
+    { id: 'first1k', icon: 'leaf.fill', done: total >= 1000 },
+    { id: 'streak7', icon: 'flame.fill', done: best >= 7 },
+    { id: 'bigDay', icon: 'bolt.fill', done: !!bestDay && bestDay.words >= 1000 },
+    { id: '10k', icon: 'trophy.fill', done: total >= 10000 },
+    { id: 'star', icon: 'star.fill', done: milestones.length > 0 },
+    { id: 'night', icon: 'moon.stars.fill', done: nightOwl },
+    { id: 'early', icon: 'sunrise.fill', done: earlyBird },
+    { id: 'saves100', icon: 'checkmark.seal.fill', done: history.filter(isWriting).length >= 100 },
   ];
 
   return {

@@ -97,7 +97,7 @@ function copyName(rel, label) {
 function versionName(rel, kind, suffix = '') {
     const ext = path.extname(rel);
     const base = path.basename(rel, ext);
-    return safeName(`${stamp()} ${base}${kind === 'star' ? ' ⭐' : ''}${suffix}${ext}`);
+    return safeName(`${stamp()} ${base}${kind === 'star' ? ` (${T('drive.starTag')})` : ''}${suffix}${ext}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ function resultPage(ok) {
     return `<!doctype html><html lang="${I18N.getLanguage()}"><meta charset="utf-8"><title>DraftRewind</title>
 <body style="font-family:Segoe UI,system-ui,sans-serif;background:#f6f5ff;display:grid;place-items:center;height:100vh;margin:0">
 <div style="background:#fff;padding:40px 48px;border-radius:24px;text-align:center;box-shadow:0 20px 60px rgba(80,60,200,.15)">
-<div style="font-size:56px">${ok ? '🎉' : '😕'}</div>
+<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="${ok ? '#16a34a' : '#dc2626'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/>${ok ? '<path d="m8 12.3 2.7 2.7L16.2 9.5"/>' : '<path d="M9 9l6 6M15 9l-6 6"/>'}</svg>
 <h2 style="margin:8px 0;color:#1e1b4b">${ok ? T('oauth.okTitle') : T('oauth.failTitle')}</h2>
 <p style="color:#64748b">${ok ? T('oauth.okText') : T('oauth.failText')}</p></div></body>`;
 }

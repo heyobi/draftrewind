@@ -33,8 +33,10 @@
     const num = n => Number(n || 0).toLocaleString(locale());
     // Sayı + çoğul: tn('common.words', 5) → "5 kelime" / "5 words"
     const tn = (key, n, vars) => t(key, { ...vars, n: num(n), count: Number(n) || 0 });
-    const EMOJIS = ['📘', '📗', '📕', '📙', '🎓', '🧪', '🧬', '🔭', '📐', '🧠', '🌍', '⚖️', '🎨', '💻', '📊', '🏛️', '🩺', '🌱', '🚀', '🎼', '🏗️', '📜', '🦉', '✨'];
-    const KIND_ICON = { auto: '💾', star: '⭐', rescue: '⚡', restore: '↩️', merge: '🤝', mobile: '📱' };
+    const ic = (name, cls) => window.Icons.icon(name, cls);
+    // Proje rozeti: renkli kare + baş harfler (emoji yerine)
+    const PROJECT_COLORS = ['#6c5cff', '#2f80ed', '#0ea5a4', '#16a34a', '#ca8a04', '#ea580c', '#e11d48', '#c026d3', '#475569', '#0f766e'];
+    const KIND_ICON = { auto: 'save', star: 'star', rescue: 'bolt', restore: 'undo', merge: 'merge', mobile: 'phone' };
     const TYPE_LABEL = { word: 'DOC', sheet: 'XLS', slides: 'PPT', pdf: 'PDF', text: 'TXT', image: 'IMG', other: 'FILE' };
     const MONTHS = () => t('time.months');
     const DAYS = () => t('time.days');
@@ -83,10 +85,10 @@
     }
 
     // ------------------------------------------------------------------ toast / confetti
-    function toast(text, icon = '✨', ms = 3800) {
+    function toast(text, icon = 'sparkle', ms = 3800) {
         const el = document.createElement('div');
         el.className = 'toast';
-        el.innerHTML = `<span class="ic">${icon}</span><span>${esc(text)}</span>`;
+        el.innerHTML = `<span class="ic">${ic(icon)}</span><span>${esc(text)}</span>`;
         $('#toasts').appendChild(el);
         setTimeout(() => {
             el.classList.add('out');
@@ -155,11 +157,11 @@
         if (back._onClose) back._onClose();
         back.remove();
     }
-    function confirmModal({ title, text, ok = t('common.ok'), danger = false, emoji = '🤔' }) {
+    function confirmModal({ title, text, ok = t('common.ok'), danger = false, emoji = 'help' }) {
         return new Promise(resolve => {
             let answered = false;
             const m = openModal(
-                `<div style="font-size:40px">${emoji}</div><h2>${esc(title)}</h2><p class="sub">${text}</p>
+                `<div class="modal-ic${danger ? ' danger' : ''}">${ic(emoji)}</div><h2>${esc(title)}</h2><p class="sub">${text}</p>
                 <div class="foot"><button class="btn ghost" data-x="no">${t('common.cancel')}</button><button class="btn ${danger ? 'danger' : 'primary'}" data-x="yes">${esc(ok)}</button></div>`,
                 { onClose: () => !answered && resolve(false) }
             );
@@ -171,11 +173,11 @@
             };
         });
     }
-    function promptModal({ title, sub, value = '', placeholder = '', ok = t('common.save'), emoji = '✏️' }) {
+    function promptModal({ title, sub, value = '', placeholder = '', ok = t('common.save'), emoji = 'pencil' }) {
         return new Promise(resolve => {
             let answered = false;
             const m = openModal(
-                `<div style="font-size:36px">${emoji}</div><h2>${esc(title)}</h2>${sub ? `<p class="sub">${sub}</p>` : ''}
+                `<div class="modal-ic">${ic(emoji)}</div><h2>${esc(title)}</h2>${sub ? `<p class="sub">${sub}</p>` : ''}
                 <input class="input" id="prompt-in" value="${esc(value)}" placeholder="${esc(placeholder)}">
                 <div class="foot"><button class="btn ghost" data-x="no">${t('common.cancel')}</button><button class="btn primary" data-x="yes">${esc(ok)}</button></div>`,
                 { onClose: () => !answered && resolve(null) }
@@ -197,7 +199,7 @@
         try {
             return await fn();
         } catch (e) {
-            toast(`${errPrefix}${e.message}`, '😕', 5500);
+            toast(`${errPrefix}${e.message}`, 'error', 5500);
             return undefined;
         }
     }
@@ -244,7 +246,7 @@
                 try { localStorage.setItem(key, '1'); } catch (e) {}
                 setTimeout(() => {
                     confetti();
-                    toast(tn('home.goalReached', ov.stats.today), '🏆', 6000);
+                    toast(tn('home.goalReached', ov.stats.today), 'trophy', 6000);
                 }, 400);
             }
         }
@@ -273,7 +275,7 @@
 
     // Eski sürüm düzenlendiyse: emek kaybolmasın, projeye kopya olarak eklemeyi öner
     function oldVersionModal(ev) {
-        const m = openModal(`<div style="font-size:40px">📝</div><h2>${t('old.editedTitle')}</h2>
+        const m = openModal(`<div class="modal-ic">${ic('doc')}</div><h2>${t('old.editedTitle')}</h2>
             <p class="sub">${esc(t('old.editedBody', { name: ev.name }))}</p>
             <div class="foot"><button class="btn ghost" data-x="no">${t('old.dismiss')}</button><button class="btn primary" data-x="yes">${t('old.import')}</button></div>`);
         m.querySelector('[data-x=no]').onclick = closeModal;
@@ -281,7 +283,7 @@
             closeModal();
             const r = await run(() => av.projects.importEdited(ev.projectId, ev.file, ev.rel));
             if (r) {
-                toast(t('old.imported', { name: r.name }), '📥', 5000);
+                toast(t('old.imported', { name: r.name }), 'inbox', 5000);
                 refresh();
             }
         };
@@ -294,8 +296,20 @@
         updatePill();
     }
 
-    function projectEmoji(p) {
-        return p.emoji || '📘';
+    function projectColor(p) {
+        if (p.color && PROJECT_COLORS.includes(p.color)) return p.color;
+        let h = 0;
+        for (const ch of String(p.id || p.name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        return PROJECT_COLORS[h % PROJECT_COLORS.length];
+    }
+    function projectInitials(p) {
+        const words = String(p.name || '?').replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean);
+        const a = words[0] ? [...words[0]][0] : '?';
+        const b = words[1] ? [...words[1]][0] : words[0] && [...words[0]][1] ? [...words[0]][1] : '';
+        return (a + b).toLocaleUpperCase(locale());
+    }
+    function projectTile(p) {
+        return `<span class="ptile" style="--c:${projectColor(p)}">${esc(projectInitials(p))}</span>`;
     }
 
     function renderRail() {
@@ -314,7 +328,7 @@
             ${S.app.projects
                 .map(
                     p => `<button class="proj-btn ${p.id === S.activeId ? 'active' : ''} ${p.missing ? 'missing' : ''}" data-action="select-project" data-id="${p.id}" title="${esc(p.name)}">
-                        <span class="emoji">${projectEmoji(p)}</span>
+                        <span class="emoji">${projectTile(p)}</span>
                         <span style="min-width:0"><div class="pname">${esc(p.name)}</div><div class="psub">${p.missing ? t('rail.folderMissing') : p.id === S.activeId && S.overview && S.overview.stats ? tn('common.words', S.overview.stats.total) : t('rail.protected')}</div></span>
                     </button>`
                 )
@@ -322,8 +336,8 @@
             <button class="proj-btn add-btn" data-action="add-project" title="${esc(t('rail.addProject'))}"><span class="emoji">+</span><span>${t('rail.addProject')}</span></button>
             <div class="rail-spacer"></div>
             <div class="rail-cloud" data-action="goto-tab" data-tab="cloud" title="${esc(t('tabs.cloud'))}">
-                <div class="row">🐙<span class="lbl">GitHub</span> ${gh.connected ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
-                <div class="row">📁<span class="lbl">Drive</span> ${dr.mode ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
+                <div class="row">${ic('github')}<span class="lbl">GitHub</span> ${gh.connected ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
+                <div class="row">${ic('drive')}<span class="lbl">Drive</span> ${dr.mode ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
             </div>`;
     }
 
@@ -338,13 +352,13 @@
         const ov = S.overview;
         main.innerHTML = `
             <div class="p-head">
-                <div class="p-emoji" data-action="pick-emoji" title="${t('head.changeIcon')}">${projectEmoji(p)}</div>
+                <div class="p-emoji" data-action="pick-emoji" title="${t('head.changeIcon')}">${projectTile(p)}</div>
                 <div class="p-title">
                     <h1 data-action="rename" title="${t('head.renameHint')}">${esc(p.name)}</h1>
-                    <div class="path" title="${esc(p.dir)}"><a data-action="open-folder">‎📂 ${esc(p.dir)}‎</a></div>
+                    <div class="path" title="${esc(p.dir)}"><a data-action="open-folder">‎${ic('folderOpen')} ${esc(p.dir)}‎</a></div>
                 </div>
                 <button class="btn star" data-action="star">${t('head.star')}</button>
-                <button class="btn ghost" data-action="settings" title="${t('head.settings')}" style="font-size:18px;padding:8px 10px">⚙️</button>
+                <button class="btn ghost" data-action="settings" title="${t('head.settings')}" style="font-size:18px;padding:8px 10px">${ic('settings')}</button>
             </div>
             <div class="tabs">
                 <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home" title="Ctrl+1">${t('tabs.home')}</button>
@@ -367,13 +381,13 @@
 
     function renderOnboarding() {
         return `<div class="onboard"><div class="onboard-inner">
-            <div class="hero-emoji">🎓</div>
+            <div class="hero-emoji">${ic('cap')}</div>
             <h1>${t('onb.title')}</h1>
             <p class="lead">${t('onb.lead')}</p>
             <div class="feat-grid">
-                <div class="feat"><div class="e">🛡️</div><b>${t('onb.f1.title')}</b><span>${t('onb.f1.text')}</span></div>
-                <div class="feat"><div class="e">🕰️</div><b>${t('onb.f2.title')}</b><span>${t('onb.f2.text')}</span></div>
-                <div class="feat"><div class="e">☁️</div><b>${t('onb.f3.title')}</b><span>${t('onb.f3.text')}</span></div>
+                <div class="feat"><div class="e">${ic('shield')}</div><b>${t('onb.f1.title')}</b><span>${t('onb.f1.text')}</span></div>
+                <div class="feat"><div class="e">${ic('history')}</div><b>${t('onb.f2.title')}</b><span>${t('onb.f2.text')}</span></div>
+                <div class="feat"><div class="e">${ic('cloud')}</div><b>${t('onb.f3.title')}</b><span>${t('onb.f3.text')}</span></div>
             </div>
             <div class="cta">
                 <button class="btn primary big" data-action="add-existing">${t('onb.pickFolder')}</button>
@@ -385,7 +399,7 @@
 
     function renderMissing() {
         return `<div class="content"><div class="placeholder" style="height:60vh"><div>
-            <div class="e">🔍</div><h3>${t('missing.title')}</h3>
+            <div class="e">${ic('search')}</div><h3>${t('missing.title')}</h3>
             <p>${t('missing.text')}</p>
             <button class="btn primary" data-action="relink">${t('missing.relink')}</button>
         </div></div></div>`;
@@ -417,14 +431,14 @@
         const b = f && f.backup;
         if (!b || typeof b !== 'object') return '';
         const icons = [];
-        if (b.history) icons.push(`<span class="bk on" title="${esc(t('bk.history'))}">🕰️</span>`);
+        if (b.history) icons.push(`<span class="bk on" title="${esc(t('bk.history'))}">${ic('history')}</span>`);
         if (S.app.github.connected && b.history && b.github != null) {
             const on = b.github === true;
-            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.github') : t('bk.githubPending'))}">🐙</span>`);
+            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.github') : t('bk.githubPending'))}">${ic('github')}</span>`);
         }
         if (b.drive != null) {
             const on = b.drive === true;
-            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.drive') : b.reason === 'driveError' ? t('bk.reason.driveError') : t('bk.drivePending'))}">📁</span>`);
+            icons.push(`<span class="bk ${on ? 'on' : 'muted'}" title="${esc(on ? t('bk.drive') : b.reason === 'driveError' ? t('bk.reason.driveError') : t('bk.drivePending'))}">${ic('drive')}</span>`);
         }
         const reasonKey = `bk.reason.${b.reason || 'unknown'}`;
         const reason = t(reasonKey) === reasonKey ? t('bk.reason.unknown') : t(reasonKey);
@@ -450,16 +464,16 @@
         return `<div class="content">
             <div class="greeting"><h2>${greeting()}${firstName ? `, ${esc(firstName)}` : ''}</h2><p>${motivation(st, goal)}</p></div>
 
-            ${rescues.length ? `<div class="banner"><span class="ic">⚡</span><div><div class="t">${tn('home.rescueTitle', rescues.length)}</div><div class="s">${t('home.rescueText')}</div></div><button class="btn sm" data-action="open-file" data-rel="${esc(rescues[0].rel)}">${t('common.open')}</button></div>` : ''}
-            ${ov.error ? `<div class="banner error"><span class="ic">⚠️</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(ov.error)}</div></div></div>` : ''}
-            ${unprotected.length ? `<div class="banner error"><span class="ic">🛟</span><div><div class="t">${tn('bk.bannerTitle', unprotected.length)}</div><div class="s">${tn(dr ? 'bk.bannerTextDrive' : 'bk.bannerText', unprotected.length)} <span class="bk-list">${esc(unprotected.slice(0, 3).map(r => r.split('/').pop()).join(', '))}${unprotected.length > 3 ? '…' : ''}</span></div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${dr ? t('bk.bannerBtnCheck') : t('bk.bannerBtn')}</button></div>` : ''}
-            ${!gh && !dr && !dismissed().cloudBanner ? `<div class="banner info"><span class="ic">☁️</span><div><div class="t">${t('home.cloudPromptTitle')}</div><div class="s">${t('home.cloudPromptText')}</div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${t('home.connectCloud')}</button><button class="dismiss-x" data-action="dismiss" data-key="cloudBanner" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button></div>` : ''}
+            ${rescues.length ? `<div class="banner"><span class="ic">${ic('bolt')}</span><div><div class="t">${tn('home.rescueTitle', rescues.length)}</div><div class="s">${t('home.rescueText')}</div></div><button class="btn sm" data-action="open-file" data-rel="${esc(rescues[0].rel)}">${t('common.open')}</button></div>` : ''}
+            ${ov.error ? `<div class="banner error"><span class="ic">${ic('alert')}</span><div><div class="t">${t('home.lastSaveFailed')}</div><div class="s">${esc(ov.error)}</div></div></div>` : ''}
+            ${unprotected.length ? `<div class="banner error"><span class="ic">${ic('shieldOff')}</span><div><div class="t">${tn('bk.bannerTitle', unprotected.length)}</div><div class="s">${tn(dr ? 'bk.bannerTextDrive' : 'bk.bannerText', unprotected.length)} <span class="bk-list">${esc(unprotected.slice(0, 3).map(r => r.split('/').pop()).join(', '))}${unprotected.length > 3 ? '…' : ''}</span></div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${dr ? t('bk.bannerBtnCheck') : t('bk.bannerBtn')}</button></div>` : ''}
+            ${!gh && !dr && !dismissed().cloudBanner ? `<div class="banner info"><span class="ic">${ic('cloud')}</span><div><div class="t">${t('home.cloudPromptTitle')}</div><div class="s">${t('home.cloudPromptText')}</div></div><button class="btn sm primary" data-action="goto-tab" data-tab="cloud">${t('home.connectCloud')}</button><button class="dismiss-x" data-action="dismiss" data-key="cloudBanner" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button></div>` : ''}
 
             <div class="stat-grid">
-                <div class="stat streak ${st.streak >= 2 ? 'hot' : ''}"><span class="big-emoji">🔥</span><span class="label">${t('stat.streak')}</span><span class="value">${tn('stat.days', st.streak)}</span><span class="hint">${st.streak ? t('stat.keepChain') : t('stat.startToday')}</span></div>
+                <div class="stat streak ${st.streak >= 2 ? 'hot' : ''}"><span class="big-emoji">${ic('flame')}</span><span class="label">${t('stat.streak')}</span><span class="value">${tn('stat.days', st.streak)}</span><span class="hint">${st.streak ? t('stat.keepChain') : t('stat.startToday')}</span></div>
                 <div class="stat"><div class="ring-wrap">${ringSvg(goal ? st.today / goal : 0)}<div><span class="label">${t('stat.today')}</span><div class="value" style="font-size:22px">${st.today >= 0 ? '+' : ''}${num(st.today)}</div><span class="hint">${tn('stat.goalHint', goal)}</span></div></div></div>
-                <div class="stat"><span class="big-emoji">📚</span><span class="label">${t('stat.totalWords')}</span><span class="value">${num(st.total)}</span><span class="hint">${t('stat.allDocs')}</span></div>
-                <div class="stat"><span class="big-emoji">🕰️</span><span class="label">${t('stat.snapshots')}</span><span class="value">${num(st.snapshots)}</span><span class="hint">${st.firstAt ? t('stat.startedAgo', { ago: ago(st.firstAt) }) : ''}</span></div>
+                <div class="stat"><span class="big-emoji">${ic('book')}</span><span class="label">${t('stat.totalWords')}</span><span class="value">${num(st.total)}</span><span class="hint">${t('stat.allDocs')}</span></div>
+                <div class="stat"><span class="big-emoji">${ic('history')}</span><span class="label">${t('stat.snapshots')}</span><span class="value">${num(st.snapshots)}</span><span class="hint">${st.firstAt ? t('stat.startedAgo', { ago: ago(st.firstAt) }) : ''}</span></div>
             </div>
 
             <div class="two-col">
@@ -471,9 +485,9 @@
                 </div>
                 <div class="card safe-card">
                     <div><h3>${t('safe.title')}</h3><div class="sub">${t('safe.sub')}</div></div>
-                    <div class="safe-row"><span class="ic">💻</span><div><div class="t">${t('safe.thisPc')}</div><div class="s">${t('safe.lastSave', { ago: ago(ov.lastSave) })}</div></div><span class="state on">${t('safe.active')}</span></div>
-                    <div class="safe-row"><span class="ic">🐙</span><div><div class="t">${t('safe.github')}</div><div class="s">${gh ? (cloud.syncError ? esc(cloud.syncError) : cloud.lastSync ? t('safe.lastPush', { ago: ago(cloud.lastSync) }) : t('safe.firstPush')) : t('safe.notConnected')}</div></div><span class="state ${gh ? (cloud.syncError ? 'err' : 'on') : 'off'}">${gh ? (cloud.syncError ? '⏳' : '✓') : '—'}</span></div>
-                    <div class="safe-row"><span class="ic">📁</span><div><div class="t">Google Drive</div><div class="s">${dr ? (cloud.driveError ? esc(cloud.driveError) : cloud.driveAt ? t('safe.lastCopy', { ago: ago(cloud.driveAt) }) : t('safe.waiting')) : t('safe.notConnected')}</div></div><span class="state ${dr ? (cloud.driveError ? 'err' : 'on') : 'off'}">${dr ? (cloud.driveError ? '⏳' : '✓') : '—'}</span></div>
+                    <div class="safe-row"><span class="ic">${ic('laptop')}</span><div><div class="t">${t('safe.thisPc')}</div><div class="s">${t('safe.lastSave', { ago: ago(ov.lastSave) })}</div></div><span class="state on">${t('safe.active')}</span></div>
+                    <div class="safe-row"><span class="ic">${ic('github')}</span><div><div class="t">${t('safe.github')}</div><div class="s">${gh ? (cloud.syncError ? esc(cloud.syncError) : cloud.lastSync ? t('safe.lastPush', { ago: ago(cloud.lastSync) }) : t('safe.firstPush')) : t('safe.notConnected')}</div></div><span class="state ${gh ? (cloud.syncError ? 'err' : 'on') : 'off'}">${gh ? (cloud.syncError ? 'history' : '✓') : '—'}</span></div>
+                    <div class="safe-row"><span class="ic">${ic('drive')}</span><div><div class="t">Google Drive</div><div class="s">${dr ? (cloud.driveError ? esc(cloud.driveError) : cloud.driveAt ? t('safe.lastCopy', { ago: ago(cloud.driveAt) }) : t('safe.waiting')) : t('safe.notConnected')}</div></div><span class="state ${dr ? (cloud.driveError ? 'err' : 'on') : 'off'}">${dr ? (cloud.driveError ? 'history' : '✓') : '—'}</span></div>
                     ${unprotected.length ? `<div class="safe-warn" title="${esc(unprotected.join('\n'))}">${tn('bk.onlyHere', unprotected.length)}</div>` : ''}
                 </div>
             </div>
@@ -496,9 +510,9 @@
                               )
                               .join('') +
                           (files.length > 12 && !S.showAllFiles ? `<div style="text-align:center;margin-top:8px"><button class="linkish" data-action="show-all-files">${tn('files.showAll', files.length)}</button></div>` : '')
-                        : `<div class="empty-files"><div class="e">🗂️</div><p>${t('files.empty')}</p><div style="display:flex;gap:8px;justify-content:center"><button class="btn primary" data-action="add-files">${t('fx.addFiles')}</button><button class="btn" data-action="open-folder">${t('files.openFolder')}</button></div></div>`
+                        : `<div class="empty-files"><div class="e">${ic('files')}</div><p>${t('files.empty')}</p><div style="display:flex;gap:8px;justify-content:center"><button class="btn primary" data-action="add-files">${t('fx.addFiles')}</button><button class="btn" data-action="open-folder">${t('files.openFolder')}</button></div></div>`
                 }
-                ${ov.skippedLarge && ov.skippedLarge.length ? `<div class="banner" style="margin:12px 0 0"><span class="ic">🐘</span><div><div class="t">${tn('files.largeTitle', ov.skippedLarge.length)}</div><div class="s">${t('files.largeText', { list: esc(ov.skippedLarge.slice(0, 3).join(', ')) })}</div></div></div>` : ''}
+                ${ov.skippedLarge && ov.skippedLarge.length ? `<div class="banner" style="margin:12px 0 0"><span class="ic">${ic('box')}</span><div><div class="t">${tn('files.largeTitle', ov.skippedLarge.length)}</div><div class="s">${t('files.largeText', { list: esc(ov.skippedLarge.slice(0, 3).join(', ')) })}</div></div></div>` : ''}
             </div>
         </div>`;
     }
@@ -515,16 +529,16 @@
                 lastDay = day;
                 const words = Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
                 return `${head}<div class="tl-item ${h.kind} ${h.oid === S.selectedOid ? 'active' : ''}" data-action="select-snapshot" data-oid="${h.oid}">
-                    <div class="node">${KIND_ICON[h.kind] || '💾'}</div>
+                    <div class="node">${ic(KIND_ICON[h.kind] || 'save')}</div>
                     <div class="tmain"><div class="ttitle">${esc(h.title)}</div>
-                    <div class="tmeta">${hm(new Date(h.time))}${words > 0 ? `<span class="chip add">+${num(words)}</span>` : words < 0 ? `<span class="chip del">${num(words)}</span>` : ''}${h.kind === 'star' ? `<span class="chip star">${t('tl.star')}</span>` : ''}${h.kind === 'rescue' ? `<span class="chip rescue">${t('tl.rescued')}</span>` : ''}${h.kind === 'mobile' ? `<span class="chip mobile">📱 ${t('tl.fromPhone')}</span>` : ''}</div></div>
+                    <div class="tmeta">${hm(new Date(h.time))}${words > 0 ? `<span class="chip add">+${num(words)}</span>` : words < 0 ? `<span class="chip del">${num(words)}</span>` : ''}${h.kind === 'star' ? `<span class="chip star">${t('tl.star')}</span>` : ''}${h.kind === 'rescue' ? `<span class="chip rescue">${t('tl.rescued')}</span>` : ''}${h.kind === 'mobile' ? `<span class="chip mobile">${ic('phone')} ${t('tl.fromPhone')}</span>` : ''}</div></div>
                 </div>`;
             })
             .join('');
         // Kayıt noktası alınmamış, dosyada kaydedilmiş değişiklikler (VS Code'daki "Changes" gibi anında görünür)
         const live = ov.pendingCount
             ? `<div class="tl-day">${t('time.today')}</div><div class="tl-item live ${S.selectedOid === 'working' ? 'active' : ''}" data-action="select-snapshot" data-oid="working">
-                <div class="node">✏️</div>
+                <div class="node">${ic('pencil')}</div>
                 <div class="tmain"><div class="ttitle">${t('tl.liveTitle')}</div>
                 <div class="tmeta">${t('tl.liveSub')}<span class="chip pending">${num(ov.pendingCount)}</span></div></div>
             </div>`
@@ -535,7 +549,7 @@
                     <option value="">${t('tl.allFiles')}</option>
                     ${docsFirst.map(f => `<option value="${esc(f.rel)}" ${f.rel === S.tlFilter ? 'selected' : ''}>${esc(f.rel)}</option>`).join('')}
                 </select></div>
-                <div class="tl-list">${live}${items || live ? items : `<div class="placeholder" style="height:300px"><div><div class="e">🌱</div><p>${t('tl.empty')}</p></div></div>`}</div>
+                <div class="tl-list">${live}${items || live ? items : `<div class="placeholder" style="height:300px"><div><div class="e">${ic('doc')}</div><p>${t('tl.empty')}</p></div></div>`}</div>
             </div>
             <div class="tl-detail" id="tl-detail">${renderDetail()}</div>
         </div>`;
@@ -547,12 +561,12 @@
             ? { oid: 'working', kind: 'live', title: t('tl.liveTitle'), note: t('tl.liveHint'), time: Date.now(), author: '' }
             : S.history.find(x => x.oid === S.selectedOid);
         if (!h) {
-            return `<div class="placeholder"><div><div class="e">🕰️</div><h3>${t('tl.placeholderTitle')}</h3><p>${t('tl.placeholderText')}</p></div></div>`;
+            return `<div class="placeholder"><div><div class="e">${ic('history')}</div><h3>${t('tl.placeholderTitle')}</h3><p>${t('tl.placeholderText')}</p></div></div>`;
         }
         const sel = S.changes.find(c => c.rel === S.selectedFile);
         return `
             <div class="detail-head">
-                <div class="node">${isLive ? '✏️' : KIND_ICON[h.kind] || '💾'}</div>
+                <div class="node">${ic(isLive ? 'pencil' : KIND_ICON[h.kind] || 'save')}</div>
                 <div style="flex:1;min-width:0"><h2>${esc(h.title)}</h2>${isLive ? '' : `<div class="when">${fullDate(h.time)} · ${esc(h.author)}</div>`}${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}</div>
                 ${isLive ? `<button class="btn primary" data-action="save-now">${t('tl.saveNow')}</button>` : ''}
             </div>
@@ -695,8 +709,8 @@
         const dr = S.app.drive;
         const c = ov.cloud;
         const ghBody = gh.connected
-            ? `<div class="user-row">${gh.user && gh.user.avatar ? `<img src="${esc(gh.user.avatar)}">` : '<span style="font-size:30px">🐙</span>'}<div><div class="nm">${esc(gh.user ? gh.user.name : '')}</div><div class="lg">@${esc(gh.user ? gh.user.login : '')}</div></div></div>
-               <div class="sub">${c.syncing ? `<span class="spinner" style="display:inline-block;vertical-align:-3px"></span> ${t('cloud.sending')}` : c.syncError ? `⏳ ${esc(c.syncError)}` : c.lastSync ? t('cloud.lastPush', { ago: ago(c.lastSync) }) : t('cloud.firstSoon')}
+            ? `<div class="user-row">${gh.user && gh.user.avatar ? `<img src="${esc(gh.user.avatar)}">` : `<span class="avatar-ic">${ic('github')}</span>`}<div><div class="nm">${esc(gh.user ? gh.user.name : '')}</div><div class="lg">@${esc(gh.user ? gh.user.login : '')}</div></div></div>
+               <div class="sub">${c.syncing ? `<span class="spinner" style="display:inline-block;vertical-align:-3px"></span> ${t('cloud.sending')}` : c.syncError ? `${ic('history')} ${esc(c.syncError)}` : c.lastSync ? t('cloud.lastPush', { ago: ago(c.lastSync) }) : t('cloud.firstSoon')}
                ${c.github ? `<br>${t('cloud.privateRepo', { link: `<button class="linkish" data-action="open-url" data-url="${esc(c.github.url || `https://github.com/${c.github.owner}/${c.github.repo}`)}">${esc(c.github.owner)}/${esc(c.github.repo)}</button>` })}` : ''}</div>
                <div class="actions"><button class="btn primary" data-action="sync-now" ${c.syncing ? 'disabled' : ''}>${t('cloud.syncNow')}</button>${dismissed().phoneCard ? `<button class="btn" data-action="phone-qr">${t('qr.button')}</button>` : ''}<button class="btn ghost" data-action="github-logout">${t('cloud.logout')}</button></div>`
             : `<div class="sub">${t('cloud.ghPitch')}</div>
@@ -704,12 +718,12 @@
 
         let drBody;
         if (dr.mode === 'folder') {
-            drBody = `<div class="user-row"><span style="font-size:28px">📁</span><div style="min-width:0"><div class="nm">${t('cloud.driveFolder')}</div><div class="lg" style="word-break:break-all">${esc(dr.folder)}\\DraftRewind</div></div></div>
-                <div class="sub">${c.driveError ? `⏳ ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastCopy', { ago: ago(c.driveAt) }) : t('cloud.copying')}<br>${t('cloud.folderInfo')}</div>
+            drBody = `<div class="user-row"><span class="avatar-ic">${ic('folder')}</span><div style="min-width:0"><div class="nm">${t('cloud.driveFolder')}</div><div class="lg" style="word-break:break-all">${esc(dr.folder)}\\DraftRewind</div></div></div>
+                <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastCopy', { ago: ago(c.driveAt) }) : t('cloud.copying')}<br>${t('cloud.folderInfo')}</div>
                 <div class="actions"><button class="btn primary" data-action="drive-open">${t('cloud.openDriveFolder')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else if (dr.mode === 'account') {
-            drBody = `<div class="user-row">${dr.user && dr.user.picture ? `<img src="${esc(dr.user.picture)}">` : '<span style="font-size:28px">📁</span>'}<div><div class="nm">${esc(dr.user ? dr.user.name : t('cloud.googleAccount'))}</div><div class="lg">${esc(dr.user ? dr.user.email : '')}</div></div></div>
-                <div class="sub">${c.driveError ? `⏳ ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}</div>
+            drBody = `<div class="user-row">${dr.user && dr.user.picture ? `<img src="${esc(dr.user.picture)}">` : `<span class="avatar-ic">${ic('drive')}</span>`}<div><div class="nm">${esc(dr.user ? dr.user.name : t('cloud.googleAccount'))}</div><div class="lg">${esc(dr.user ? dr.user.email : '')}</div></div></div>
+                <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}</div>
                 <div class="actions"><button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else {
             const det = dr.detected.filter(d => d.kind === 'gdrive');
@@ -725,11 +739,11 @@
 
         return `<div class="content">
             <div class="cloud-grid">
-                <div class="card cloud-card"><div class="top"><div class="logo">🐙</div><div><h3>${t('cloud.ghTitle')}</h3><div class="sub">${t('cloud.ghSub')}</div></div><span class="badge chip ${gh.connected ? 'add' : 'mod'}">${gh.connected ? t('cloud.connected') : t('cloud.recommended')}</span></div>${ghBody}</div>
-                <div class="card cloud-card"><div class="top"><div class="logo">📁</div><div><h3>Google Drive</h3><div class="sub">${t('cloud.driveSub')}</div></div><span class="badge chip ${dr.mode ? 'add' : 'mod'}">${dr.mode ? t('cloud.connected') : t('cloud.optional')}</span></div>${drBody}</div>
+                <div class="card cloud-card"><div class="top"><div class="logo">${ic('github')}</div><div><h3>${t('cloud.ghTitle')}</h3><div class="sub">${t('cloud.ghSub')}</div></div><span class="badge chip ${gh.connected ? 'add' : 'mod'}">${gh.connected ? t('cloud.connected') : t('cloud.recommended')}</span></div>${ghBody}</div>
+                <div class="card cloud-card"><div class="top"><div class="logo">${ic('drive')}</div><div><h3>Google Drive</h3><div class="sub">${t('cloud.driveSub')}</div></div><span class="badge chip ${dr.mode ? 'add' : 'mod'}">${dr.mode ? t('cloud.connected') : t('cloud.optional')}</span></div>${drBody}</div>
                 ${dismissed().phoneCard ? '' : `<div class="card phone-card">
                     <button class="dismiss-x on-grad" data-action="dismiss" data-key="phoneCard" title="${esc(t('tips.hide'))}" aria-label="${esc(t('tips.hide'))}">✕</button>
-                    <div class="phone-mock">📱</div>
+                    <div class="phone-mock">${ic('phone')}</div>
                     <div><h3>${t('cloud.phoneTitle')}</h3>
                     <div class="sub">${t('cloud.phoneText')}</div>
                     <div class="steps"><span class="step">${t('cloud.step1')}</span><span class="step">${t('cloud.step2')}</span><span class="step">${t('cloud.step3')}</span></div>
@@ -777,37 +791,37 @@
         if (!id) return;
         S.activeId = id;
         S.tab = 'home';
-        toast(t('toast.folderProtected'), '🎉');
+        toast(t('toast.folderProtected'), 'check');
         confetti();
         refresh();
     }
 
     async function createNew() {
-        const name = await promptModal({ title: t('newProj.title'), sub: t('newProj.sub'), placeholder: t('newProj.placeholder'), ok: t('newProj.ok'), emoji: '✨' });
+        const name = await promptModal({ title: t('newProj.title'), sub: t('newProj.sub'), placeholder: t('newProj.placeholder'), ok: t('newProj.ok'), emoji: 'sparkle' });
         if (!name) return;
         const id = await run(() => av.projects.create(name));
         if (!id) return;
         S.activeId = id;
         S.tab = 'home';
-        toast(t('toast.folderReady'), '🎉');
+        toast(t('toast.folderReady'), 'check');
         refresh();
     }
 
     function addProjectModal() {
-        const m = openModal(`<div style="font-size:40px">🗂️</div><h2>${t('addProj.title')}</h2><p class="sub">${t('addProj.sub')}</p>
+        const m = openModal(`<div class="modal-ic">${ic('files')}</div><h2>${t('addProj.title')}</h2><p class="sub">${t('addProj.sub')}</p>
             <div style="display:grid;gap:10px">
                 <button class="btn big primary" data-x="existing">${t('addProj.existing')}</button>
                 <button class="btn big" data-x="new">${t('addProj.new')}</button>
                 <button class="btn big" data-x="github">${t('addProj.github')}</button>
             </div>
-            <p class="modal-hint">💡 ${t('addProj.hint')}</p>`);
+            <p class="modal-hint">${ic('info')} ${t('addProj.hint')}</p>`);
         m.querySelector('[data-x=existing]').onclick = () => { closeModal(); addExisting(); };
         m.querySelector('[data-x=new]').onclick = () => { closeModal(); createNew(); };
         m.querySelector('[data-x=github]').onclick = () => { closeModal(); importGithubModal(); };
     }
 
     function starModal() {
-        const m = openModal(`<div style="font-size:40px">⭐</div><h2>${t('star.title')}</h2>
+        const m = openModal(`<div class="modal-ic">${ic('star')}</div><h2>${t('star.title')}</h2>
             <p class="sub">${t('star.sub')}</p>
             <input class="input" id="star-title" placeholder="${esc(t('star.placeholder'))}">
             <div class="quick-chips">${t('star.quick').map(q => `<button data-t="${esc(q)}">${esc(q)}</button>`).join('')}</div>
@@ -825,10 +839,10 @@
             }
             const note = m.querySelector('#star-note').value.trim();
             closeModal();
-            const r = await run(() => av.projects.snapshot(S.activeId, { star: true, title: `⭐ ${name}`, note }));
+            const r = await run(() => av.projects.snapshot(S.activeId, { star: true, title: name, note }));
             if (r !== undefined) {
                 confetti();
-                toast(t('star.done', { t: name }), '⭐');
+                toast(t('star.done', { t: name }), 'star');
                 refresh({ history: true });
             }
         };
@@ -837,10 +851,10 @@
     }
 
     function emojiModal() {
-        const m = openModal(`<h2>${t('emoji.title')}</h2><p class="sub">${t('emoji.sub')}</p><div class="emoji-grid">${EMOJIS.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>`);
+        const m = openModal(`<h2>${t('emoji.title')}</h2><p class="sub">${t('emoji.sub')}</p><div class="color-grid">${PROJECT_COLORS.map(c => `<button data-e="${c}" style="--c:${c}" aria-label="${c}"></button>`).join('')}</div>`);
         m.querySelectorAll('[data-e]').forEach(b => (b.onclick = async () => {
             closeModal();
-            await run(() => av.projects.update(S.activeId, { emoji: b.dataset.e }));
+            await run(() => av.projects.update(S.activeId, { color: b.dataset.e }));
             refresh();
         }));
     }
@@ -871,7 +885,7 @@
             return `<div class="setting-row"><div><div class="t">${t('ai.title')}</div><div class="s">${t('ai.pitch', { size: gb(a.model.size + a.engineSize) })}${a.ramOk ? '' : ` ${t('ai.lowRam')}`}</div></div>
                 <button class="btn sm primary" id="ai-install">${t('ai.install')}</button></div>`;
         }
-        return `<div class="setting-row"><div><div class="t">${t('ai.titlesToggle')} <span class="chip add">✨ ${t('ai.ready')}</span></div><div class="s">${t('ai.readyHint', { model: esc(a.model.name) })}</div></div>
+        return `<div class="setting-row"><div><div class="t">${t('ai.titlesToggle')} <span class="chip add">${t('ai.ready')}</span></div><div class="s">${t('ai.readyHint', { model: esc(a.model.name) })}</div></div>
                 <label class="switch"><input type="checkbox" id="ai-titles" ${S.app.prefs.aiTitles !== false ? 'checked' : ''}><span></span></label></div>
             <div class="setting-row"><div><div class="s">${t('ai.titlesHint')}</div></div><button class="btn sm danger" id="ai-remove">${t('ai.remove')}</button></div>`;
     }
@@ -883,7 +897,7 @@
             if (r && r.installed) {
                 S.app.ai = r;
                 confetti();
-                toast(t('ai.installed'), '✨', 5000);
+                toast(t('ai.installed'), 'sparkle', 5000);
                 refreshAiBlock();
             }
         };
@@ -891,7 +905,7 @@
         if (q('#ai-titles')) q('#ai-titles').onchange = async e => { S.app.prefs = await av.setPref('aiTitles', e.target.checked); };
         if (q('#ai-remove')) q('#ai-remove').onclick = async () => {
             closeModal();
-            const ok = await confirmModal({ title: t('ai.removeTitle'), text: t('ai.removeText'), ok: t('ai.remove'), danger: true, emoji: '🧹' });
+            const ok = await confirmModal({ title: t('ai.removeTitle'), text: t('ai.removeText'), ok: t('ai.remove'), danger: true, emoji: 'trash' });
             if (ok) S.app.ai = (await run(() => av.ai.remove())) || S.app.ai;
             settingsModal();
         };
@@ -904,11 +918,11 @@
         bindAiBlock(blk);
     }
 
-    const aiCard = text => `<div class="ai-card"><div class="ai-text">${esc(text)}</div><div class="ai-foot">🔒 ${t('ai.footnote')}</div></div>`;
+    const aiCard = text => `<div class="ai-card"><div class="ai-text">${esc(text)}</div><div class="ai-foot">${ic('lock')} ${t('ai.footnote')}</div></div>`;
     const aiThinking = () => `<div class="ai-card thinking"><span class="spinner"></span> ${t('ai.thinking')}</div>`;
 
     async function aiWeekModal() {
-        const m = openModal(`<div style="font-size:40px">🗓️</div><h2>${t('ai.weekTitle')}</h2><div id="ai-week">${aiThinking()}</div><div class="foot"><button class="btn primary" data-x="ok">${t('common.ok')}</button></div>`);
+        const m = openModal(`<div class="modal-ic">${ic('calendar')}</div><h2>${t('ai.weekTitle')}</h2><div id="ai-week">${aiThinking()}</div><div class="foot"><button class="btn primary" data-x="ok">${t('common.ok')}</button></div>`);
         m.querySelector('[data-x=ok]').onclick = closeModal;
         try {
             const text = await av.ai.weekly(S.activeId);
@@ -916,7 +930,7 @@
             if (box) box.innerHTML = aiCard(text);
         } catch (e) {
             const box = document.getElementById('ai-week');
-            if (box) box.innerHTML = `<p class="sub">😕 ${esc(e.message)}</p>`;
+            if (box) box.innerHTML = `<p class="sub">${ic('error')} ${esc(e.message)}</p>`;
         }
     }
 
@@ -958,14 +972,14 @@
         m.querySelector('#tips-again').onclick = async () => {
             if (!Object.keys(dismissed()).length) return;
             S.app.prefs = (await run(() => av.setPref('dismissed', {}))) || S.app.prefs;
-            toast(t('toast.tipsBack'), '💡');
+            toast(t('toast.tipsBack'), 'info');
             render();
             settingsModal();
         };
-        m.querySelector('#relink').onclick = async () => { closeModal(); if (await run(() => av.projects.relink(S.activeId))) { toast(t('toast.relinked'), '📂'); refresh(); } };
+        m.querySelector('#relink').onclick = async () => { closeModal(); if (await run(() => av.projects.relink(S.activeId))) { toast(t('toast.relinked'), 'folderOpen'); refresh(); } };
         m.querySelector('#remove').onclick = async () => {
             closeModal();
-            const ok = await confirmModal({ title: t('remove.title'), text: t('remove.text'), ok: t('settings.removeBtn'), danger: true, emoji: '🗑️' });
+            const ok = await confirmModal({ title: t('remove.title'), text: t('remove.text'), ok: t('settings.removeBtn'), danger: true, emoji: 'trash' });
             if (!ok) return;
             await run(() => av.projects.remove(S.activeId));
             S.activeId = null;
@@ -979,7 +993,7 @@
         const r = await run(() => av.github.login(), 'GitHub: ');
         if (!r) return;
         const code = r.code.split('');
-        const m = openModal(`<div style="text-align:center"><div style="font-size:40px">🐙</div><h2>${t('gh.title')}</h2>
+        const m = openModal(`<div style="text-align:center"><div class="modal-ic">${ic('github')}</div><h2>${t('gh.title')}</h2>
             <p class="sub">${t('gh.text')}</p>
             <div class="code-boxes">${code.map((ch, i) => (ch === '-' ? '<span class="dash">–</span>' : `<span style="animation-delay:${i * 40}ms">${esc(ch)}</span>`)).join('')}</div>
             <div class="waiting" id="gh-wait"><span class="spinner"></span> ${t('gh.waiting')}</div>
@@ -987,7 +1001,7 @@
             { onClose: () => { if (S.loginModal) av.github.cancel(); S.loginModal = null; } }
         );
         S.loginModal = m;
-        m.querySelector('[data-x=copy]').onclick = () => { navigator.clipboard.writeText(r.code); toast(t('gh.copied'), '📋'); };
+        m.querySelector('[data-x=copy]').onclick = () => { navigator.clipboard.writeText(r.code); toast(t('gh.copied'), 'copy'); };
         m.querySelector('[data-x=open]').onclick = () => av.openExternal(r.url);
         m.querySelector('[data-x=cancel]').onclick = closeModal;
     }
@@ -999,11 +1013,11 @@
         const name = sel.rel.split('/').pop();
         if (mode === 'copy') {
             const r = await run(() => av.projects.restore(S.activeId, sel.rel, h.oid, 'copy'));
-            if (r) toast(t('restore.copied'), '📑');
+            if (r) toast(t('restore.copied'), 'copy');
             return;
         }
         const ok = await confirmModal({
-            emoji: '↩️',
+            emoji: 'undo',
             title: t('restore.title', { name }),
             text: t('restore.text', { date: fullDate(h.time) }),
             ok: t('restore.ok')
@@ -1011,7 +1025,7 @@
         if (!ok) return;
         const r = await run(() => av.projects.restore(S.activeId, sel.rel, h.oid, 'replace'));
         if (r) {
-            toast(t('restore.done', { name }), '✨');
+            toast(t('restore.done', { name }), 'sparkle');
             S.selectedOid = null;
             refresh({ history: true });
         }
@@ -1026,13 +1040,13 @@
         if (!S.activeId) return;
         const r = await run(() => av.files.menu(S.activeId, rel, opts));
         if (!r) return;
-        if (r.action === 'copyFile') toast(r.how === 'file' ? t('fx.fileCopied') : t('fx.pathCopied'), '📋', 5000);
-        else if (r.action === 'copyPath') toast(t('fx.pathCopied'), '📋');
-        else if (r.action === 'copyVersion') toast(r.how === 'file' ? t('fx.versionCopied') : t('fx.pathCopied'), '📋', 5000);
+        if (r.action === 'copyFile') toast(r.how === 'file' ? t('fx.fileCopied') : t('fx.pathCopied'), 'copy', 5000);
+        else if (r.action === 'copyPath') toast(t('fx.pathCopied'), 'copy');
+        else if (r.action === 'copyVersion') toast(r.how === 'file' ? t('fx.versionCopied') : t('fx.pathCopied'), 'copy', 5000);
         else if (r.action === 'history') actions['file-history']({ rel }, null, { stopPropagation() {} });
         else if (r.action === 'openVersion') {
             const ok = await run(() => av.projects.openVersion(S.activeId, rel, opts.oid));
-            if (ok) toast(t('old.openedToast'), '🔒', 6000);
+            if (ok) toast(t('old.openedToast'), 'lock', 6000);
         }
     }
 
@@ -1088,7 +1102,7 @@
             el.id = 'drop-overlay';
             document.body.appendChild(el);
         }
-        el.innerHTML = `<div class="drop-card"><div class="drop-emoji">${esc(projectEmoji(p))}</div><h2>${esc(t('fx.dropTitle', { name: p.name }))}</h2><p>${t('fx.dropSub')}</p></div>`;
+        el.innerHTML = `<div class="drop-card"><div class="drop-emoji">${projectTile(p)}</div><h2>${esc(t('fx.dropTitle', { name: p.name }))}</h2><p>${t('fx.dropSub')}</p></div>`;
         requestAnimationFrame(() => el.classList.add('on'));
     }
     window.addEventListener('dragenter', e => {
@@ -1127,18 +1141,18 @@
 
     function addedToast(r) {
         if (r.added.length) {
-            toast(tn('fx.added', r.added.length), '📥', 4500);
+            toast(tn('fx.added', r.added.length), 'inbox', 4500);
             refresh();
         }
-        if (r.skipped.length) toast(tn('fx.skipped', r.skipped.length), 'ℹ️', 4500);
+        if (r.skipped.length) toast(tn('fx.skipped', r.skipped.length), 'info', 4500);
     }
 
     // ------------------------------------------------------------------ GitHub'dan proje aç
     let importModal = null;
     function importGithubModal(prefill = '') {
-        const m = openModal(`<div style="font-size:40px">🐙</div><h2>${t('imp.title')}</h2><p class="sub">${t('imp.sub')}</p>
+        const m = openModal(`<div class="modal-ic">${ic('github')}</div><h2>${t('imp.title')}</h2><p class="sub">${t('imp.sub')}</p>
             <input class="input" id="imp-url" value="${esc(prefill)}" placeholder="${esc(t('imp.placeholder'))}" spellcheck="false">
-            ${S.app.github.connected ? '' : `<p class="modal-hint">🔒 ${t('imp.privateHint')}</p>`}
+            ${S.app.github.connected ? '' : `<p class="modal-hint">${ic('lock')} ${t('imp.privateHint')}</p>`}
             <div class="foot"><button class="btn ghost" data-x="no">${t('common.cancel')}</button><button class="btn primary" data-x="yes">${t('imp.ok')}</button></div>`);
         const input = m.querySelector('#imp-url');
         m.querySelector('[data-x=no]').onclick = closeModal;
@@ -1149,7 +1163,7 @@
                 return;
             }
             const name = url.replace(/\.git$/i, '').replace(/[/?#]+$/, '').split('/').pop() || 'GitHub';
-            importModal = openModal(`<div style="text-align:center"><div style="font-size:40px" class="imp-bob">🐙</div><h2>${esc(t('imp.progressTitle', { name }))}</h2>
+            importModal = openModal(`<div style="text-align:center"><div class="modal-ic imp-bob">${ic('github')}</div><h2>${esc(t('imp.progressTitle', { name }))}</h2>
                 <p class="sub" id="imp-phase">${t('imp.phaseStart')}</p>
                 <div class="progress"><div class="bar indet" id="imp-bar"></div></div></div>`);
             const r = await run(() => av.projects.importGithub(url));
@@ -1163,7 +1177,7 @@
             S.activeId = r.id;
             S.tab = 'home';
             S.overview = null;
-            toast(t('imp.done', { name: r.name }), '🎉', 5000);
+            toast(t('imp.done', { name: r.name }), 'check', 5000);
             confetti();
             refresh();
         };
@@ -1191,11 +1205,11 @@
     let qrTimer = null;
     function phoneQrModal() {
         if (!S.app.github.connected) {
-            toast(t('qr.needGithub'), '🐙');
+            toast(t('qr.needGithub'), 'github');
             return;
         }
         clearInterval(qrTimer);
-        const m = openModal(`<div style="text-align:center"><div style="font-size:36px">📱</div><h2>${t('qr.title')}</h2>
+        const m = openModal(`<div style="text-align:center"><div class="modal-ic">${ic('phone')}</div><h2>${t('qr.title')}</h2>
             <p class="sub">${t('qr.text')}</p>
             <div class="qr-box" id="qr-box"><div class="skeleton" style="width:260px;height:260px"></div></div>
             <div class="qr-timer" id="qr-timer">&nbsp;</div>
@@ -1274,7 +1288,7 @@
         'diff-full': () => { S.diffFull = true; renderViewer(); },
         'open-version': async () => {
             const ok = await run(() => av.projects.openVersion(S.activeId, S.selectedFile, S.selectedOid));
-            if (ok) toast(t('old.openedToast'), '🔒', 6000);
+            if (ok) toast(t('old.openedToast'), 'lock', 6000);
         },
         'ai-week': aiWeekModal,
         'ai-summarize': async () => {
@@ -1290,7 +1304,7 @@
             } catch (e) {
                 const now = document.getElementById('ai-answer');
                 if (now) now.innerHTML = '';
-                toast(e.message, '😕', 5000);
+                toast(e.message, 'error', 5000);
             }
         },
         'save-now': async () => {
@@ -1309,7 +1323,7 @@
         relink: async () => { if (await run(() => av.projects.relink(S.activeId))) refresh(); },
         'github-login': githubLogin,
         'github-logout': async () => {
-            const ok = await confirmModal({ title: t('ghLogout.title'), text: t('ghLogout.text'), ok: t('cloud.logout'), danger: true, emoji: '👋' });
+            const ok = await confirmModal({ title: t('ghLogout.title'), text: t('ghLogout.text'), ok: t('cloud.logout'), danger: true, emoji: 'logout' });
             if (!ok) return;
             await run(() => av.github.logout());
             refresh();
@@ -1319,28 +1333,28 @@
             render();
             const r = await run(() => av.github.syncNow(S.activeId));
             S.syncing[S.activeId] = false;
-            if (r && !r.syncError) toast(t('toast.synced'), '☁️');
+            if (r && !r.syncError) toast(t('toast.synced'), 'cloud');
             refresh();
         },
         'drive-folder': async d => {
             const r = await run(() => av.drive.useFolder(d.path || null));
             if (r) {
-                toast(t('toast.driveConnected'), '🎉');
+                toast(t('toast.driveConnected'), 'check');
                 confetti();
             }
             refresh();
         },
         'drive-signin': async () => {
-            toast(t('toast.googleOpening'), '🔐');
+            toast(t('toast.googleOpening'), 'key');
             const r = await run(() => av.drive.signIn(), 'Google: ');
             if (r) {
-                toast(t('toast.googleConnected'), '📁');
+                toast(t('toast.googleConnected'), 'drive');
                 confetti();
             }
             refresh();
         },
         'drive-disconnect': async () => {
-            const ok = await confirmModal({ title: t('driveLogout.title'), text: t('driveLogout.text'), ok: t('cloud.disconnect'), danger: true, emoji: '📁' });
+            const ok = await confirmModal({ title: t('driveLogout.title'), text: t('driveLogout.text'), ok: t('cloud.disconnect'), danger: true, emoji: 'drive' });
             if (!ok) return;
             await run(() => av.drive.disconnect());
             refresh();
@@ -1375,13 +1389,13 @@
         if (e.key === 'Escape') closeModal();
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && S.activeId) {
             e.preventDefault();
-            av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), '💾'));
+            av.projects.snapshot(S.activeId, {}).then(() => toast(t('toast.saved'), 'save'));
         }
         // F5: yenile · Ctrl+1/2/3: sekmeler
         if (e.key === 'F5') {
             e.preventDefault();
             refresh({ history: S.tab === 'timeline' });
-            toast(t('kbd.refresh'), '🔄', 1400);
+            toast(t('kbd.refresh'), 'refresh', 1400);
         }
         const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['1', '2', '3'].includes(e.key) && S.activeId && !inField && !$('#modal-root .modal-back')) {
@@ -1434,11 +1448,11 @@
                     S.loginModal = null;
                     closeModal();
                     confetti();
-                    toast(t('toast.welcome', { name: ev.user.name }), '🐙', 5000);
+                    toast(t('toast.welcome', { name: ev.user.name }), 'github', 5000);
                     refresh();
                 } else if (ev.state === 'error' && S.loginModal) {
                     const w = S.loginModal.querySelector('#gh-wait');
-                    if (w) w.innerHTML = `😕 ${esc(ev.message)}`;
+                    if (w) w.innerHTML = `${ic('error')} ${esc(ev.message)}`;
                 }
                 break;
         }

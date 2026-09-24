@@ -134,46 +134,155 @@ function baseInstructions(role, l) {
     (l === 'tr'
       ? 'Write natural Turkish and address the student informally with the "sen" form (second person singular verbs), never "siz". '
       : 'Address the student directly as "you". ') +
-    `Always answer in ${LANG_NAME[l]}, even if the input is in another language. Do not use Markdown headings or bold text.`
+    `Always answer in ${LANG_NAME[l]}, even if the input is in another language. Do not use Markdown headings or bold text. Never use emojis.`
   );
 }
 
+// ==================================================================
+// Strateji: cihaz üstü model küçük ve zayıf. Uzun metni ASLA ham haliyle vermeyiz.
+//  1) Olguları kodla çıkar (hangi bölüm, kaç paragraf/kelime, ilk cümleler) → en fazla ~900 karakter.
+//  2) Mümkünse modeli hiç çalıştırma: küçük değişiklik, yeni dosya ve kod dosyası şablonla anlatılır.
+//  3) Model sadece olgu kartını 1-2 doğal cümleye çevirir; çıktı denetlenir, şüpheliyse şablon gösterilir.
+// ==================================================================
+
+const wc = (s) => (String(s).match(/[\p{L}\p{N}]+/gu) || []).length;
+const cut = (s, n) => {
+  const x = String(s || '').replace(/\s+/g, ' ').trim();
+  return x.length > n ? x.slice(0, n - 1).trim() + '…' : x;
+};
+const quote = (s, n = 90) => `“${cut(s, n)}”`;
+// Bir paragrafın ilk cümlesi (uzun paragrafları özetlemek için modelden önce kodla kısaltırız)
+const firstSentence = (s, n = 140) => {
+  const x = String(s || '').replace(/\s+/g, ' ').trim();
+  const m = x.match(/^.{12,}?[.!?…](?=\s|$)/);
+  return cut(m ? m[0] : x, n);
+};
+const CODE_RE = /\.(py|js|ts|jsx|tsx|java|c|cc|cpp|h|cs|r|m|go|rb|php|swift|kt|sql|sh|ps1|json|ya?ml|xml|html|css|ipynb|tex|bib)$/i;
+export const isCodeName = (name) => CODE_RE.test(String(name || ''));
+
+// "1. Giriş", "2.3 Veri Seti", "BÖLÜM 2", kısa ve noktasız satırlar
+export function looksHeading(s) {
+  const x = String(s || '').trim();
+  if (!x || x.length > 90 || /[.:;,]$/.test(x)) return false;
+  const words = x.split(/\s+/).length;
+  if (words > 12) return false;
+  if (/^(\d+(\.\d+)*\.?|[IVX]+\.|BÖLÜM|Bölüm|EK|Ek|CHAPTER|Chapter)\s+\S/.test(x)) return true;
+  return words <= 6 && x === x.toLocaleUpperCase('tr-TR') && /\p{L}/u.test(x);
+}
+
+// Uydurma kontrolü: çıktıda kaynaktaki anlamlı bir kelime kökü (5 harf) geçmeli; genel kelimeler sayılmaz
+const GENERIC = ['bolum', 'ekle', 'eklen', 'cikar', 'silin', 'paragr', 'dosya', 'guncel', 'duzel', 'degis', 'yeni', 'metin', 'belge', 'yapil', 'icin', 'olara', 'kelim', 'cumle', 'ifade', 'ogrenc', 'chapt', 'secti', 'added', 'remov', 'delet', 'updat', 'chang', 'parag', 'file', 'docum', 'text', 'with', 'from', 'into', 'about', 'words', 'sente', 'stude', 'this', 'that', 'bunla', 'olan', 'ayrica', 'sonra'];
+const norm = (s) => String(s).toLocaleLowerCase('tr-TR').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/ı/g, 'i');
+export function grounded(out, source) {
+  const src = norm(source);
+  const stems = norm(out)
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length >= 4)
+    .map((w) => w.slice(0, 5))
+    .filter((s) => !GENERIC.some((g) => s.startsWith(g) || g.startsWith(s)));
+  return stems.some((s) => src.includes(s));
+}
+
+// Emoji ayıklayıcı: model ne yazarsa yazsın arayüzde emoji görünmesin.
+// Unicode özellik kaçışı desteklenmiyorsa (eski motor) başlıca emoji aralıklarına düşer.
+const EMOJI_RE = (() => {
+  try {
+    return new RegExp('[\\p{Extended_Pictographic}\\u{1F1E6}-\\u{1F1FF}\\u{1F3FB}-\\u{1F3FF}\\uFE0F\\uFE0E\\u200D\\u20E3]', 'gu');
+  } catch (e) {
+    return /[\u2600-\u27BF\u2B00-\u2BFF\uFE0F\uFE0E\u200D\u20E3]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDC00-\uDFFF]/g;
+  }
+})();
+export function stripEmoji(text) {
+  return String(text || '')
+    .replace(EMOJI_RE, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/ +([.,!?;:])/g, '$1')
+    .replace(/^[ \t]+|[ \t]+$/gm, '');
+}
+
+// Modelin cevabını temizle ve denetle; geçmezse null (→ şablon)
+function vet(out, source, max = 320) {
+  let x = stripEmoji(out).replace(/\*\*/g, '').replace(/^["“”']+|["“”']+$/g, '').replace(/\s+\n/g, '\n').trim();
+  if (x.length < 8 || x.length > max) return null;
+  // İşaret/etiket kopyası ya da istemin kendisi → at
+  if (/\[-|\{\+|^[+~-]\s|ADDED|REMOVED|REWORDED|Paragraphs added|FACTS|OLGU/m.test(x)) return null;
+  if (source && !grounded(x, source)) return null;
+  return x;
+}
+
 // ------------------------------------------------------------------ 1) belge özeti
+// Tüm metin değil, kodla çıkarılan ana hat gönderilir: başlıklar + her bölümün ilk cümlesi
+// (başlık yoksa belgeye eşit aralıklı paragrafların ilk cümleleri). Belge 300 sayfa da olsa girdi küçük kalır.
+export function outline(text, budget = 1600) {
+  const paras = String(text || '')
+    .split(/\n+/)
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter((x) => x.length > 1);
+  const items = [];
+  const heads = [];
+  for (let i = 0; i < paras.length; i++) {
+    if (looksHeading(paras[i])) {
+      const next = paras.slice(i + 1).find((p) => !looksHeading(p) && wc(p) >= 5);
+      heads.push(paras[i]);
+      items.push(next ? `${cut(paras[i], 70)}: ${firstSentence(next, 150)}` : cut(paras[i], 70));
+    }
+  }
+  if (items.length < 2) {
+    // Başlık yok: 10 eşit aralıklı paragrafın ilk cümlesi
+    const body = paras.filter((p) => wc(p) >= 6);
+    const step = Math.max(1, Math.floor(body.length / 10));
+    items.length = 0;
+    for (let i = 0; i < body.length && items.length < 10; i += step) items.push(firstSentence(body[i], 150));
+  }
+  // Sığmıyorsa baştan kesmek yerine belgenin tamamına eşit dağıt (tezin son bölümleri de görünsün)
+  const avg = items.reduce((a, x) => a + x.length + 3, 0) / Math.max(1, items.length);
+  const fit = Math.max(1, Math.floor(budget / avg));
+  let pick = items;
+  if (items.length > fit) {
+    pick = [];
+    for (let k = 0; k < fit; k++) pick.push(items[Math.round((k * (items.length - 1)) / Math.max(1, fit - 1))]);
+    pick = [...new Set(pick)];
+  }
+  let out = '';
+  for (const it of pick) {
+    if (out.length + it.length + 3 > budget) break;
+    out += `• ${it}\n`;
+  }
+  return { text: out.trim(), heads, words: wc(text) };
+}
+
 // Dönen: { summary: string, points: string[] }
 export async function summarizeDocument(id, name, text) {
-  const clean = String(text || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  const clean = String(text || '').trim();
   if (clean.length < 40) {
     const e = new Error('no text');
     e.code = 'ERR_AI_NO_TEXT';
     throw e;
   }
+  const o = outline(clean);
+  const fallback = () => ({
+    summary: t('ai.tpl.docFallback', { words: o.words.toLocaleString(), name }),
+    points: (o.heads.length ? o.heads : o.text.split('\n').map((x) => x.replace(/^•\s*/, ''))).slice(0, 3).map((x) => cut(x, 90)),
+  });
+  if (!o.text || isCodeName(name)) return fallback();
   const l = await answerLanguage();
-  const instructions = baseInstructions('You summarize documents.', l);
-  const { body, excerpt } = sampleText(clean, AI.MAX_PROMPT_CHARS - 600);
+  const instructions = baseInstructions('You summarize documents from an outline.', l);
   const prompt =
-    `Summarize the document "${name}" below.` +
-    (excerpt ? ' The document is long, so you only see excerpts from its beginning, middle and end (separated by "[…]").' : '') +
-    `\n` +
-    `Write exactly this format:\n` +
-    `First a summary of 3 to 5 sentences as one paragraph.\n` +
-    `Then an empty line, then exactly 3 key points, each on its own line starting with "- ".\n` +
-    `Answer in ${LANG_NAME[l]}.\n\n` +
-    `DOCUMENT:\n${body}`;
-  const out = await run(cacheKey('doc', id, clean), instructions, prompt);
-  return parseSummary(out);
-}
-
-// Uzun belgelerde yalnızca başı değil; baştan (%55), ortadan (%25) ve sondan (%20) parçalar gönderilir.
-export function sampleText(text, budget) {
-  if (text.length <= budget) return { body: text, excerpt: false };
-  const head = Math.floor(budget * 0.55);
-  const mid = Math.floor(budget * 0.25);
-  const tail = budget - head - mid;
-  const m0 = Math.floor(text.length / 2 - mid / 2);
-  return {
-    body: `${text.slice(0, head).trimEnd()}\n[…]\n${text.slice(m0, m0 + mid).trim()}\n[…]\n${text.slice(text.length - tail).trimStart()}`,
-    excerpt: true,
-  };
+    `Below is an outline of the document "${name}" (about ${o.words} words): its section headings and the first sentence of each part.\n` +
+    `Using ONLY this outline, write a summary of 2 to 3 sentences as one paragraph, then an empty line, ` +
+    `then exactly 3 key points, each on its own line starting with "- ". Answer in ${LANG_NAME[l]}.\n\n` +
+    `OUTLINE:\n${o.text}`;
+  try {
+    const out = await run(cacheKey('doc', id, o.text), instructions, prompt);
+    const parsed = parseSummary(out);
+    const summary = vet(parsed.summary, o.text, 600);
+    if (!summary) return fallback();
+    const points = parsed.points.map((p) => vet(p, o.text, 200)).filter(Boolean);
+    return { summary, points: points.length ? points : fallback().points };
+  } catch (e) {
+    if (e && e.code === 'ERR_AI_CONTEXT_WINDOW') return fallback();
+    throw e;
+  }
 }
 
 export function parseSummary(out) {
@@ -186,15 +295,13 @@ export function parseSummary(out) {
   for (const line of lines) {
     const m = line.match(/^(?:[-•*–]|\d+[.)])\s+(.*)$/);
     if (m) points.push(m[1].replace(/\*\*/g, '').trim());
-    else if (/^#+\s|:$/.test(line) && line.length < 40) continue; // "Özet:" / "Key points:" gibi başlıklar
     else para.push(line.replace(/\*\*/g, '').replace(/^(summary|özet)\s*:\s*/i, ''));
   }
   return { summary: para.join(' ').trim(), points: points.slice(0, 5) };
 }
 
 // ------------------------------------------------------------------ 2) neler değişti?
-// changes: "+ eklenen paragraf" / "- silinen paragraf" / "~ [-eski-]{+yeni+}" satırları
-// Diff satırlarını işaretsiz, düz metne ayırır: eklenen / çıkarılan / değişen (eski → yeni)
+// Diff metni: "+ eklenen paragraf" / "- silinen paragraf" / "~ [-eski-]{+yeni+}" satırları → düz listeler
 export function parseChanges(text) {
   const added = [], removed = [], edited = [];
   for (const raw of String(text || '').split('\n')) {
@@ -211,50 +318,86 @@ export function parseChanges(text) {
   return { added, removed, edited };
 }
 
-const wc = (s) => (String(s).match(/[\p{L}\p{N}]+/gu) || []).length;
-const quote = (s, n = 90) => `“${s.length > n ? s.slice(0, n - 1).trim() + '…' : s}”`;
+// Değişikliğin olgu kartı: model bunu görür, ham metni değil
+export function changeFacts(p) {
+  const addWords = p.added.reduce((a, s) => a + wc(s), 0) + p.edited.reduce((a, e) => a + wc(e.new), 0);
+  const remWords = p.removed.reduce((a, s) => a + wc(s), 0) + p.edited.reduce((a, e) => a + wc(e.old), 0);
+  const newHeads = p.added.filter(looksHeading).slice(0, 4).map((h) => cut(h, 60));
+  const goneHeads = p.removed.filter(looksHeading).slice(0, 3).map((h) => cut(h, 60));
+  const addedSamples = p.added.filter((s) => !looksHeading(s) && wc(s) >= 4).slice(0, 3).map((s) => firstSentence(s));
+  const removedSamples = p.removed.filter((s) => !looksHeading(s) && wc(s) >= 4).slice(0, 2).map((s) => firstSentence(s));
+  const edits = p.edited.filter((e) => e.old || e.new).slice(0, 2).map((e) => ({ old: cut(e.old, 70), new: cut(e.new, 70) }));
+  return { addWords, remWords, newHeads, goneHeads, addedSamples, removedSamples, edits, nAdded: p.added.length, nRemoved: p.removed.length, nEdited: p.edited.length };
+}
 
-// Küçük değişiklikleri yapay zekâsız, şablonla ve hatasız anlatır (≤ 20 kelime)
-function templateSummary(p) {
-  const words = [...p.added, ...p.removed, ...p.edited.map((e) => `${e.old} ${e.new}`)].reduce((a, s) => a + wc(s), 0);
-  if (words > 20) return null;
+function factsText(f) {
+  const lines = [`Paragraphs added: ${f.nAdded} (~${f.addWords} words). Removed: ${f.nRemoved} (~${f.remWords} words). Reworded: ${f.nEdited}.`];
+  if (f.newHeads.length) lines.push(`New section headings: ${f.newHeads.join(' | ')}`);
+  if (f.goneHeads.length) lines.push(`Removed section headings: ${f.goneHeads.join(' | ')}`);
+  if (f.addedSamples.length) lines.push(`Added text begins:\n${f.addedSamples.map((s) => `• ${s}`).join('\n')}`);
+  if (f.removedSamples.length) lines.push(`Removed text begins:\n${f.removedSamples.map((s) => `• ${s}`).join('\n')}`);
+  if (f.edits.length) lines.push(`Reworded:\n${f.edits.map((e) => `• "${e.old}" → "${e.new}"`).join('\n')}`);
+  return lines.join('\n');
+}
+
+// Şablon: her zaman doğru. Küçük değişikliklerde ayrıntılı, büyüklerde sayısal.
+function templateChange(p, f) {
+  const small = f.addWords + f.remWords <= 20;
   const parts = [];
-  if (p.added.length === 1) parts.push(t('ai.tpl.addedOne', { text: quote(p.added[0]) }));
-  else if (p.added.length > 1) parts.push(t('ai.tpl.addedMany', { n: p.added.length }));
-  if (p.removed.length === 1) parts.push(t('ai.tpl.removedOne', { text: quote(p.removed[0]) }));
-  else if (p.removed.length > 1) parts.push(t('ai.tpl.removedMany', { n: p.removed.length }));
-  for (const e of p.edited.slice(0, 2)) {
-    if (e.old && e.new) parts.push(t('ai.tpl.replaced', { old: quote(e.old, 50), new: quote(e.new, 50) }));
-    else if (e.new) parts.push(t('ai.tpl.addedOne', { text: quote(e.new) }));
-    else if (e.old) parts.push(t('ai.tpl.removedOne', { text: quote(e.old) }));
+  if (small) {
+    if (p.added.length === 1) parts.push(t('ai.tpl.addedOne', { text: quote(p.added[0]) }));
+    else if (p.added.length > 1) parts.push(t('ai.tpl.addedMany', { n: p.added.length }));
+    if (p.removed.length === 1) parts.push(t('ai.tpl.removedOne', { text: quote(p.removed[0]) }));
+    else if (p.removed.length > 1) parts.push(t('ai.tpl.removedMany', { n: p.removed.length }));
+    for (const e of p.edited.slice(0, 2)) {
+      if (e.old && e.new) parts.push(t('ai.tpl.replaced', { old: quote(e.old, 50), new: quote(e.new, 50) }));
+      else if (e.new) parts.push(t('ai.tpl.addedOne', { text: quote(e.new) }));
+      else if (e.old) parts.push(t('ai.tpl.removedOne', { text: quote(e.old) }));
+    }
+    return parts.join(' ') || null;
   }
-  return parts.length ? parts.join(' ') : null;
+  if (f.newHeads.length) parts.push(t('ai.tpl.newSections', { list: f.newHeads.map((h) => quote(h, 40)).join(', ') }));
+  if (f.nAdded) parts.push(t('ai.tpl.addedMany', { n: f.nAdded }));
+  if (f.nRemoved) parts.push(t('ai.tpl.removedMany', { n: f.nRemoved }));
+  if (f.nEdited) parts.push(t('ai.tpl.editedMany', { n: f.nEdited }));
+  parts.push(t('ai.tpl.wordsDelta', { add: f.addWords, rem: f.remWords }));
+  return parts.join(' ');
 }
 
 export async function summarizeChanges(id, name, diff) {
   const text = String((diff && diff.text) || '').trim();
   if (!text) return t('ai.noChanges');
   const p = parseChanges(text);
-  const simple = templateSummary(p);
-  if (simple) return simple;
+  const f = changeFacts(p);
+  const lines = p.added.length + p.removed.length;
+  // Yeni dosya: içerik modelle "özetlenmez"; sadece boyut ve (belgeyse) başlangıcı söylenir
+  if (diff.first) {
+    const first = p.added.find((s) => wc(s) >= 3);
+    const base = t('ai.tpl.newFile', { name, words: f.addWords.toLocaleString() });
+    if (isCodeName(name)) return `${base} ${t('ai.tpl.codeLines', { n: lines })}`;
+    const heads = p.added.filter(looksHeading).slice(0, 3);
+    if (heads.length) return `${base} ${t('ai.tpl.sections', { list: heads.map((h) => quote(h, 40)).join(', ') })}`;
+    return first ? `${base} ${t('ai.tpl.startsWith', { text: quote(firstSentence(first, 90), 90) })}` : base;
+  }
+  // Kod dosyası: sadece sayılar
+  if (isCodeName(name)) return t('ai.tpl.codeChanged', { add: p.added.length, rem: p.removed.length, ed: p.edited.length });
+  const template = templateChange(p, f);
+  // Küçük değişiklik ya da örnek cümle yok → model gerekmez
+  if (f.addWords + f.remWords <= 20 || (!f.addedSamples.length && !f.removedSamples.length && !f.edits.length)) return template;
   const l = await answerLanguage();
-  const instructions = baseInstructions('You explain what changed between two versions of a document.', l);
-  // Modele işaret (+, -, ~) değil düz metin verilir; küçük model işaretleri içerik sanabiliyor
-  const sections = [];
-  if (p.added.length) sections.push(`ADDED TEXT:\n${p.added.map((s) => `• ${s}`).join('\n')}`);
-  if (p.removed.length) sections.push(`REMOVED TEXT:\n${p.removed.map((s) => `• ${s}`).join('\n')}`);
-  if (p.edited.length) sections.push(`REWORDED:\n${p.edited.map((e) => `• "${e.old}" became "${e.new}"`).join('\n')}`);
-  const body = sections.join('\n\n');
-  // Not: istemde örnek cümle YOK — küçük modeller örneği içerik yerine aynen kopyalıyor.
-  const task = diff.first
-    ? `This file "${name}" was just added. In 1 or 2 short sentences, say what the file contains or is for, ` +
-      `based only on the text below.`
-    : `The student saved a new version of "${name}". In 1 or 2 short sentences, say what they added, removed or ` +
-      `reworded, naming the actual topic of the text below.`;
+  const facts = factsText(f);
+  const instructions = baseInstructions('You turn a fact sheet about a document edit into one or two plain sentences.', l);
   const prompt =
-    `${task} Use only information from the text below; if it is code, say what the code does. ` +
-    `No introduction, no evaluation. Answer in ${LANG_NAME[l]}.\n\n${AI.truncate(body, AI.MAX_PROMPT_CHARS - 700)}`;
-  return run(cacheKey('diff', id, text), instructions, prompt);
+    `The student saved a new version of "${name}". Below are FACTS about the change (computed by the app).\n` +
+    `In 1 or 2 short sentences, tell the student what changed and what the added or removed text is about. ` +
+    `Use ONLY these facts; do not repeat the labels. Answer in ${LANG_NAME[l]}.\n\n${facts}`;
+  try {
+    const out = await run(cacheKey('diff', id, facts), instructions, prompt);
+    return vet(out, facts) || template;
+  } catch (e) {
+    if (e && (e.code === 'ERR_AI_CONTEXT_WINDOW' || e.code === 'ERR_AI_GUARDRAIL')) return template;
+    throw e;
+  }
 }
 
 // ------------------------------------------------------------------ 3) haftam
@@ -264,29 +407,34 @@ export async function weekRecap(id, history, week, streak) {
   const recent = history.filter((h) => h.time >= since && h.kind !== 'merge' && h.kind !== 'mobile');
   const titles = [];
   for (const h of recent) {
-    const title = String(h.title || '').trim().slice(0, 90);
+    const title = cut(h.title, 80);
     if (title && !titles.includes(title)) titles.push(title);
-    if (titles.length >= 20) break;
+    if (titles.length >= 8) break;
   }
   const perFile = {};
   for (const h of recent) for (const [p, d] of Object.entries(h.delta || {})) perFile[p] = (perFile[p] || 0) + d;
   const files = Object.entries(perFile)
     .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-    .slice(0, 5)
+    .slice(0, 3)
     .map(([p, d]) => `${p.split('/').pop()}: ${d > 0 ? '+' : ''}${d} words`);
   const total = week.reduce((a, d) => a + d.words, 0);
   const activeDays = week.filter((d) => d.words > 0).length;
+  const template = t('ai.tpl.week', { words: total.toLocaleString(), days: activeDays, streak });
+  if (!recent.length) return template;
   const data =
-    `Words written per day (oldest to today): ${week.map((d) => `${d.label} ${d.words}`).join(', ')}\n` +
     `Total words this week: ${total}. Active writing days: ${activeDays}/7. Current streak: ${streak} days.\n` +
     (files.length ? `Most changed files: ${files.join('; ')}\n` : '') +
-    (titles.length ? `Save titles:\n${titles.map((x) => `- ${x}`).join('\n')}` : 'No saves this week.');
+    `Save titles:\n${titles.map((x) => `- ${x}`).join('\n')}`;
   const l = await answerLanguage();
-  const instructions = baseInstructions('You are an encouraging writing coach.', l);
+  const instructions = baseInstructions('You are a concise writing coach.', l);
   const prompt =
-    `Here is the student's writing activity for the last 7 days.\n${data}\n\n` +
-    `Write a recap in at most 3 short sentences: first what they concretely worked on (from the save titles and files), ` +
-    `then the numbers (words, active days, streak), then one short, kind nudge for the coming days. ` +
-    `If there was little activity, be gentle, never guilt-tripping. At most one emoji. Answer in ${LANG_NAME[l]}.`;
-  return run(cacheKey('week', id, data), instructions, AI.truncate(prompt, AI.MAX_PROMPT_CHARS));
+    `FACTS about the student's last 7 days:\n${data}\n\n` +
+    `In at most 3 short sentences: what they worked on (from the titles/files), the numbers, then one short, kind nudge. ` +
+    `Use ONLY these facts. If there was little activity, be gentle. Do not use emojis. Answer in ${LANG_NAME[l]}.`;
+  try {
+    const out = await run(cacheKey('week', id, data), instructions, prompt);
+    return vet(out, null, 420) || template;
+  } catch (e) {
+    return template;
+  }
 }

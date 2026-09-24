@@ -12,6 +12,7 @@ const docs = require('./core/docs');
 const github = require('./core/github');
 const drive = require('./core/drive');
 const { LocalAI, cleanTitle, grounded, hasContent } = require('./core/ai');
+const facts = require('./core/facts');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
 
@@ -349,10 +350,10 @@ async function syncDrive(rt, kind = 'auto') {
         const names = [...new Set(result.downloaded.map(r => path.basename(r)))];
         clearTimeout(rt.timer);
         await doSnapshot(rt, { kind: 'merge', title: T('main.driveMerged', { names: names.slice(0, 3).join(', '), more: names.length > 3 ? T('common.andMore', { n: names.length - 3 }) : '' }) });
-        emit('toast', { icon: '☁️', text: T('main.driveDownloaded', { n: names.length }) });
+        emit('toast', { icon: 'cloud', text: T('main.driveDownloaded', { n: names.length }) });
     }
     if (result && result.conflicts.length) {
-        emit('toast', { icon: '🤝', text: T('main.driveConflicts', { n: result.conflicts.length }) });
+        emit('toast', { icon: 'merge', text: T('main.driveConflicts', { n: result.conflicts.length }) });
     }
 }
 
@@ -395,14 +396,14 @@ async function runSync(rt) {
         record.syncError = null;
         saveProjectRecord(record);
         if (r.pulled) {
-            emit('toast', { icon: '📥', text: T('main.pulled', { n: r.pulled }) });
+            emit('toast', { icon: 'inbox', text: T('main.pulled', { n: r.pulled }) });
             notify('DraftRewind', T('main.pulled', { n: r.pulled }));
             emit('snapshot', { projectId: rt.project.id });
             // Telefondan / başka bilgisayardan gelen dosyalar Drive kopyasına da gitsin
             syncDrive(rt).catch(() => {});
         }
         if (r.conflicts.length) {
-            emit('toast', { icon: '🤝', text: T('main.ghConflicts', { n: r.conflicts.length }) });
+            emit('toast', { icon: 'merge', text: T('main.ghConflicts', { n: r.conflicts.length }) });
         }
     } catch (e) {
         record = recordOf(rt.project.id);
@@ -443,7 +444,7 @@ async function runGuardian() {
     }
     if (rescued.length) {
         const names = [...new Set(rescued.map(r => r.docName))].join(', ');
-        emit('toast', { icon: '⚡', text: T('main.rescued', { names }) });
+        emit('toast', { icon: 'bolt', text: T('main.rescued', { names }) });
         notify(T('notif.rescuedTitle'), T('notif.rescuedBody', { names }));
     }
 }
@@ -585,7 +586,7 @@ function appState() {
     return {
         projects: projects().map(p => {
             const rt = runtimes.get(p.id);
-            return { id: p.id, name: p.name, dir: p.dir, emoji: p.emoji || null, missing: !!(rt && rt.missing) };
+            return { id: p.id, name: p.name, dir: p.dir, emoji: p.emoji || null, color: p.color || null, missing: !!(rt && rt.missing) };
         }),
         activeId: store.get('activeId') || (projects()[0] && projects()[0].id) || null,
         github: githubToken() ? { connected: true, user: store.get('githubUser') } : { connected: false },
@@ -676,6 +677,7 @@ function registerIpc() {
         if (!r) throw new Error(T('err.projectNotFound'));
         if (typeof patch.name === 'string' && patch.name.trim()) r.name = patch.name.trim();
         if (typeof patch.emoji === 'string') r.emoji = patch.emoji;
+        if (typeof patch.color === 'string' && /^#[0-9a-f]{6}$/i.test(patch.color)) r.color = patch.color;
         saveProjectRecord(r);
         const rt = runtimes.get(id);
         if (rt) rt.project.name = r.name;
@@ -1138,16 +1140,16 @@ function registerUxIpc() {
 // ---------------------------------------------------------------------------
 const AI_PROMPTS = {
     title: {
-        tr: 'Sen bir tez ve ödev yazma asistanısın. Öğrencinin belgesindeki değişikliği anlatan KISA bir kayıt başlığı yaz. Kurallar: Türkçe, en fazla 10 kelime; sadece değişiklik metninde gerçekten yazanı anlat, bilgi uydurma; hangi bölüme ne eklendiğini/çıkarıldığını söyle; girdiyi aynen kopyalama; tırnak ve açıklama ekleme.',
-        en: 'You are a thesis and homework writing assistant. Write a SHORT save-point title describing the change in the student\'s document. Rules: English, at most 10 words; describe only what is actually in the change text, never invent anything; say which section got what added or removed; do not copy the input verbatim; no quotes, no explanation.'
+        tr: 'Sen bir tez ve ödev yazma asistanısın. Öğrencinin belgesindeki değişikliği anlatan KISA bir kayıt başlığı yaz. Kurallar: Türkçe, en fazla 10 kelime; sadece değişiklik metninde gerçekten yazanı anlat, bilgi uydurma; hangi bölüme ne eklendiğini/çıkarıldığını söyle; girdiyi aynen kopyalama; tırnak, emoji ve açıklama ekleme.',
+        en: 'You are a thesis and homework writing assistant. Write a SHORT save-point title describing the change in the student\'s document. Rules: English, at most 10 words; describe only what is actually in the change text, never invent anything; say which section got what added or removed; do not copy the input verbatim; no quotes, no emojis, no explanation.'
     },
     change: {
-        tr: 'Öğrencinin belgesindeki değişikliği EN FAZLA 2 kısa, sade Türkçe cümleyle anlat: ne eklendi, ne çıkarıldı. Sadece değişiklik metninde yazanı kullan, bilgi uydurma. Madde işareti ve başlık kullanma.',
-        en: 'Explain the change in the student\'s document in AT MOST 2 short, plain English sentences: what was added, what was removed. Use only what is in the change text, never invent anything. No bullet points or headings.'
+        tr: 'Öğrencinin belgesindeki değişikliği EN FAZLA 2 kısa, sade Türkçe cümleyle anlat: ne eklendi, ne çıkarıldı. Sadece değişiklik metninde yazanı kullan, bilgi uydurma. Madde işareti, başlık ve emoji kullanma.',
+        en: 'Explain the change in the student\'s document in AT MOST 2 short, plain English sentences: what was added, what was removed. Use only what is in the change text, never invent anything. No bullet points, headings or emojis.'
     },
     week: {
-        tr: 'Öğrencinin son 7 günde tezinde/ödevinde yaptıklarını EN FAZLA 3 kısa cümlelik samimi ve motive edici bir Türkçe özetle anlat. İkinci tekil şahıs kullan ("bu hafta ... ekledin"). Sadece listede yazanı kullan, bilgi uydurma.',
-        en: 'Summarize what the student did on their thesis/homework in the last 7 days in AT MOST 3 short, warm, motivating English sentences. Use second person ("this week you added ..."). Use only what is in the list, never invent facts.'
+        tr: 'Öğrencinin son 7 günde tezinde/ödevinde yaptıklarını EN FAZLA 3 kısa cümlelik samimi ve motive edici bir Türkçe özetle anlat. İkinci tekil şahıs kullan ("bu hafta ... ekledin"). Sadece listede yazanı kullan, bilgi uydurma. Emoji kullanma.',
+        en: 'Summarize what the student did on their thesis/homework in the last 7 days in AT MOST 3 short, warm, motivating English sentences. Use second person ("this week you added ..."). Use only what is in the list, never invent facts. No emojis.'
     }
 };
 
@@ -1184,48 +1186,83 @@ function registerAiIpc() {
         await ai.remove();
         return ai.status();
     });
-    // Zaman makinesi: bir kayıttaki değişikliği sade dille özetle
+    // Zaman makinesi: bir kayıttaki değişikliği sade dille özetle.
+    // Model ham diff'i görmez: tüm diff kodla olgu kartına çevrilir (facts.js). Küçük değişiklik,
+    // yeni/silinen dosya ve kod dosyası için model hiç çalışmaz; cevabı şüpheliyse şablon gösterilir.
     handle('ai:summarizeChange', async (id, rel, oid) => {
         const p = rtOf(id).project;
         const parent = oid === 'working' ? await p.head() : await p.parentOf(oid);
         const d = await p.diff(rel, parent, oid);
         if (!d.supported) throw new Error(T('ai.errUnsupportedFile'));
-        let text = `File: ${rel}\n`;
+        const name = path.basename(rel);
+        if (!d.existsAfter) return T('ai.tpl.deletedFile', { name });
+        const added = [];
+        const removed = [];
+        const edited = [];
+        const sections = [];
+        let heading = null;
         for (const b of d.blocks) {
-            if (b.type === 'add') text += `+ ${b.text}\n`;
-            else if (b.type === 'del') text += `- ${b.text}\n`;
+            const txt = b.text || '';
+            if ((b.type === 'same' || b.type === 'add') && facts.looksHeading(txt)) heading = txt;
+            if (b.type === 'add') added.push(txt);
+            else if (b.type === 'del') removed.push(txt);
             else if (b.type === 'mod') {
-                const removed = b.parts.filter(x => x.r).map(x => x.t).join(' ').trim();
-                const added = b.parts.filter(x => x.a).map(x => x.t).join(' ').trim();
-                if (removed) text += `- ${removed}\n`;
-                if (added) text += `+ ${added}\n`;
-            }
-            if (text.length > 2400) break;
+                edited.push({
+                    old: b.parts.filter(x => x.r).map(x => x.t).join(' ').trim(),
+                    new: b.parts.filter(x => x.a).map(x => x.t).join(' ').trim()
+                });
+            } else continue;
+            if (heading) sections.push(heading);
         }
+        if (!added.length && !removed.length && !edited.length) return T('ai.tpl.noText');
+        const f = facts.changeFacts({ added, removed, edited, sections });
+        if (!d.existedBefore) {
+            const words = f.addWords.toLocaleString(I18N.locale());
+            return `${T('ai.tpl.newFile', { name })} (${words} ${I18N.getLanguage() === 'tr' ? 'kelime' : 'words'})` +
+                (f.newHeads.length ? ' ' + T('ai.tpl.newSections', { list: f.newHeads.map(h => `“${h}”`).join(', ') }) : '');
+        }
+        if (facts.isCode(rel)) return T('ai.tpl.codeChanged', { add: added.length + edited.length, rem: removed.length + edited.length });
+        const template = facts.templateChange(f, T, { added, removed, edited });
+        if (f.small || (!f.addedSamples.length && !f.removedSamples.length && !f.edits.length)) return template;
+        const card = facts.factsText(f, name);
         const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
         try {
-            return await ai.complete({ system: AI_PROMPTS.change[lang], user: text.slice(0, 2400), maxTokens: 90, temperature: 0.2 });
+            const out = await ai.complete({ system: AI_PROMPTS.change[lang], user: card, maxTokens: 90, temperature: 0.2 });
+            return facts.vet(out, card) || template;
         } catch (e) {
-            throw new Error(aiError(e));
+            if (e && e.code === 'ENOTINSTALLED') throw new Error(aiError(e));
+            return template;
         }
     });
-    // Özet: son 7 günün kısa, motive edici özeti
+    // Özet: son 7 günün kısa özeti. Modele en fazla 8 başlık + birkaç sayı gider.
     handle('ai:weekly', async id => {
         const list = (await fullHistory(rtOf(id))).filter(h => Date.now() - h.time < 7 * 24 * 3600 * 1000 && h.kind !== 'merge');
         if (!list.length) throw new Error(T('ai.errNoWeek'));
-        const lines = list
-            .slice(0, 40)
-            .reverse()
-            .map(h => {
-                const w = Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
-                return `${new Date(h.time).toISOString().slice(0, 10)}: ${h.title}${w ? ` (${w > 0 ? '+' : ''}${w})` : ''}`;
-            })
-            .join('\n');
+        const perFile = {};
+        for (const h of list) for (const [p, w] of Object.entries(h.delta || {})) perFile[p] = (perFile[p] || 0) + w;
+        const words = Object.values(perFile).reduce((a, b) => a + b, 0);
+        const top = Object.entries(perFile).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+        const days = new Set(list.map(h => new Date(h.time).toDateString())).size;
+        const template = top
+            ? T('ai.tpl.week', { n: list.length, words: words.toLocaleString(I18N.locale()), file: path.basename(top[0]) })
+            : T('ai.tpl.weekNoFile', { n: list.length, words: words.toLocaleString(I18N.locale()) });
+        const titles = [];
+        for (const h of list) {
+            const t = facts.cut(h.title, 80);
+            if (t && !titles.includes(t)) titles.push(t);
+            if (titles.length >= 8) break;
+        }
+        const card =
+            `Saves: ${list.length}. Active days: ${days}/7. Net words: ${words > 0 ? '+' : ''}${words}.\n` +
+            (top ? `Most changed file: ${path.basename(top[0])}\n` : '') +
+            titles.map(t => `- ${t}`).join('\n');
         const lang = I18N.getLanguage() === 'tr' ? 'tr' : 'en';
         try {
-            return await ai.complete({ system: AI_PROMPTS.week[lang], user: lines.slice(0, 2400), maxTokens: 120, temperature: 0.3 });
+            const out = await ai.complete({ system: AI_PROMPTS.week[lang], user: card, maxTokens: 120, temperature: 0.3 });
+            return facts.vet(out, null, 420) || template;
         } catch (e) {
-            throw new Error(aiError(e));
+            if (e && e.code === 'ENOTINSTALLED') throw new Error(aiError(e));
+            return template;
         }
     });
 }

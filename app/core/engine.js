@@ -427,7 +427,7 @@ class Project {
                 }
             } catch (e) {}
             let finalTitle = title || (summary && summary.title) || this.autoTitle(kind, realChanged, deleted, delta);
-            if (!title && kind === 'rescue') finalTitle = `⚡ ${T('snap.rescued', { names: realChanged.map(r => path.basename(r)).join(', ') })}`;
+            if (!title && kind === 'rescue') finalTitle = `${T('snap.rescued', { names: realChanged.map(r => path.basename(r)).join(', ') })}`;
             const body = [note, summary && summary.body].filter(Boolean).join('\n\n');
             const meta = { v: 1, kind, total, words, delta, changed: realChanged, deleted };
             if (summary && summary.ai) meta.ai = true;
