@@ -1,6 +1,7 @@
 // GitHub erişimi: masaüstü DraftRewind uygulamasının yedeklediği depoları okur.
 import * as SecureStore from 'expo-secure-store';
 import { File, Paths } from 'expo-file-system';
+import * as Legacy from 'expo-file-system/legacy';
 import { t } from './i18n';
 
 // Masaüstü uygulamasıyla aynı OAuth uygulaması (device flow açık olmalı).
@@ -242,6 +243,49 @@ async function send(token, method, path, body) {
   return res.json();
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Büyük blob gövdesi (onlarca MB base64 JSON) fetch ile bellekten gönderilince iOS bağlantıyı
+// düşürebiliyor ("The network connection was lost"). Gövde önce diske yazılır, oradan arka plan
+// oturumuyla akıtılarak yüklenir (uygulama arka plana geçse de sürer) ve ağ hatasında yeniden denenir.
+async function postBlob(token, path, base64) {
+  const tmp = new File(Paths.cache, `blob-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  tmp.write(`{"encoding":"base64","content":"${base64}"}`);
+  try {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const r = await Legacy.uploadAsync(API + path, tmp.uri, {
+          httpMethod: 'POST',
+          headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+          uploadType: Legacy.FileSystemUploadType.BINARY_CONTENT,
+          sessionType: Legacy.FileSystemSessionType.BACKGROUND,
+        });
+        if (r.status >= 200 && r.status < 300) return JSON.parse(r.body || '{}');
+        // Sunucu yanıtı var: GitHub'ın kendi mesajıyla hataya çevir (yeniden denemek anlamsız)
+        const pseudo = {
+          status: r.status,
+          json: async () => JSON.parse(r.body || '{}'),
+          headers: { get: (k) => (r.headers ? r.headers[k] || r.headers[k.toLowerCase()] || null : null) },
+        };
+        throw await failure(pseudo);
+      } catch (e) {
+        lastErr = e;
+        if (e.auth || e.status) throw e; // sunucu reddetti: tekrar denenmez
+        if (attempt < 2) await sleep(2000 * (attempt + 1)); // ağ koptu: biraz bekle, yeniden dene
+      }
+    }
+    // Üç denemede de ağ koptu: teknik iz yerine anlaşılır mesaj
+    const e = new Error(t('err.uploadNetwork'));
+    e.cause = lastErr;
+    throw e;
+  } finally {
+    try {
+      if (tmp.exists) tmp.delete();
+    } catch (e) {}
+  }
+}
+
 // Telefondan dosya ekleme. "contents" API'si büyük dosyaları (ör. video) 403 ile reddediyor;
 // bu yüzden Git veri API'si kullanılır: her dosya ayrı bir blob (100 MB'a kadar), hepsi TEK kayıtta.
 // files: [{ path, read: async () => base64 }] — içerik sırayla okunur, bellekte hep tek dosya durur.
@@ -254,7 +298,7 @@ export async function addFiles(token, p, files, makeMessage, onProgress) {
     if (onProgress) onProgress(i);
     try {
       const content = await files[i].read();
-      const blob = await send(token, 'POST', `${base}/git/blobs`, { content, encoding: 'base64' });
+      const blob = await postBlob(token, `${base}/git/blobs`, content);
       blobs.push({ path: files[i].path, mode: '100644', type: 'blob', sha: blob.sha });
     } catch (e) {
       if (e.auth) throw e;
