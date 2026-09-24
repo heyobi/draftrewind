@@ -1,0 +1,104 @@
+# Mobil arayüz testi: GitHub'ın Mac sunucusunda iOS simülatörü açılır, uygulama kurulur, (varsa) test
+# GitHub hesabıyla QR bağlantısı üzerinden giriş yapılır, Maestro akışları ekranları gezer ve her
+# ekranın görüntüsünü alır. Görüntüler "mobile-screenshots" artifact'ı olarak indirilir.
+# Gerekli secret'lar (isteğe bağlı; yoksa yalnızca giriş ekranı test edilir):
+#   MOBILE_TEST_TOKEN  — repo yetkili bir GitHub kişisel erişim jetonu (test hesabı önerilir)
+#   MOBILE_TEST_LOGIN  — o hesabın kullanıcı adı
+name: Mobile UI test
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'mobile-expo/**'
+      - '.github/workflows/mobile-ui-test.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: mobile-expo
+
+jobs:
+  ui:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      HAS_TEST_TOKEN: ${{ secrets.MOBILE_TEST_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: mobile-expo/package-lock.json
+      - run: npm ci
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Pick and boot a simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | node -e "
+            const d = JSON.parse(require('fs').readFileSync(0, 'utf8')).devices;
+            const all = Object.entries(d).filter(([k]) => /iOS/.test(k)).flatMap(([, v]) => v);
+            const pick = all.filter(x => /^iPhone \d+( Pro)?$/.test(x.name) && x.isAvailable).sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))[0] || all[0];
+            console.log(pick.udid); console.error('simulator:', pick.name);")
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build for the simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace ios/DraftRewind.xcworkspace \
+            -scheme DraftRewind \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -n 120
+          APP=$(find build/Build/Products -name "DraftRewind.app" -maxdepth 2 | head -1)
+          echo "app=$APP"
+          xcrun simctl install "${{ steps.sim.outputs.udid }}" "$APP"
+
+      - name: Sign in through a pairing link (if a test account is configured)
+        if: env.HAS_TEST_TOKEN == 'true'
+        env:
+          MOBILE_TEST_TOKEN: ${{ secrets.MOBILE_TEST_TOKEN }}
+          MOBILE_TEST_LOGIN: ${{ secrets.MOBILE_TEST_LOGIN }}
+        run: |
+          LINK=$(node -e "
+            const d = Buffer.from(JSON.stringify({ t: process.env.MOBILE_TEST_TOKEN, l: process.env.MOBILE_TEST_LOGIN || 'test', e: Date.now() + 3 * 60 * 1000 })).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            console.log('draftrewind://pair?v=1&d=' + d);")
+          xcrun simctl launch "${{ steps.sim.outputs.udid }}" com.draftrewind.app
+          sleep 8
+          xcrun simctl openurl "${{ steps.sim.outputs.udid }}" "$LINK"
+          sleep 10
+
+      - name: Install Maestro
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run UI flows and take screenshots
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: 120000
+        run: |
+          mkdir -p e2e/out
+          cd e2e/out
+          FLOW=smoke.yaml
+          if [ "$HAS_TEST_TOKEN" = "true" ]; then FLOW=signed-in.yaml; fi
+          maestro --device "${{ steps.sim.outputs.udid }}" test "../$FLOW" --format junit --output ../report.xml || echo "::warning::Maestro flow reported failures (see screenshots)"
+          ls -la
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-screenshots
+          path: |
+            mobile-expo/e2e/out/*.png
+            mobile-expo/e2e/report.xml
+          retention-days: 14

@@ -1,0 +1,42 @@
+# Test hesabıyla giriş yapılmış uygulama: ana ekran → proje → kayıt → ayarlar
+appId: com.draftrewind.app
+---
+- launchApp
+- extendedWaitUntil:
+    visible:
+      id: "project-row"
+    timeout: 45000
+- takeScreenshot: 10-home
+- tapOn:
+    id: "project-row"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "add-button"
+    timeout: 30000
+- takeScreenshot: 20-project
+- runFlow:
+    when:
+      visible:
+        id: "snapshot-row"
+    commands:
+      - tapOn:
+          id: "snapshot-row"
+          index: 0
+      - extendedWaitUntil:
+          visible:
+            id: "snapshot-sheet"
+          timeout: 20000
+      - takeScreenshot: 30-snapshot
+      - back
+- tapOn:
+    id: "add-button"
+- takeScreenshot: 40-add-menu
+- back
+- tapOn:
+    id: "settings-button"
+- extendedWaitUntil:
+    visible:
+      id: "settings-sheet"
+    timeout: 20000
+- takeScreenshot: 50-settings

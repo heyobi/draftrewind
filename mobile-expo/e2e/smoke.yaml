@@ -1,0 +1,8 @@
+# Giriş yapılmamış uygulama: açılış ve giriş ekranı
+appId: com.draftrewind.app
+---
+- launchApp
+- extendedWaitUntil:
+    visible: "DraftRewind"
+    timeout: 30000
+- takeScreenshot: 01-login
