@@ -30,6 +30,20 @@ npm run dist       # Windows installer in dist/
 
 Mobile app: `mobile-expo/` (Expo SDK 57). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Releasing (maintainers)
+
+Nothing is uploaded by hand. A version tag makes GitHub build everything and attach it to one Release:
+
+```
+npm version patch                                  # bumps package.json + mobile app, commits, tags vX.Y.Z
+git push origin public-main:main --follow-tags     # the Release workflow starts
+```
+
+The workflow runs the tests, checks that the tag matches `package.json`, builds the Windows installer (with the
+`latest.yml` feed the in-app updater reads) and the unsigned iOS IPA, and publishes them on the Release. Edit the
+release notes on GitHub afterwards; the desktop app shows them in its update dialog. Store editions (Microsoft Store,
+App Store) are submitted separately from the same tag.
+
 ## License
 
 Code: **GNU GPL v3.0 or later** — see [LICENSE](LICENSE).

@@ -1,0 +1,112 @@
+# Sürüm yayını: bir "vX.Y.Z" etiketi gönderilince her şey GitHub'da derlenir ve tek Release'e eklenir:
+#   - Windows kurulum dosyası (NSIS) + latest.yml (uygulama içi güncelleme bunu okur)
+#   - iOS IPA (imzasız; yan yükleme / test için — App Store'a EAS ile ayrıca gönderilir)
+# Kullanım (bilgisayarda):  npm version patch   →   git push origin public-main:main --follow-tags
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Tests and version check
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - name: Tag must match package.json version
+        id: v
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=$TAG package.json=$PKG"
+          if [ "$TAG" != "$PKG" ]; then echo "::error::Tag v$TAG does not match package.json version $PKG (run: npm version $TAG)"; exit 1; fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm test
+
+  windows:
+    name: Windows installer + auto-update feed
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+      - name: Write OAuth client files from secrets
+        shell: bash
+        env:
+          GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_OAUTH_JSON }}
+          GITHUB_OAUTH_JSON: ${{ secrets.GITHUB_OAUTH_JSON }}
+        run: |
+          if [ -n "$GOOGLE_OAUTH_JSON" ]; then printf '%s' "$GOOGLE_OAUTH_JSON" > app/core/google-oauth.json; else echo "::warning::GOOGLE_OAUTH_JSON secret is empty — Google Drive sign-in will be unavailable in this build"; fi
+          if [ -n "$GITHUB_OAUTH_JSON" ]; then printf '%s' "$GITHUB_OAUTH_JSON" > app/core/github-oauth.json; else echo "::warning::GITHUB_OAUTH_JSON secret is empty"; fi
+      - name: Build NSIS installer and publish to the GitHub Release
+        run: npx electron-builder --win nsis --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  ios:
+    name: iOS IPA (unsigned, for sideloading)
+    needs: [check, windows]
+    # Expo SDK 57 needs Xcode 26.4+; the macos-26 image defaults to a new enough Xcode.
+    runs-on: macos-26
+    defaults:
+      run:
+        working-directory: mobile-expo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: mobile-expo/package-lock.json
+      - run: npm ci
+      - name: Stamp app version from the tag
+        run: |
+          node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            j.expo.version = '${{ needs.check.outputs.version }}';
+            j.expo.ios = j.expo.ios || {};
+            j.expo.ios.buildNumber = String(${{ github.run_number }});
+            fs.writeFileSync('app.json', JSON.stringify(j, null, 2) + '\n');
+            console.log('version', j.expo.version, 'build', j.expo.ios.buildNumber);
+          "
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --clean
+      - name: Build archive (iphoneos, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace ios/DraftRewind.xcworkspace \
+            -scheme DraftRewind \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/DraftRewind.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" | tail -n 200
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/DraftRewind.xcarchive/Products/Applications/DraftRewind.app Payload/
+          test -f Payload/DraftRewind.app/main.jsbundle
+          zip -qr "DraftRewind-${{ needs.check.outputs.version }}-sideload.ipa" Payload
+          ls -lh *.ipa
+      - name: Attach IPA to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "DraftRewind-${{ needs.check.outputs.version }}-sideload.ipa" --clobber
