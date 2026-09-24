@@ -33,6 +33,15 @@ jobs:
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
       - run: npm ci
       - run: npm test
+      # Release önceden oluşturulur: electron-builder iki dosyayı aynı anda yüklerken ikisi de
+      # "release yok" deyip iki ayrı Release açabiliyor; hazır Release varsa yalnızca yükler.
+      - name: Create the GitHub Release (if missing)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then echo "release exists"; else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "${{ steps.v.outputs.version }}" --notes "DraftRewind ${{ steps.v.outputs.version }}"
+          fi
 
   windows:
     name: Windows installer + auto-update feed
