@@ -425,6 +425,22 @@ class Project {
         return rows.map(r => ({ ...r, kind: docs.kindOf(r.rel), delta: (meta.delta || {})[r.rel] ?? null }));
     }
 
+    // Kaydedilmiş ama henüz kayıt noktasına dönüşmemiş değişiklikler (VS Code'daki "Changes" gibi)
+    async workingChanges() {
+        const st = await this.status();
+        const { added, modified, deleted } = st.changes;
+        return [
+            ...added.map(rel => ({ rel, change: 'added' })),
+            ...modified.map(rel => ({ rel, change: 'modified' })),
+            ...deleted.map(rel => ({ rel, change: 'deleted' }))
+        ].map(r => ({ ...r, kind: docs.kindOf(r.rel), delta: null }));
+    }
+
+    async commitTime(oid) {
+        const { commit } = await git.readCommit({ fs, gitdir: this.gitdir, oid });
+        return commit.committer.timestamp * 1000;
+    }
+
     async readAt(oid, rel) {
         if (oid === 'working') return fs.readFileSync(path.join(this.dir, ...rel.split('/')));
         const files = await this.treeFiles(oid);

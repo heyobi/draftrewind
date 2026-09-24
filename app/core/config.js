@@ -20,7 +20,7 @@ module.exports = {
     GOOGLE_CLIENT_SECRET: process.env.DRAFTREWIND_GOOGLE_CLIENT_SECRET || googleFile.client_secret || '',
 
     // Otomatik kayıt: son dosya değişikliğinden bu kadar sonra kayıt noktası alınır.
-    SNAPSHOT_DEBOUNCE_MS: 12 * 1000,
+    SNAPSHOT_DEBOUNCE_MS: 6 * 1000,
     // İki otomatik kayıt noktası arasında en az bu kadar süre. Kaydedilmiş dosya zaten diskte;
     // bu sınır, sık Ctrl+S yapıldığında geçmişin (ve GitHub deposunun) şişmesini önler.
     // Önemli an, kurtarma, uyku ve kapanma kayıtları beklemez.

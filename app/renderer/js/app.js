@@ -250,14 +250,40 @@
     }
 
     let refreshTimer = null;
+    let pendingRefresh = null;
     function refresh({ history = S.tab === 'timeline' } = {}) {
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(async () => {
             await loadApp();
             await loadOverview();
             if (history) await loadHistory();
+            // "Şu anki değişiklikler" seçiliyken kayıt noktası alındıysa: yeni kaydı göster; açıksa listeyi tazele
+            if (S.selectedOid === 'working') {
+                if (!S.overview || !S.overview.pendingCount) {
+                    S.selectedOid = null;
+                    if (S.history[0]) await selectSnapshot(S.history[0].oid, false);
+                } else {
+                    await selectSnapshot('working', false);
+                }
+            }
             render();
         }, 150);
+    }
+
+    // Eski sürüm düzenlendiyse: emek kaybolmasın, projeye kopya olarak eklemeyi öner
+    function oldVersionModal(ev) {
+        const m = openModal(`<div style="font-size:40px">📝</div><h2>${t('old.editedTitle')}</h2>
+            <p class="sub">${esc(t('old.editedBody', { name: ev.name }))}</p>
+            <div class="foot"><button class="btn ghost" data-x="no">${t('old.dismiss')}</button><button class="btn primary" data-x="yes">${t('old.import')}</button></div>`);
+        m.querySelector('[data-x=no]').onclick = closeModal;
+        m.querySelector('[data-x=yes]').onclick = async () => {
+            closeModal();
+            const r = await run(() => av.projects.importEdited(ev.projectId, ev.file, ev.rel));
+            if (r) {
+                toast(t('old.imported', { name: r.name }), '📥', 5000);
+                refresh();
+            }
+        };
     }
 
     // ------------------------------------------------------------------ çizim
@@ -454,7 +480,8 @@
     // ------------------------------------------------------------------ Zaman makinesi
     function renderTimeline(ov) {
         const docsFirst = [...ov.files].sort((a, b) => (a.kind === 'word' ? -1 : 0) - (b.kind === 'word' ? -1 : 0) || a.rel.localeCompare(b.rel, locale()));
-        let lastDay = '';
+        // Anlık değişiklik satırı varsa "Bugün" başlığı onun üstünde; tekrar etmesin
+        let lastDay = ov.pendingCount ? dayLabel(Date.now()) : '';
         const items = S.history
             .map(h => {
                 const day = dayLabel(h.time);
@@ -468,28 +495,40 @@
                 </div>`;
             })
             .join('');
+        // Kayıt noktası alınmamış, dosyada kaydedilmiş değişiklikler (VS Code'daki "Changes" gibi anında görünür)
+        const live = ov.pendingCount
+            ? `<div class="tl-day">${t('time.today')}</div><div class="tl-item live ${S.selectedOid === 'working' ? 'active' : ''}" data-action="select-snapshot" data-oid="working">
+                <div class="node">✏️</div>
+                <div class="tmain"><div class="ttitle">${t('tl.liveTitle')}</div>
+                <div class="tmeta">${t('tl.liveSub')}<span class="chip pending">${num(ov.pendingCount)}</span></div></div>
+            </div>`
+            : '';
         return `<div class="content split">
             <div class="tl-side">
                 <div class="tl-filter"><select class="select" id="tl-filter">
                     <option value="">${t('tl.allFiles')}</option>
                     ${docsFirst.map(f => `<option value="${esc(f.rel)}" ${f.rel === S.tlFilter ? 'selected' : ''}>${esc(f.rel)}</option>`).join('')}
                 </select></div>
-                <div class="tl-list">${items || `<div class="placeholder" style="height:300px"><div><div class="e">🌱</div><p>${t('tl.empty')}</p></div></div>`}</div>
+                <div class="tl-list">${live}${items || live ? items : `<div class="placeholder" style="height:300px"><div><div class="e">🌱</div><p>${t('tl.empty')}</p></div></div>`}</div>
             </div>
             <div class="tl-detail" id="tl-detail">${renderDetail()}</div>
         </div>`;
     }
 
     function renderDetail() {
-        const h = S.history.find(x => x.oid === S.selectedOid);
+        const isLive = S.selectedOid === 'working';
+        const h = isLive
+            ? { oid: 'working', kind: 'live', title: t('tl.liveTitle'), note: t('tl.liveHint'), time: Date.now(), author: '' }
+            : S.history.find(x => x.oid === S.selectedOid);
         if (!h) {
             return `<div class="placeholder"><div><div class="e">🕰️</div><h3>${t('tl.placeholderTitle')}</h3><p>${t('tl.placeholderText')}</p></div></div>`;
         }
         const sel = S.changes.find(c => c.rel === S.selectedFile);
         return `
             <div class="detail-head">
-                <div class="node">${KIND_ICON[h.kind] || '💾'}</div>
-                <div style="flex:1;min-width:0"><h2>${esc(h.title)}</h2><div class="when">${fullDate(h.time)} · ${esc(h.author)}</div>${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}</div>
+                <div class="node">${isLive ? '✏️' : KIND_ICON[h.kind] || '💾'}</div>
+                <div style="flex:1;min-width:0"><h2>${esc(h.title)}</h2>${isLive ? '' : `<div class="when">${fullDate(h.time)} · ${esc(h.author)}</div>`}${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}</div>
+                ${isLive ? `<button class="btn primary" data-action="save-now">${t('tl.saveNow')}</button>` : ''}
             </div>
             <div class="changed-files">${S.changes
                 .map(
@@ -504,7 +543,7 @@
                 sel
                     ? `<div class="viewer-bar">
                     <div class="seg"><button class="${S.viewMode === 'diff' ? 'active' : ''}" data-action="view-mode" data-mode="diff">${t('tl.viewDiff')}</button><button class="${S.viewMode === 'preview' ? 'active' : ''}" data-action="view-mode" data-mode="preview">${t('tl.viewDoc')}</button></div>
-                    <div class="viewer-actions">
+                    <div class="viewer-actions" ${isLive ? 'hidden' : ''}>
                         ${sel.change !== 'deleted' ? `<button class="btn sm" data-action="open-version">${t('tl.openVersion')}</button><button class="btn sm" data-action="save-copy">${t('tl.saveCopy')}</button>` : ''}
                         <button class="btn sm primary" data-action="restore">${sel.change === 'deleted' ? t('tl.bringBack') : t('tl.restore')}</button>
                     </div>
@@ -912,7 +951,17 @@
         'select-file': d => { S.selectedFile = d.rel; S.diffFull = false; render(); },
         'view-mode': d => { S.viewMode = d.mode; render(); },
         'diff-full': () => { S.diffFull = true; renderViewer(); },
-        'open-version': () => run(() => av.projects.openVersion(S.activeId, S.selectedFile, S.selectedOid)),
+        'open-version': async () => {
+            const ok = await run(() => av.projects.openVersion(S.activeId, S.selectedFile, S.selectedOid));
+            if (ok) toast(t('old.openedToast'), '🔒', 6000);
+        },
+        'save-now': async () => {
+            const r = await run(() => av.projects.snapshot(S.activeId, {}));
+            if (r !== undefined) {
+                S.selectedOid = null;
+                refresh({ history: true });
+            }
+        },
         'save-copy': () => restoreSelected('copy'),
         restore: () => restoreSelected('replace'),
         star: starModal,
@@ -982,7 +1031,15 @@
         switch (ev.type) {
             case 'pending':
                 S.pending[ev.projectId] = true;
-                if (ev.projectId === S.activeId) updatePill();
+                if (ev.projectId === S.activeId) {
+                    updatePill();
+                    // Kaydedilen değişiklik hemen görünsün (kayıt noktası birazdan alınacak)
+                    clearTimeout(pendingRefresh);
+                    pendingRefresh = setTimeout(() => refresh({ history: S.tab === 'timeline' }), 900);
+                }
+                break;
+            case 'oldVersionEdited':
+                oldVersionModal(ev);
                 break;
             case 'snapshot':
                 S.pending[ev.projectId] = false;

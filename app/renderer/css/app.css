@@ -626,3 +626,8 @@ input[type=range] { accent-color: var(--accent); width: 160px; }
 
 /* Zaman makinesi eylem düğmeleri: dar pencerede bütün olarak alt satıra geçer */
 .viewer-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: nowrap; }
+
+/* Zaman makinesi: kayıt noktası alınmamış anlık değişiklikler */
+.tl-item.live .node { background: var(--orange-soft); border-color: color-mix(in srgb, var(--orange) 40%, transparent); }
+.tl-item.live .ttitle { color: var(--orange); }
+.tl-item.live::before { display: none; }

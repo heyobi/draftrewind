@@ -127,6 +127,49 @@ async function freshGithubToken() {
     return next.token;
 }
 
+// ---------------------------------------------------------------------------
+// Eski sürümler: geçici klasörde salt okunur açılır. Kullanıcı yine de düzenleyip kaydederse
+// (üstüne ya da "Farklı kaydet" ile aynı klasöre) fark edilir ve projeye eklemesi önerilir.
+// ---------------------------------------------------------------------------
+const openedVersions = new Map(); // dosya yolu (küçük harf) → { projectId, rel, mtimeMs, size }
+let oldVersionWatcher = null;
+const oldVersionTimers = new Map();
+
+function oldVersionsDir() {
+    return path.join(os.tmpdir(), 'DraftRewind Sürümler');
+}
+
+function watchOldVersions() {
+    if (oldVersionWatcher) return;
+    try {
+        oldVersionWatcher = fs.watch(oldVersionsDir(), (ev, name) => {
+            if (!name || /^(~\$|~wrl)|\.tmp$/i.test(name)) return;
+            clearTimeout(oldVersionTimers.get(name));
+            oldVersionTimers.set(name, setTimeout(() => checkOldVersion(name), 1500));
+        });
+    } catch (e) {}
+}
+
+function checkOldVersion(name) {
+    const file = path.join(oldVersionsDir(), name);
+    let st;
+    try {
+        st = fs.statSync(file);
+    } catch (e) {
+        return;
+    }
+    const key = file.toLowerCase();
+    const known = openedVersions.get(key);
+    if (known && known.mtimeMs === st.mtimeMs && known.size === st.size) return;
+    // Bilinmeyen yeni dosya = "Farklı kaydet" ile kaydedilmiş: en son açılan sürüme bağla
+    const ref = known || [...openedVersions.values()].pop();
+    if (!ref) return;
+    openedVersions.set(key, { ...ref, mtimeMs: st.mtimeMs, size: st.size });
+    emit('oldVersionEdited', { projectId: ref.projectId, file, name, rel: ref.rel });
+    showWindow();
+    notify(T('old.editedTitle'), T('old.editedBody', { name }));
+}
+
 function dayKey(t) {
     const d = new Date(t);
     return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
@@ -604,11 +647,12 @@ function registerIpc() {
         return list.filter(h => !h.changed || h.changed.includes(opts.file) || h.deleted.includes(opts.file)).slice(0, opts.limit || 400);
     });
 
-    handle('project:changes', (id, oid) => rtOf(id).project.commitChanges(oid));
+    handle('project:changes', (id, oid) => (oid === 'working' ? rtOf(id).project.workingChanges() : rtOf(id).project.commitChanges(oid)));
 
     handle('project:diff', async (id, rel, oid) => {
         const p = rtOf(id).project;
-        const parent = await p.parentOf(oid);
+        // 'working': son kayıt noktasından bu yana dosyada kaydedilmiş değişiklikler
+        const parent = oid === 'working' ? await p.head() : await p.parentOf(oid);
         return p.diff(rel, parent, oid);
     });
 
@@ -638,16 +682,43 @@ function registerIpc() {
         const rt = rtOf(id);
         const buf = await rt.project.readAt(oid, rel);
         if (!buf) throw new Error(T('err.noFileInVersion'));
-        const dir = path.join(os.tmpdir(), 'DraftRewind Sürümler');
+        const dir = oldVersionsDir();
         fs.mkdirSync(dir, { recursive: true });
         const ext = path.extname(rel);
-        const file = path.join(dir, `${path.basename(rel, ext)} (eski sürüm ${oid.slice(0, 6)})${ext}`);
+        const when = new Date(await rt.project.commitTime(oid));
+        const pad = n => String(n).padStart(2, '0');
+        const date = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}.${pad(when.getMinutes())}`;
+        const file = path.join(dir, `${path.basename(rel, ext)} (${T('old.fileTag', { date })})${ext}`);
         try { fs.chmodSync(file, 0o666); } catch (e) {}
         fs.writeFileSync(file, buf);
+        // "İnternetten geldi" işareti: Word/Excel dosyayı Korumalı Görünüm'de (düzenleme kapalı) açar
+        if (process.platform === 'win32') {
+            try { fs.writeFileSync(`${file}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n'); } catch (e) {}
+        }
         try { fs.chmodSync(file, 0o444); } catch (e) {}
+        const st = fs.statSync(file);
+        openedVersions.set(file.toLowerCase(), { projectId: id, rel, mtimeMs: st.mtimeMs, size: st.size });
+        watchOldVersions();
         const err = await shell.openPath(file);
         if (err) throw new Error(err);
         return true;
+    });
+
+    // Eski sürümden düzenlenmiş dosyayı projeye kopya olarak ekle
+    handle('project:importEdited', (id, file, rel) => {
+        const rt = rtOf(id);
+        if (!path.resolve(file).toLowerCase().startsWith(oldVersionsDir().toLowerCase())) throw new Error('Geçersiz dosya');
+        const ext = path.extname(rel);
+        const baseRel = rel.slice(0, rel.length - ext.length);
+        let target;
+        for (let i = 1; i < 100; i++) {
+            target = absOf(rt, `${baseRel} (${T('old.copySuffix')}${i > 1 ? ` ${i}` : ''})${ext}`);
+            if (!fs.existsSync(target)) break;
+        }
+        fs.copyFileSync(file, target);
+        try { fs.chmodSync(target, 0o666); } catch (e) {}
+        try { fs.unlinkSync(`${target}:Zone.Identifier`); } catch (e) {}
+        return { path: target, name: path.basename(target) };
     });
 
     handle('file:open', async (id, rel) => {

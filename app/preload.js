@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('av', {
         snapshot: (id, opts) => call('project:snapshot', id, opts),
         restore: (id, rel, oid, mode) => call('project:restore', id, rel, oid, mode),
         openVersion: (id, rel, oid) => call('project:openVersion', id, rel, oid),
+        importEdited: (id, file, rel) => call('project:importEdited', id, file, rel),
         openFolder: id => call('project:openFolder', id),
         openFile: (id, rel) => call('file:open', id, rel),
         revealFile: (id, rel) => call('file:reveal', id, rel)
