@@ -50,6 +50,7 @@ const tr = {
   'home.emptyBody':
     'Bilgisayarındaki DraftRewind\'da "Bulut & Telefon" sekmesinden GitHub veya Google Drive\'a bağlan. Projelerin birkaç dakika içinde burada belirir.',
 
+  'home.emptyAction': 'Windows uygulamasını indir (ücretsiz)',
   'pulse.titleOne': '{name}: {count} yeni kayıt',
   'pulse.titleMany': '{n} projede {count} yeni kayıt',
   'pulse.synced': 'Bilgisayarındaki çalışmalar eşitlendi',
@@ -360,6 +361,7 @@ const en = {
   'home.emptyTitle': 'No projects yet',
   'home.emptyBody':
     'In DraftRewind on your computer, open the "Cloud & Phone" tab and connect GitHub or Google Drive. Your projects will show up here within a few minutes.',
+  'home.emptyAction': 'Get the free Windows app',
 
   'pulse.titleOne': '{name}: {count} new saves',
   'pulse.titleOne_one': '{name}: 1 new save',

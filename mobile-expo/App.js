@@ -416,12 +416,17 @@ function ProjectSkeleton({ c }) {
 }
 
 // Tutarlı boş durum kartı
-function EmptyState({ c, icon, title, body, style }) {
+function EmptyState({ c, icon, title, body, style, action }) {
   return (
     <Glass c={c} style={[{ alignItems: 'center', paddingVertical: 26, paddingHorizontal: 20, marginTop: 10 }, style]}>
       <Icon name={icon} size={36} color={c.text3} weight="regular" />
       {title ? <Text style={{ color: c.text, fontSize: 17, fontWeight: '700', marginTop: 8, textAlign: 'center' }}>{title}</Text> : null}
       {body ? <Text style={{ color: c.text2, textAlign: 'center', marginTop: 6, lineHeight: 20 }}>{body}</Text> : null}
+      {action ? (
+        <View style={{ marginTop: 14, alignSelf: 'stretch' }}>
+          <SecondaryButton c={c} title={action.title} icon={action.icon} onPress={action.onPress} />
+        </View>
+      ) : null}
     </Glass>
   );
 }
@@ -1283,7 +1288,7 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, onOpen, onAccoun
         </Jelly>
       ))}
 
-      {empty ? <EmptyState c={c} icon="leaf.fill" title={t('home.emptyTitle')} body={t('home.emptyBody')} /> : null}
+      {empty ? <EmptyState c={c} icon="leaf.fill" title={t('home.emptyTitle')} body={t('home.emptyBody')} action={{ title: t('home.emptyAction'), icon: 'arrow.down.circle', onPress: () => Linking.openURL('https://draftrewind.com/?from=app') }} /> : null}
     </ScrollView>
   );
 }
