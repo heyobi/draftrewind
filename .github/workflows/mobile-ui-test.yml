@@ -102,6 +102,6 @@ jobs:
         with:
           name: mobile-screenshots
           path: |
-            mobile-expo/e2e/out/*.png
+            mobile-expo/e2e/out/**/*.png
             mobile-expo/e2e/report.xml
           retention-days: 14
