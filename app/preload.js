@@ -78,5 +78,10 @@ contextBridge.exposeInMainWorld('av', {
     },
 
     setPref: (key, value) => call('prefs:set', key, value),
-    openExternal: url => call('shell:openExternal', url)
+    openExternal: url => call('shell:openExternal', url),
+    update: {
+        check: () => call('update:check'),
+        respond: action => call('update:respond', action),
+        install: () => call('update:install')
+    }
 });

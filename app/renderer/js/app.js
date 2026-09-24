@@ -889,6 +889,43 @@
         ).querySelector('[data-x=ok]').onclick = () => closeModal();
     }
 
+    // Güncelleme diyalogları (yalnızca GitHub'dan indirilen sürümde; Store sürümlerini mağaza günceller)
+    function onUpdateEvent(ev) {
+        if (ev.state === 'available') updateModal(ev);
+        else if (ev.state === 'downloading') {
+            const bar = $('#upd-progress');
+            if (bar) bar.style.width = `${ev.percent || 0}%`;
+            const lbl = $('#upd-pct');
+            if (lbl) lbl.textContent = `${ev.percent || 0}%`;
+        } else if (ev.state === 'downloaded') updateReadyModal(ev);
+        else if (ev.state === 'latest') toast(t('update.latest', { version: ev.version }), 'check');
+        else if (ev.state === 'error') toast(ev.message || t('update.errNetwork'), 'error', 5000);
+    }
+
+    function updateModal(ev) {
+        const m = openModal(`<div class="modal-ic">${ic('gift')}</div><h2>${t('update.title', { version: esc(ev.version) })}</h2>
+            <p class="sub">${t('update.text')}</p>
+            ${ev.notes ? `<div class="upd-notes">${esc(ev.notes)}</div>` : ''}
+            <div class="upd-bar" hidden id="upd-wrap"><div class="upd-fill" id="upd-progress"></div><span id="upd-pct">0%</span></div>
+            <div class="foot upd-foot"><button class="btn ghost" data-x="skip">${t('update.skip')}</button><button class="btn" data-x="snooze">${t('update.snooze')}</button><button class="btn primary" data-x="download">${t('update.download')}</button></div>`);
+        m.querySelector('[data-x=skip]').onclick = () => { av.update.respond('skip'); closeModal(); };
+        m.querySelector('[data-x=snooze]').onclick = () => { av.update.respond('snooze'); closeModal(); toast(t('update.snoozed'), 'calendar'); };
+        m.querySelector('[data-x=download]').onclick = () => {
+            av.update.respond('download');
+            m.querySelector('#upd-wrap').hidden = false;
+            m.querySelector('.upd-foot').innerHTML = `<span class="sub" style="margin-right:auto">${t('update.downloading')}</span><button class="btn ghost" data-x="hide">${t('update.hide')}</button>`;
+            m.querySelector('[data-x=hide]').onclick = () => closeModal();
+        };
+    }
+
+    function updateReadyModal(ev) {
+        const m = openModal(`<div class="modal-ic">${ic('gift')}</div><h2>${t('update.readyTitle')}</h2>
+            <p class="sub">${t('update.readyBody', { version: esc(ev.version) })}</p>
+            <div class="foot"><button class="btn ghost" data-x="later">${t('update.later')}</button><button class="btn primary" data-x="now">${t('update.restart')}</button></div>`);
+        m.querySelector('[data-x=later]').onclick = () => { closeModal(); toast(t('update.readyText', { version: ev.version }), 'gift', 6000); };
+        m.querySelector('[data-x=now]').onclick = () => { m.querySelector('[data-x=now]').disabled = true; av.update.install(); };
+    }
+
     function emojiModal() {
         const m = openModal(`<h2>${t('emoji.title')}</h2><p class="sub">${t('emoji.sub')}</p><div class="color-grid">${PROJECT_COLORS.map(c => `<button data-e="${c}" style="--c:${c}" aria-label="${c}"></button>`).join('')}</div>`);
         m.querySelectorAll('[data-e]').forEach(b => (b.onclick = async () => {
@@ -987,6 +1024,7 @@
             <div class="setting-row"><div><div class="t">${t('settings.autostart')}</div><div class="s">${t('settings.autostartHint')}</div></div><label class="switch"><input type="checkbox" id="autostart" ${pr.autostart ? 'checked' : ''}><span></span></label></div>
             <div class="setting-row"><div><div class="t">${t('settings.tips')}</div><div class="s">${t('settings.tipsHint')}</div></div><button class="linkish" id="tips-again" ${Object.keys(dismissed()).length ? '' : 'disabled style="opacity:.5;cursor:default"'}>${t('settings.tipsBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.history')}</div><div class="s" id="hist-size">${t('settings.historyHint')}</div></div><button class="btn sm" id="thin">${t('settings.thinBtn')}</button></div>
+            ${S.app.platform === 'win32' ? `<div class="setting-row"><div><div class="t">${t('settings.update')}</div><div class="s">${t('settings.updateHint', { version: esc(S.app.version) })}</div></div><button class="btn sm" id="upd-check">${t('settings.updateBtn')}</button></div>` : ''}
             <div class="setting-row"><div><div class="t">${t('settings.relink')}</div><div class="s">${t('settings.relinkHint')}</div></div><button class="btn sm" id="relink">${t('settings.relinkBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.remove')}</div><div class="s">${t('settings.removeHint')}</div></div><button class="btn sm danger" id="remove">${t('settings.removeBtn')}</button></div>
             <div class="foot"><span style="margin-right:auto;color:var(--text-3);font-size:12px;align-self:center">DraftRewind ${esc(S.app.version)}</span><button class="btn primary" id="done">${t('common.ok')}</button></div>`);
@@ -1032,6 +1070,12 @@
             toast(t('toast.tipsBack'), 'info');
             render();
             settingsModal();
+        };
+        const uc = m.querySelector('#upd-check');
+        if (uc) uc.onclick = async () => {
+            const r = await run(() => av.update.check());
+            if (r && r.state === 'unavailable') toast(t('update.storeManaged'), 'info', 5000);
+            else toast(t('update.checking'), 'refresh', 2500);
         };
         m.querySelector('#relink').onclick = async () => { closeModal(); if (await run(() => av.projects.relink(S.activeId))) { toast(t('toast.relinked'), 'folderOpen'); refresh(); } };
         m.querySelector('#remove').onclick = async () => {
@@ -1522,6 +1566,9 @@
                 break;
             case 'importProgress':
                 updateImportProgress(ev);
+                break;
+            case 'update':
+                onUpdateEvent(ev);
                 break;
             case 'github':
                 if (ev.state === 'connected') {

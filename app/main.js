@@ -13,6 +13,7 @@ const github = require('./core/github');
 const drive = require('./core/drive');
 const { LocalAI, cleanTitle, grounded, hasContent, digestWords } = require('./core/ai');
 const facts = require('./core/facts');
+let updater = null;
 const retention = require('./core/retention');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
@@ -1029,6 +1030,17 @@ function registerIpc() {
         await syncDrive(rt);
         return overviewOf(rt);
     });
+    // Güncelleme: elle denetle / karar (download|snooze|skip) / şimdi kur
+    handle('update:check', () => {
+        if (!updater) return { state: 'unavailable' };
+        updater.check();
+        return { state: 'checking' };
+    });
+    handle('update:respond', action => {
+        if (updater) updater.respond(action);
+        return true;
+    });
+    handle('update:install', async () => (updater ? updater.install() : false));
     handle('drive:open', async id => {
         const r = recordOf(id);
         if (!r || !r.driveUrl) throw new Error(T('err.notUploaded'));
@@ -1474,6 +1486,10 @@ function createWindow() {
     if (process.env.DRAFTREWIND_SCREENSHOT) {
         mainWindow.webContents.once('did-finish-load', () => {
             setTimeout(async () => {
+                // Güncelleme diyaloglarını sahte olayla göster: available | downloaded
+                const fake = process.env.DRAFTREWIND_FAKE_UPDATE;
+                if (fake === 'available') emit('update', { state: 'available', version: '1.1.0', notes: 'Yeni: Drive düzenlemeleri 1 dakikada gelir.\nDüzeltme: PDF önizleme.' });
+                if (fake === 'downloaded') emit('update', { state: 'downloaded', version: '1.1.0' });
                 if (process.env.DRAFTREWIND_EVAL) await mainWindow.webContents.executeJavaScript(process.env.DRAFTREWIND_EVAL).catch(e => console.error(e));
                 setTimeout(async () => {
                     const img = await mainWindow.webContents.capturePage();
@@ -1577,7 +1593,7 @@ app.whenReady().then(async () => {
     createTray();
     applyAutostart();
     // Ücretsiz GitHub sürümü kendini günceller (Store sürümü ve geliştirme modu hariç)
-    require('./core/updater').init({ app, emit, icon: iconPath() });
+    updater = require('./core/updater').init({ app, emit, icon: iconPath(), store, beforeInstall: () => snapshotAll('auto') });
 
     for (const record of projects()) {
         startProject(record).catch(e => console.warn('[DraftRewind] Proje açılamadı:', record.name, e.message));

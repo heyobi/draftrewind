@@ -766,6 +766,13 @@ svg.i { width: 1em; height: 1em; flex-shrink: 0; vertical-align: -.14em; }
 }
 .color-grid button:hover { transform: scale(1.06); border-color: var(--text); }
 
+/* ------------------------------------------------------------------ Güncelleme */
+.upd-notes { max-height: 180px; overflow-y: auto; white-space: pre-wrap; font-size: 12.5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin-top: 10px; line-height: 1.5; }
+.upd-bar { position: relative; height: 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); margin-top: 14px; overflow: hidden; }
+.upd-bar .upd-fill { height: 100%; width: 0; background: var(--grad); transition: width .3s; }
+.upd-bar span { position: absolute; right: 8px; top: -18px; font-size: 11px; color: var(--text-3); }
+.upd-foot { flex-wrap: wrap; }
+
 /* ------------------------------------------------------------------ Yol gösterme: sekme alt yazıları, rehber, yardım */
 .tab { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 8px 14px 10px; }
 .tab .tl { display: flex; align-items: center; }
