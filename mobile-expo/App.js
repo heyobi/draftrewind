@@ -227,7 +227,9 @@ function useDiffWorker() {
       const timer = setTimeout(() => finish({ failed: true, error: 'timeout' }), 45000);
       const finish = (r) => {
         clearTimeout(timer);
-        if (waiter.current && waiter.current.key === key) waiter.current = null;
+        // Eski işin gecikmiş zaman aşımı yeni işi öldürmesin: sıradaki iş başkasıysa dokunma
+        if (waiter.current && waiter.current.key !== key) return;
+        waiter.current = null;
         setJob(null);
         resolve(r);
       };
@@ -288,8 +290,9 @@ function Centered({ children, style }) {
   return <View style={[s.flex, wide && { width: WIDE_MAX, alignSelf: 'center' }, style]}>{children}</View>;
 }
 
-// Otomatik gönderim sonrası kısa bildirim + atlanan dosyalar / çakışmalar için uyarılar (ortak)
-function reportSync(r, project, onAuthError) {
+// Otomatik gönderim sonrası kısa bildirim + atlanan dosyalar / çakışmalar için uyarılar (ortak).
+// manual: elle başlatılan eşitleme — atlanan dosyalar her seferinde gösterilir; otomatikte yol başına bir kez.
+function reportSync(r, project, onAuthError, manual = false) {
   if (!r) return;
   const push = r.push;
   if (push && push.pushed.length + push.removed.length) {
@@ -297,7 +300,14 @@ function reportSync(r, project, onAuthError) {
     const n = push.pushed.length + push.removed.length;
     pulse({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.pushed', { n, count: n }), subtitle: project.name, short: t('ws.pushedShort') }, 5000);
   }
-  const skipped = (push && push.skipped) || (r.pending && r.pending.skipped) || [];
+  let skipped = (push && push.skipped) || (r.pending && r.pending.skipped) || [];
+  if (skipped.length && !manual) {
+    const flags = WS.loadFlags();
+    const shown = new Set(flags.skippedShown || []);
+    const keyOf = (x) => `${project.owner}/${project.repo}:${x.path}`;
+    skipped = skipped.filter((x) => !shown.has(keyOf(x)));
+    if (skipped.length) WS.saveFlags({ ...flags, skippedShown: [...shown, ...skipped.map(keyOf)].slice(-200) });
+  }
   if (skipped.length) {
     warn();
     Alert.alert(t('ws.skippedTitle'), skipped.map((x) => t(x.reason === 'tooBig' ? 'ws.skippedTooBig' : 'ws.skippedUnreadable', { name: x.path.split('/').pop() })).join('\n\n'), [{ text: t('common.ok') }]);
@@ -761,8 +771,8 @@ function Root() {
       const path = await WS.importIncoming(target.project, url, name, target.path);
       success();
       pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: t('ws.incomingTitle'), subtitle: t('ws.incomingBody', { name: path.split('/').pop(), project: target.project.name }), short: t('ws.pushedShort') }, 8000);
-      const r = await WS.syncProject(ghToken, target.project, { auto: true });
-      reportSync(r, target.project, logoutGithub);
+      const r = await WS.syncProject(ghToken, target.project, { auto: true, manual: true });
+      reportSync(r, target.project, logoutGithub, true);
       if (!r.push) Alert.alert(t('ws.incomingTitle'), `${path.split('/').pop()} → ${target.project.name}`, [{ text: t('common.ok') }]);
       setSyncTick((n) => n + 1);
     } catch (e) {
@@ -773,12 +783,17 @@ function Root() {
       importingRef.current = false;
     }
   };
+  // Belge bağlantıları sonsuza dek değil, yalnızca birkaç saniye tekilleştirilir (açılış URL'si ile
+  // olay aynı anda gelebilir); aynı belge daha sonra yeniden alınabilir.
+  const lastFile = useRef({ url: null, at: 0 });
   const handleUrl = async (url, fromScanner = false) => {
-    if (!url || handledUrl.current === url) return;
+    if (!url) return;
     if (/^file:/i.test(url)) {
-      handledUrl.current = url;
+      if (lastFile.current.url === url && Date.now() - lastFile.current.at < 10000) return;
+      lastFile.current = { url, at: Date.now() };
       return handleIncomingFile(url);
     }
+    if (handledUrl.current === url) return;
     if (!isPairLink(url)) return;
     handledUrl.current = url;
     let info;
@@ -1571,8 +1586,8 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     syncRef.current = true;
     if (manual) setSyncing(true);
     try {
-      const r = await WS.syncProject(token, project, { auto: manual || autoPush });
-      reportSync(r, project, onAuthError);
+      const r = await WS.syncProject(token, project, { auto: manual || autoPush, manual: !!manual });
+      reportSync(r, project, onAuthError, !!manual);
       if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.title'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
       if (r && r.pull && r.pull.updated.length) {
         const n = r.pull.updated.length;
@@ -1615,7 +1630,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     const flags = WS.loadFlags();
     if (!flags.editHint) {
       WS.saveFlags({ ...flags, editHint: true });
-      await new Promise((resolve) => Alert.alert(t('ws.editHintTitle'), t('ws.editHint'), [{ text: t('common.ok'), onPress: resolve }]));
+      await new Promise((resolve) => Alert.alert(t('ws.editHintTitle'), t('ws.editHint', { project: WS.folderName(project) }), [{ text: t('common.ok'), onPress: resolve }]));
     }
     setBusy(t('ws.preparing'));
     try {
@@ -1645,7 +1660,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       success();
       island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.downloadDone', { n, count: n }), subtitle: t('ws.downloadDoneSub', { path: WS.filesPath(project) }), short: t('ws.downloadDoneShort') }, 5000);
       refreshWs();
-      reportSync({ pull: r }, project, onAuthError);
+      reportSync({ pull: r }, project, onAuthError, true);
       Alert.alert(t('ws.downloadDone', { n, count: n }), t('ws.filesHint', { path: WS.filesPath(project) }), [{ text: t('common.ok') }]);
     } catch (e) {
       island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: errText(e), short: t('pulse.failedShort') });

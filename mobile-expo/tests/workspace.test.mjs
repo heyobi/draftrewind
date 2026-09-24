@@ -18,6 +18,7 @@ import {
   utf8Encode,
   utf8Decode,
   ignoredName,
+  recentlyTouched,
 } from '../src/wsCore.js';
 
 async function makeDocx(paragraphs) {
@@ -79,6 +80,32 @@ test('yerel tarama sınıflandırması: değişen / yeni / silinen / büyük', (
   assert.deepEqual(r.added, ['yeni.txt']);
   assert.deepEqual(r.deleted, ['c.docx']);
   assert.deepEqual(r.skipped, [{ path: 'video.mp4', reason: 'tooBig' }]);
+});
+
+test('okunamayan dosya "silindi" sayılmaz; atlanan olarak listelenir, izleme kaydı korunur', () => {
+  const state = { 'a.docx': { sha: '1', size: 5, mtime: 100 }, 'kilitli.docx': { sha: '2', size: 5, mtime: 100 } };
+  const locals = { 'a.docx': { size: 5, mtime: 100 } }; // kilitli.docx stat edilemedi → locals'ta yok
+  const r = classifyChanges(state, locals, 100, ['kilitli.docx']);
+  assert.deepEqual(r.deleted, []);
+  assert.deepEqual(r.skipped, [{ path: 'kilitli.docx', reason: 'unreadable' }]);
+  // Gerçekten silinen dosya hâlâ silinmiş sayılır
+  assert.deepEqual(classifyChanges(state, {}, 100, ['kilitli.docx']).deleted, ['a.docx']);
+});
+
+test('yükleme sırasında yapılan kayıt: okuma anındaki boyut/mtime yazılırsa sonraki tarama değişikliği görür', () => {
+  const snapshotAtRead = { size: 5, mtime: 1000 }; // read() içinde alınan hal
+  const afterUpload = { size: 7, mtime: 5000 }; // yükleme sürerken Word kaydetti
+  const entry = { sha: 'yeni', ...snapshotAtRead };
+  assert.equal(isLocallyModified(entry, afterUpload), true); // doğru: tekrar gönderilir
+  const wrongEntry = { sha: 'yeni', ...afterUpload }; // yükleme sonrası stat edilseydi
+  assert.equal(isLocallyModified(wrongEntry, afterUpload), false); // hata: kayıp düzenleme
+});
+
+test('az önce kaydedilmiş (Word açık olabilir) dosyanın üzerine yazılmaz', () => {
+  const now = 1_000_000;
+  assert.equal(recentlyTouched({ size: 1, mtime: now - 30_000 }, now), true);
+  assert.equal(recentlyTouched({ size: 1, mtime: now - 120_000 }, now), false);
+  assert.equal(recentlyTouched(null, now), false);
 });
 
 test('kelime haritası ilerletme ve kayıt mesajı (masaüstünün okuduğu kuyruk)', () => {

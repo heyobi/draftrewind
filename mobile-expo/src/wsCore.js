@@ -135,11 +135,13 @@ export function decideRemoteChange(entry, local, remoteSha) {
 }
 
 // Yerel taramayı duruma göre sınıflandırır. locals: { [path]: { size, mtime } }, state.files: { [path]: { sha, size, mtime } }
-export function classifyChanges(stateFiles, locals, maxSize) {
+// unreadable: okunamayan (kilitli vb.) yollar — asla "silindi" sayılmaz, izleme kaydı korunur
+export function classifyChanges(stateFiles, locals, maxSize, unreadable) {
   const modified = [];
   const added = [];
   const deleted = [];
   const skipped = [];
+  const blocked = new Set(unreadable || []);
   for (const path of Object.keys(locals)) {
     const local = locals[path];
     const entry = stateFiles[path];
@@ -150,9 +152,14 @@ export function classifyChanges(stateFiles, locals, maxSize) {
     if (!entry) added.push(path);
     else if (isLocallyModified(entry, local)) modified.push(path);
   }
-  for (const path of Object.keys(stateFiles)) if (!locals[path]) deleted.push(path);
+  for (const path of Object.keys(stateFiles)) if (!locals[path] && !blocked.has(path)) deleted.push(path);
+  for (const path of blocked) skipped.push({ path, reason: 'unreadable' });
   return { modified, added, deleted, skipped };
 }
+
+// Word'ün açık tutabileceği, az önce kaydedilmiş dosya: üzerine yazmayı sonraki eşitlemeye bırak
+export const RECENT_MS = 60 * 1000;
+export const recentlyTouched = (local, now = Date.now()) => !!local && now - (local.mtime || 0) < RECENT_MS;
 
 // Kayıt mesajı: başlık + masaüstünün okuduğu "acadamiv:" kuyruğu.
 // words: kayıttan sonraki kelime haritası (bilinmiyorsa null), delta: bu kayıttaki değişimler

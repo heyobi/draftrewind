@@ -9,7 +9,7 @@ import * as GH from './github';
 import { MAX_UPLOAD, safeName, uniqueName } from './files';
 import { latestWords } from './stats';
 import { t } from './i18n';
-import { countWords, countsWords, classifyChanges, decideRemoteChange, conflictName, advanceWords, buildMessage, ignoredName, isLocallyModified } from './wsCore';
+import { countWords, countsWords, classifyChanges, decideRemoteChange, conflictName, advanceWords, buildMessage, ignoredName, isLocallyModified, recentlyTouched } from './wsCore';
 
 export const ROOT_FOLDER = 'Projeler';
 const root = () => new Directory(Paths.document, ROOT_FOLDER);
@@ -76,17 +76,35 @@ function statLocal(file) {
   }
 }
 
+// Dosyayı olabildiğince atomik yazar: önce aynı klasörde geçici dosya, sonra hedefin üstüne taşınır
+// (Word yarım yazılmış bir dosya görmesin). Taşıma olmazsa doğrudan yazılır.
 function writeLocal(p, path, bytes) {
   const segs = path.split('/');
   const dir = segs.length > 1 ? new Directory(projectDir(p), ...segs.slice(0, -1)) : projectDir(p);
   dir.create({ intermediates: true, idempotent: true });
   const f = new File(dir, segs[segs.length - 1]);
-  f.write(bytes);
+  const tmp = new File(dir, `.dr-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  try {
+    tmp.write(bytes);
+    try {
+      tmp.moveSync(f, { overwrite: true });
+    } catch (e) {
+      if (f.exists) f.delete();
+      tmp.moveSync(f);
+    }
+  } catch (e) {
+    try {
+      if (tmp.exists) tmp.delete();
+    } catch (e2) {}
+    f.write(bytes);
+  }
   return f;
 }
 
-function track(st, path, file, sha) {
-  const s = statLocal(file);
+// snapshot verilirse (okuma anındaki boyut/mtime) o yazılır: yükleme sürerken yapılan bir kayıt
+// sonraki taramada "değişmiş" görünsün
+function track(st, path, file, sha, snapshot) {
+  const s = snapshot || statLocal(file);
   st.files[path] = { sha: sha || null, size: s ? s.size : 0, mtime: s ? s.mtime : Date.now() };
 }
 
@@ -145,8 +163,8 @@ export function scanChanges(p) {
   const locals = {};
   const unreadable = [];
   if (dir.exists) walk(dir, '', locals, unreadable);
-  const r = classifyChanges(st.files, locals, MAX_UPLOAD);
-  r.skipped.push(...unreadable.map((path) => ({ path, reason: 'unreadable' })));
+  // Okunamayanlar "silindi" sayılmaz (izleme kaydı korunur); classifyChanges onları atlanan olarak listeler
+  const r = classifyChanges(st.files, locals, MAX_UPLOAD, unreadable);
   return { ...r, state: st };
 }
 
@@ -181,10 +199,13 @@ export async function pushChanges(token, p, opts = {}) {
     }
   }
   const counts = {};
+  const snapshots = {};
   const files = paths.map((path) => ({
     path,
     read: async () => {
       const f = localFile(p, path);
+      // Boyut/mtime okumadan ÖNCE alınır: yükleme sürerken Word kaydederse o hal sonraki turda gider
+      snapshots[path] = statLocal(f);
       if (countsWords(path)) counts[path] = await countWords(path, await f.bytes());
       return f.base64();
     },
@@ -206,7 +227,7 @@ export async function pushChanges(token, p, opts = {}) {
   );
   for (const f of r.failed) skipped.push({ path: f.path, reason: 'unreadable', error: f.error });
   // Durum: gönderilenler yeni sha/mtime ile izlenir; silinenler (uzakta zaten yoksa da) izlemeden çıkar
-  for (const d of r.done) track(st, d.path, localFile(p, d.path), d.sha);
+  for (const d of r.done) track(st, d.path, localFile(p, d.path), d.sha, snapshots[d.path]);
   for (const path of scan.deleted) delete st.files[path];
   if (r.commit) {
     st.head = r.commit;
@@ -249,6 +270,11 @@ export async function pullChanges(token, p, opts = {}) {
       out.skipped.push(f.path);
       continue;
     }
+    // Son 60 sn içinde kaydedilmiş dosya Word'de açık olabilir: bu tura dokunma, sonraki eşitlemede alınır
+    if (decision === 'download' && recentlyTouched(local)) {
+      out.deferred = (out.deferred || 0) + 1;
+      continue;
+    }
     const bytes = new Uint8Array(await GH.fileContent(token, p, f.path, head));
     if (decision === 'download') {
       track(st, f.path, writeLocal(p, f.path, bytes), f.sha);
@@ -260,6 +286,8 @@ export async function pullChanges(token, p, opts = {}) {
       st.files[f.path] = { sha: f.sha, size: entry ? entry.size : -1, mtime: entry ? entry.mtime : 0 };
       out.conflicts.push({ path: f.path, copy });
     }
+    // Her dosyadan sonra kaydet: ortada kesilirse inenler "bu cihazda değişmiş" sanılmasın
+    saveState(p, st);
   }
   // Uzakta artık olmayan izlenen dosyalar: yerel değişmemişse silinir, değişmişse korunur (yeni dosya olarak gider)
   for (const path of Object.keys(st.files)) {
@@ -276,15 +304,18 @@ export async function pullChanges(token, p, opts = {}) {
     delete st.files[path];
     out.removed.push(path);
   }
-  st.head = head;
+  saveState(p, st);
+  // Ertelenen dosya varsa uç ilerletilmez: sonraki eşitleme onları yeniden dener
+  if (!out.deferred) st.head = head;
   st.lastPull = Date.now();
   st.words = null; // bilgisayarın kelime haritası değişmiş olabilir; sonraki gönderimde yeniden okunur
   saveState(p, st);
   return out;
 }
 
-// "Bu projeyi iPad'e/telefona indir": tüm dosyalar (50 MB üstü atlanır), sonrasında proje tam izlenir
-export async function downloadProject(token, p, opts = {}) {
+// Tam indirme: tüm dosyalar (50 MB üstü atlanır), sonrasında proje tam izlenir. Doğrudan değil,
+// syncProject(…, { full: true }) üzerinden çağrılır ki aynı projede eşzamanlı iş olmasın.
+async function pullAll(token, p, opts) {
   ensureProjectDir(p);
   const st = loadState(p);
   st.full = true;
@@ -293,13 +324,25 @@ export async function downloadProject(token, p, opts = {}) {
   return pullChanges(token, p, opts);
 }
 
+// "Bu projeyi iPad'e/telefona indir" — sıradaki işle çakışmaz (aynı kuyruk)
+export async function downloadProject(token, p, opts = {}) {
+  const r = await syncProject(token, p, { ...opts, full: true, auto: false });
+  if (r.pullError) throw r.pullError;
+  return r.pull || { updated: [], conflicts: [], removed: [], skipped: [], moved: false };
+}
+
 // Tam eşitleme: önce bilgisayardan gelenler (yerel silinmişse uzaktaki yeni hal kaybolmasın), sonra
-// yerel değişiklikler (auto false ise yalnızca sayılır). Aynı proje için aynı anda tek iş çalışır.
+// yerel değişiklikler (auto false ise yalnızca sayılır). Aynı proje için aynı anda tek iş çalışır;
+// elle başlatılan (manual) ya da tam indirme isteği sürmekte olan işin ARDINA eklenir, sonucu atlanmaz.
 const inflight = new Map();
 export function syncProject(token, p, opts = {}) {
   const key = `${p.owner}/${p.repo}`;
-  if (inflight.has(key)) return inflight.get(key);
-  const job = doSync(token, p, opts).finally(() => inflight.delete(key));
+  const running = inflight.get(key);
+  if (running && !opts.manual && !opts.full) return running;
+  const start = running ? running.catch(() => {}).then(() => doSync(token, p, opts)) : doSync(token, p, opts);
+  const job = start.finally(() => {
+    if (inflight.get(key) === job) inflight.delete(key);
+  });
   inflight.set(key, job);
   return job;
 }
@@ -307,16 +350,17 @@ export function syncProject(token, p, opts = {}) {
 async function doSync(token, p, opts) {
   const out = { pull: null, pullError: null, push: null, pending: null };
   const st = loadState(p);
-  if (!Object.keys(st.files).length && !st.full && !projectDir(p).exists) return out;
+  if (!opts.full && !Object.keys(st.files).length && !st.full && !projectDir(p).exists) return out;
   try {
-    out.pull = await pullChanges(token, p, opts);
+    out.pull = opts.full ? await pullAll(token, p, opts) : await pullChanges(token, p, opts);
   } catch (e) {
     if (e && e.auth) throw e;
     out.pullError = e;
   }
   const scan = scanChanges(p);
   const n = scan.modified.length + scan.added.length + scan.deleted.length;
-  if (n && opts.auto !== false) out.push = await pushChanges(token, p, opts);
+  // İndirme yarıda kaldıysa gönderme yapılmaz: yarım durum "bu cihazda düzenlendi" kaydına dönüşmesin
+  if (n && opts.auto !== false && !out.pullError) out.push = await pushChanges(token, p, opts);
   else out.pending = { n, skipped: scan.skipped };
   return out;
 }
@@ -336,6 +380,9 @@ export function findTracked(projects, name) {
 // Dönen: hedef yol. Okunamazsa { unreadable: true } hatası fırlatır.
 export async function importIncoming(p, srcUri, name, targetPath) {
   ensureProjectDir(p);
+  // Dosya zaten bu projenin klasöründeyse (Dosyalar'dan "DraftRewind'da aç") kopyalamaya gerek yok
+  const inside = insideProject(p, srcUri);
+  if (inside != null) return inside;
   const st = loadState(p);
   let path = targetPath || safeName(name);
   const entry = st.files[path];
@@ -355,5 +402,29 @@ export async function importIncoming(p, srcUri, name, targetPath) {
     throw err;
   }
   writeLocal(p, path, bytes);
+  // iOS "Şununla aç" kopyasını Belgeler/Inbox'a koyar; silinmezse bir sonraki aynı ad "Ad-1.docx" olur
+  if (isInboxUri(srcUri)) {
+    try {
+      src.delete();
+    } catch (e) {}
+  }
   return path;
 }
+
+// Aynı adı taşıyan ama yüzde-kodlaması farklı iki file:// yolu karşılaştırılabilsin
+const normUri = (uri) => {
+  try {
+    return decodeURIComponent(String(uri)).replace(/^file:\/+/i, '/').replace(/\/+$/, '');
+  } catch (e) {
+    return String(uri).replace(/^file:\/+/i, '/').replace(/\/+$/, '');
+  }
+};
+
+// uri projenin klasöründeyse göreli yolu (ör. "Bölüm/Giriş.docx"), değilse null
+export function insideProject(p, uri) {
+  const root = normUri(projectDir(p).uri) + '/';
+  const u = normUri(uri);
+  return u.startsWith(root) ? u.slice(root.length) : null;
+}
+
+export const isInboxUri = (uri) => normUri(uri).startsWith(normUri(Paths.document.uri) + '/Inbox/');

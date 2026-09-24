@@ -375,12 +375,19 @@ export async function createProject(token, name, readme) {
   }
   if (!repo) throw new Error(t('home.newProjectNameTaken'));
   const full = repo.full_name;
+  const branch = repo.default_branch || 'main';
   await send(token, 'PUT', `/repos/${full}/topics`, { names: ['draftrewind', 'acadamiv'] });
-  // İlk kayıt: içerik API'si boş depoda da çalışır ve "main" dalını oluşturur
+  // İlk kayıt: içerik API'si boş depoda da çalışır ve varsayılan dalı oluşturur.
+  // Yeni depo birkaç saniye tutarsız olabilir (404/409): kısa aralıkla üç kez denenir.
   const message = buildMessage({ title: t('home.newProjectCommit'), changed: ['README.txt'], deleted: [] });
-  await send(token, 'PUT', `/repos/${full}/contents/README.txt`, { message, content: toBase64(utf8Encode(readme)), branch: 'main' });
-  try {
-    if (repo.default_branch !== 'main') await send(token, 'PATCH', `/repos/${full}`, { default_branch: 'main' });
-  } catch (e) {}
-  return { owner: repo.owner.login, repo: repo.name, name, pushedAt: Date.now(), private: true, branch: 'main' };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await send(token, 'PUT', `/repos/${full}/contents/README.txt`, { message, content: toBase64(utf8Encode(readme)), branch });
+      break;
+    } catch (e) {
+      if (attempt >= 2 || !(e.status === 404 || e.status === 409)) throw e;
+      await sleep(1500);
+    }
+  }
+  return { owner: repo.owner.login, repo: repo.name, name, pushedAt: Date.now(), private: true, branch };
 }
