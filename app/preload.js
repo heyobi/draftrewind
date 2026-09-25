@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('av', {
         history: (id, opts) => call('project:history', id, opts),
         changes: (id, oid) => call('project:changes', id, oid),
         diff: (id, rel, oid) => call('project:diff', id, rel, oid),
+        // Zaman Makinesi › Karşılaştır: iki kayıt arasındaki fark ve değişen dosyalar
+        diffBetween: (id, rel, fromOid, toOid) => call('project:diffBetween', id, rel, fromOid, toOid),
+        changesBetween: (id, fromOid, toOid) => call('project:changesBetween', id, fromOid, toOid),
+        // Yolculuk sekmesi ve yazarlık raporu
+        journey: id => call('project:journey', id),
+        outlineAt: (id, oid, rel) => call('project:outlineAt', id, oid, rel),
+        report: id => call('project:report', id),
         fileBuffer: (id, rel, oid) => call('project:fileBuffer', id, rel, oid),
         snapshot: (id, opts) => call('project:snapshot', id, opts),
         restore: (id, rel, oid, mode) => call('project:restore', id, rel, oid, mode),
@@ -79,6 +86,7 @@ contextBridge.exposeInMainWorld('av', {
 
     setPref: (key, value) => call('prefs:set', key, value),
     openExternal: url => call('shell:openExternal', url),
+    openPath: file => call('shell:openPath', file),
     update: {
         check: () => call('update:check'),
         respond: action => call('update:respond', action),

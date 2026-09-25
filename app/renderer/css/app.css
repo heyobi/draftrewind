@@ -806,3 +806,71 @@ svg.i { width: 1em; height: 1em; flex-shrink: 0; vertical-align: -.14em; }
 .help-table td:last-child { color: var(--text-2); }
 .help-keys { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 12.5px; color: var(--text-2); }
 kbd { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; font-family: inherit; font-size: 11.5px; color: var(--text); }
+
+/* ------------------------------------------------------------------ Yolculuk */
+.j-line {
+    display: flex; align-items: center; gap: 10px;
+    margin: -4px 0 14px; padding: 10px 14px;
+    border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+    font-size: 13px; color: var(--text-2); cursor: pointer; transition: border-color .15s;
+}
+.j-line:hover { border-color: var(--accent); }
+.j-line .ic { color: var(--accent); display: inline-grid; place-items: center; font-size: 16px; }
+.j-line .linkish { margin-left: auto; font-size: 12.5px; }
+.j-head { display: flex; align-items: center; gap: 12px; margin: 0 0 16px; }
+.j-head h2 { margin: 0; font-family: var(--font-display); font-size: 22px; letter-spacing: -.01em; }
+.j-head p { margin: 2px 0 0; color: var(--text-2); }
+.j-head .btn { margin-left: auto; }
+.j-chart-card { margin-bottom: 14px; }
+.j-chart { margin-top: 10px; width: 100%; overflow: hidden; }
+.j-chart svg { display: block; width: 100%; height: auto; font-family: var(--font); }
+.j-scrub-card { margin-bottom: 14px; }
+.j-scrub-head { display: flex; align-items: flex-start; gap: 12px; }
+.j-ctl { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
+.j-ctl .btn { min-width: 34px; }
+.j-range { width: 100%; margin: 14px 0 12px; accent-color: var(--accent); }
+.j-frame { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.j-info .j-when { font-size: 12px; color: var(--text-3); font-weight: 600; }
+.j-info .j-title { font-weight: 700; font-size: 15px; margin: 4px 0; line-height: 1.35; font-family: var(--font-display); }
+.j-info .j-total { font-size: 12.5px; color: var(--text-2); }
+.j-bars { display: grid; gap: 6px; align-content: start; }
+.j-bar-row { display: grid; grid-template-columns: minmax(0, 110px) 1fr 44px; align-items: center; gap: 8px; font-size: 12px; }
+.j-bar-row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.j-bar-row .bar { height: 9px; border-radius: 999px; background: var(--bg-2); overflow: hidden; display: block; }
+.j-bar-row .bar span { display: block; height: 100%; background: var(--grad); border-radius: 999px; transition: width .18s ease-out; }
+.j-bar-row .n { text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.j-bar-row.off { opacity: .45; }
+.j-outline-box { min-width: 0; }
+.j-outline-box .lbl { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.j-outline { max-height: 150px; overflow-y: auto; font-size: 12.5px; border-left: 2px solid var(--border); padding-left: 10px; }
+.j-outline .j-h { padding: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.j-outline .j-h.sub { padding-left: 12px; font-weight: 500; color: var(--text-2); }
+.j-two { align-items: start; }
+.j-chaps { display: grid; gap: 8px; margin-top: 12px; }
+.j-chap { display: grid; grid-template-columns: minmax(0, 1fr) 140px auto; align-items: center; gap: 12px; }
+.j-chap .fname { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; font-size: 13px; }
+.j-chap .fname span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.j-chap .fname .ftype { width: 26px; height: 26px; border-radius: 8px; font-size: 8.5px; }
+.j-chap .fwords { font-size: 12.5px; color: var(--text-2); font-weight: 600; white-space: nowrap; text-align: right; }
+.j-chap .fedits { color: var(--text-3); font-weight: 500; margin-left: 4px; }
+.j-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.j-stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.j-stat .v { font-size: 18px; font-weight: 800; font-family: var(--font-display); letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.j-stat .l { font-size: 11px; color: var(--text-3); font-weight: 600; }
+.j-hours-wrap { margin-top: 14px; }
+.j-hours-wrap svg { display: block; width: 100%; height: auto; }
+@media (max-width: 1180px) { .j-frame { grid-template-columns: 1fr 1fr; } .j-outline-box { grid-column: 1 / -1; } }
+
+/* Zaman Makinesi › Karşılaştır */
+.tl-filter .cmp-btn { flex-shrink: 0; }
+.tl-filter .cmp-btn.on { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); }
+.tl-compare { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; background: var(--accent-soft); }
+.tl-compare label { font-size: 11.5px; font-weight: 700; color: var(--accent-text); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.tl-compare .btn.ghost { padding: 4px 8px; flex-shrink: 0; }
+.cmp-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.cmp-row .chip { font-size: 12px; padding: 4px 10px; }
+.cmp-row .hint { font-size: 12px; color: var(--text-3); }
+
+/* Bildirimde eylem düğmesi */
+.toast-btn { margin-left: 6px; border: 0; border-radius: 8px; padding: 5px 10px; background: var(--accent); color: #fff; font-weight: 700; font-size: 12.5px; cursor: pointer; }
+.toast-btn:hover { filter: brightness(1.1); }

@@ -20,7 +20,15 @@
             try { return localStorage.getItem('railCollapsed') === '1'; } catch (e) { return false; }
         })(),
         loginModal: null,
-        aiCache: {}
+        aiCache: {},
+        // Yolculuk sekmesi: ana süreçten gelen seri (project:journey), kare kare konumu ve anahat önbelleği
+        journey: null,
+        jIndex: null,
+        jPlaying: null,
+        jOutline: {},
+        // Zaman Makinesi › Karşılaştır: seçili kayıt (to) ile karşılaştırılan kayıt (from)
+        compare: false,
+        compareOid: null
     };
 
     const $ = sel => document.querySelector(sel);
@@ -85,15 +93,18 @@
     }
 
     // ------------------------------------------------------------------ toast / confetti
-    function toast(text, icon = 'sparkle', ms = 3800) {
+    // action: { label, fn } → bildirimin sağında bir düğme (ör. "Aç")
+    function toast(text, icon = 'sparkle', ms = 3800, action = null) {
         const el = document.createElement('div');
         el.className = 'toast';
-        el.innerHTML = `<span class="ic">${ic(icon)}</span><span>${esc(text)}</span>`;
+        el.innerHTML = `<span class="ic">${ic(icon)}</span><span>${esc(text)}</span>${action ? `<button class="toast-btn">${esc(action.label)}</button>` : ''}`;
         $('#toasts').appendChild(el);
-        setTimeout(() => {
+        const gone = () => {
             el.classList.add('out');
             setTimeout(() => el.remove(), 260);
-        }, ms);
+        };
+        if (action) el.querySelector('.toast-btn').onclick = () => { gone(); action.fn(); };
+        setTimeout(gone, ms);
     }
 
     function confetti() {
@@ -239,6 +250,24 @@
         S.history = (await run(() => av.projects.history(S.activeId, { file: S.tlFilter || undefined, limit: 500 }))) || [];
     }
 
+    // Yolculuk verisi (ana süreçte baş kayda göre önbellekli; sessizce başarısız olabilir)
+    async function loadJourney() {
+        if (!S.activeId) {
+            S.journey = null;
+            return;
+        }
+        const id = S.activeId;
+        try {
+            const j = await av.projects.journey(id);
+            if (id !== S.activeId) return;
+            S.journey = j;
+            const n = j.points.length;
+            if (S.jIndex == null || S.jIndex >= n) S.jIndex = Math.max(0, n - 1);
+        } catch (e) {
+            S.journey = null;
+        }
+    }
+
     function checkGoal(ov) {
         if (!ov || !ov.stats) return;
         const goal = S.app.prefs.dailyGoal;
@@ -262,7 +291,7 @@
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(async () => {
             await loadApp();
-            await loadOverview();
+            await Promise.all([loadOverview(), loadJourney()]);
             if (history) await loadHistory();
             // "Şu anki değişiklikler" seçiliyken kayıt noktası alındıysa: yeni kaydı göster; açıksa listeyi tazele
             if (S.selectedOid === 'working') {
@@ -369,6 +398,7 @@
                 <button class="tab ${S.tab === 'home' ? 'active' : ''}" data-action="goto-tab" data-tab="home" title="Ctrl+1"><span class="tl">${t('tabs.home')}</span><span class="ts">${t('tabs.homeSub')}</span></button>
                 <button class="tab ${S.tab === 'timeline' ? 'active' : ''}" data-action="goto-tab" data-tab="timeline" title="Ctrl+2"><span class="tl">${t('tabs.timeline')}${ov && ov.stats ? `<span class="count">${num(ov.stats.snapshots)}</span>` : ''}</span><span class="ts">${t('tabs.timelineSub')}</span></button>
                 <button class="tab ${S.tab === 'cloud' ? 'active' : ''}" data-action="goto-tab" data-tab="cloud" title="Ctrl+3"><span class="tl">${t('tabs.cloud')}</span><span class="ts">${t('tabs.cloudSub')}</span></button>
+                <button class="tab ${S.tab === 'journey' ? 'active' : ''}" data-action="goto-tab" data-tab="journey" title="Ctrl+4"><span class="tl">${t('tabs.journey')}</span><span class="ts">${t('tabs.journeySub')}</span></button>
             </div>
             ${
                 ov && ov.missing
@@ -381,9 +411,13 @@
                         ? renderHome(ov)
                         : S.tab === 'timeline'
                           ? renderTimeline(ov)
-                          : renderCloud(ov)
+                          : S.tab === 'journey'
+                            ? renderJourney(ov)
+                            : renderCloud(ov)
             }`;
         if (S.tab === 'timeline' && ov && !ov.missing) afterTimelineRender();
+        if (S.tab === 'journey' && ov && !ov.missing) afterJourneyRender();
+        if (S.tab !== 'journey') stopJourneyPlay();
     }
 
     function renderOnboarding() {
@@ -493,6 +527,7 @@
                 <div class="stat"><span class="big-emoji">${ic('book')}</span><span class="label">${t('stat.totalWords')}</span><span class="value">${num(st.total)}</span><span class="hint">${t('stat.allDocs')}</span></div>
                 <div class="stat"><span class="big-emoji">${ic('history')}</span><span class="label">${t('stat.snapshots')}</span><span class="value">${num(st.snapshots)}</span><span class="hint">${st.firstAt ? t('stat.startedAgo', { ago: ago(st.firstAt) }) : ''}</span></div>
             </div>
+            ${journeyLine()}
 
             <div class="two-col">
                 <div class="card">
@@ -535,9 +570,200 @@
         </div>`;
     }
 
+    // Özet: oturum özeti satırı (Yolculuk sekmesine bağlantı; veri yoksa gizli)
+    function journeyLine() {
+        const j = S.journey;
+        if (!j || !j.sessions || !j.sessions.count || j.sessions.bestHour == null) return '';
+        const hour = `${pad(j.sessions.bestHour)}:00`;
+        return `<div class="j-line" data-action="goto-tab" data-tab="journey"><span class="ic">${ic('chart')}</span><span>${esc(t('journey.overviewLine', { n: num(j.sessions.count), hour }))}</span><span class="linkish">${t('journey.overviewLink')} →</span></div>`;
+    }
+
+    // ------------------------------------------------------------------ Yolculuk
+    const JOURNEY = () => window.Journey;
+    const shortMonths = () => MONTHS().map(m => (m.length > 3 ? m.slice(0, 3) : m));
+    const durationText = ms => {
+        const m = Math.round(ms / 60000);
+        return m < 60 ? t('journey.minutes', { n: m }) : t('journey.hoursMin', { h: Math.floor(m / 60), m: m % 60 });
+    };
+
+    function renderJourney(ov) {
+        const j = S.journey;
+        if (!j) return `<div class="content"><div class="skeleton" style="height:280px;margin-bottom:14px"></div><div class="skeleton" style="height:200px"></div></div>`;
+        const n = j.points.length;
+        const head = `<div class="j-head"><div><h2>${t('tabs.journey')}</h2><p>${esc(ov.name)}</p></div><button class="btn" data-action="report" title="${esc(t('journey.reportTip'))}">${ic('doc')} ${t('journey.report')}</button></div>`;
+        if (n < 3) {
+            return `<div class="content">${head}<div class="card"><div class="placeholder" style="height:320px"><div><div class="e">${ic('chart')}</div><h3>${t('journey.empty')}</h3><p>${t('journey.emptyText')}</p></div></div></div></div>`;
+        }
+        const st = j.sessions;
+        const base = rel => rel.split('/').pop();
+        const chapters = j.files.map(f => {
+            const vals = j.points.map(p => p.words[f] || 0);
+            const ch = j.chapters.find(c => c.rel === f) || {};
+            return `<div class="j-chap"><div class="fname" title="${esc(f)}">${fileTypeBox(ov.files.find(x => x.rel === f) ? ov.files.find(x => x.rel === f).kind : 'other', 'ftype')}<span>${esc(base(f))}</span></div>${JOURNEY().sparkSvg(vals, { width: 140, height: 30 })}<div class="fwords">${tn('common.words', vals[vals.length - 1])}<span class="fedits">${ch.edits ? `· ${num(ch.edits)}×` : ''}</span></div></div>`;
+        }).join('');
+        const statCell = (v, l) => `<div class="j-stat"><span class="v">${v}</span><span class="l">${l}</span></div>`;
+        return `<div class="content">
+            ${head}
+            <div class="card j-chart-card">
+                <h3>${t('journey.title')}</h3><div class="sub">${t('journey.sub')}</div>
+                <div class="j-chart" id="j-chart"></div>
+            </div>
+            <div class="card j-scrub-card">
+                <div class="j-scrub-head"><div><h3>${t('journey.scrub')}</h3><div class="sub">${t('journey.scrubSub')}</div></div>
+                    <div class="j-ctl"><button class="btn sm" data-action="j-step" data-d="-1" title="←" aria-label="←">${ic('chevronLeft')}</button><button class="btn sm primary" data-action="j-play" id="j-play">${S.jPlaying ? `${ic('pause')} ${t('journey.pause')}` : `${ic('play')} ${t('journey.play')}`}</button><button class="btn sm" data-action="j-step" data-d="1" title="→" aria-label="→">${ic('chevronRight')}</button></div></div>
+                <input type="range" class="j-range" id="j-range" min="0" max="${n - 1}" step="1" value="${S.jIndex}">
+                <div class="j-frame">
+                    <div class="j-info" id="j-info"></div>
+                    <div class="j-bars" id="j-bars"></div>
+                    <div class="j-outline-box"><div class="lbl">${t('journey.outline')}${j.mainFile ? ` · ${esc(base(j.mainFile))}` : ''}</div><div class="j-outline" id="j-outline"></div></div>
+                </div>
+            </div>
+            <div class="two-col j-two">
+                <div class="card"><h3>${t('journey.chapters')}</h3><div class="sub">${t('journey.chaptersSub')}</div><div class="j-chaps">${chapters}</div></div>
+                <div class="card"><h3>${t('journey.sessions')}</h3><div class="sub">${t('journey.sessionsSub')}</div>
+                    <div class="j-stats">
+                        ${statCell(num(st.count), t('journey.sessionCount'))}
+                        ${statCell(num(st.activeDays), t('journey.activeDays'))}
+                        ${statCell(esc(durationText(st.avgMs)), t('journey.avgSession'))}
+                        ${statCell(st.bestHour != null ? `${pad(st.bestHour)}:00` : '—', t('journey.bestHour'))}
+                        ${statCell(tn('stat.days', st.longestStreak), t('journey.longestStreak'))}
+                    </div>
+                    <div class="j-hours-wrap" id="j-hours"></div>
+                    <div class="sub" style="font-size:12px">${t('journey.hourHist')}</div>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    // Grafik kabın genişliğine göre çizilir (pencere boyutu değişince yeniden)
+    function drawJourneyChart() {
+        const box = $('#j-chart');
+        const j = S.journey;
+        if (!box || !j) return;
+        const width = Math.max(320, box.clientWidth || 720);
+        box.innerHTML = JOURNEY().chartSvg(j.points, { width, height: 240, months: shortMonths(), fmt: num, highlight: S.jIndex, now: Date.now(), idPrefix: 'jt' });
+    }
+
+    function afterJourneyRender() {
+        const j = S.journey;
+        if (!j || j.points.length < 3) return;
+        drawJourneyChart();
+        const hours = $('#j-hours');
+        if (hours) hours.innerHTML = JOURNEY().hoursSvg(j.sessions.hours, { width: Math.max(200, hours.clientWidth || 300), height: 56, best: j.sessions.bestHour });
+        const range = $('#j-range');
+        if (range) range.oninput = () => setJourneyIndex(Number(range.value), false);
+        updateJourneyFrame();
+    }
+
+    let jOutlineTimer = null;
+    let jOutlineSeq = 0;
+    function setJourneyIndex(i, syncRange = true) {
+        const j = S.journey;
+        if (!j) return;
+        S.jIndex = Math.max(0, Math.min(j.points.length - 1, i));
+        if (syncRange) {
+            const range = $('#j-range');
+            if (range) range.value = S.jIndex;
+        }
+        updateJourneyFrame();
+    }
+
+    // Kare kare: grafikteki vurgu, o kaydın bilgisi, dosya çubukları ve (150 ms sonra) anahat
+    function updateJourneyFrame() {
+        const j = S.journey;
+        const info = $('#j-info');
+        if (!j || !info) return;
+        const p = j.points[S.jIndex];
+        if (!p) return;
+        drawJourneyChart();
+        info.innerHTML = `<div class="j-when">${esc(fullDate(p.time))}</div><div class="j-title">${p.kind === 'star' ? `<span class="chip star">${t('tl.star')}</span> ` : ''}${esc(p.title)}</div><div class="j-total">${tn('common.words', p.total)} · ${t('journey.snapshotN', { i: num(S.jIndex + 1), n: num(j.points.length) })}</div>`;
+        const max = Math.max(1, ...j.points.map(x => Math.max(0, ...Object.values(x.words))));
+        $('#j-bars').innerHTML = j.files
+            .map(f => {
+                const w = p.words[f] || 0;
+                return `<div class="j-bar-row ${w ? '' : 'off'}"><span class="nm" title="${esc(f)}">${esc(f.split('/').pop())}</span><span class="bar"><span style="width:${((w / max) * 100).toFixed(1)}%"></span></span><span class="n">${num(w)}</span></div>`;
+            })
+            .join('');
+        const box = $('#j-outline');
+        if (!j.mainFile) {
+            box.innerHTML = `<div class="sub">${t('journey.outlineNoDoc')}</div>`;
+            return;
+        }
+        const cached = S.jOutline[p.oid];
+        if (cached) {
+            renderOutline(cached);
+            return;
+        }
+        clearTimeout(jOutlineTimer);
+        const seq = ++jOutlineSeq;
+        jOutlineTimer = setTimeout(async () => {
+            let heads = null;
+            try { heads = await av.projects.outlineAt(S.activeId, p.oid, j.mainFile); } catch (e) { heads = []; }
+            S.jOutline[p.oid] = heads || [];
+            if (seq === jOutlineSeq && S.journey === j) renderOutline(S.jOutline[p.oid]);
+        }, 150);
+    }
+    function renderOutline(heads) {
+        const box = $('#j-outline');
+        if (!box) return;
+        box.innerHTML = heads.length ? heads.map(h => `<div class="j-h ${/^\d+\.\d/.test(h) ? 'sub' : ''}">${esc(h)}</div>`).join('') : `<div class="sub">${t('journey.outlineEmpty')}</div>`;
+    }
+
+    function stopJourneyPlay() {
+        if (!S.jPlaying) return;
+        clearInterval(S.jPlaying);
+        S.jPlaying = null;
+        const b = $('#j-play');
+        if (b) b.innerHTML = `${ic('play')} ${t('journey.play')}`;
+    }
+    function toggleJourneyPlay() {
+        if (S.jPlaying) return stopJourneyPlay();
+        const j = S.journey;
+        if (!j) return;
+        if (S.jIndex >= j.points.length - 1) setJourneyIndex(0);
+        S.jPlaying = setInterval(() => {
+            if (!S.journey || S.tab !== 'journey') return stopJourneyPlay();
+            if (S.jIndex >= S.journey.points.length - 1) return stopJourneyPlay();
+            setJourneyIndex(S.jIndex + 1);
+        }, 166);
+        const b = $('#j-play');
+        if (b) b.innerHTML = `${ic('pause')} ${t('journey.pause')}`;
+    }
+
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            if (S.tab === 'journey') afterJourneyRender();
+        }, 120);
+    });
+
+    async function makeReport() {
+        toast(t('journey.reportBusy'), 'doc', 2500);
+        const r = await run(() => av.projects.report(S.activeId));
+        if (r && r.path) toast(t('journey.reportDone'), 'check', 8000, { label: t('journey.reportOpen'), fn: () => run(() => av.openPath(r.path)) });
+    }
+
     // ------------------------------------------------------------------ Zaman makinesi
+    // Karşılaştırma için varsayılan "diğer" kayıt: seçiliden önceki işaretli an, yoksa en eski kayıt
+    function defaultCompareOid() {
+        const idx = S.history.findIndex(h => h.oid === S.selectedOid);
+        const older = idx >= 0 ? S.history.slice(idx + 1) : S.history.slice(1);
+        const star = older.find(h => h.kind === 'star');
+        const pick = star || older[older.length - 1] || null;
+        return pick ? pick.oid : null;
+    }
+    const comparing = () => S.compare && !!S.compareOid && S.selectedOid && S.selectedOid !== 'working' && S.compareOid !== S.selectedOid;
+
     function renderTimeline(ov) {
         const docsFirst = [...ov.files].sort((a, b) => (a.kind === 'word' ? -1 : 0) - (b.kind === 'word' ? -1 : 0) || a.rel.localeCompare(b.rel, locale()));
+        const canCompare = S.selectedOid && S.selectedOid !== 'working' && S.history.length > 1;
+        const cmpLabel = h => `${dayLabel(h.time)} ${hm(new Date(h.time))} · ${h.title.length > 34 ? `${h.title.slice(0, 33)}…` : h.title}`;
+        const compareBox = S.compare && canCompare
+            ? `<div class="tl-compare"><label for="tl-compare">${t('tl.compareWith')}</label><select class="select" id="tl-compare">
+                ${S.history.filter(h => h.oid !== S.selectedOid).map(h => `<option value="${h.oid}" ${h.oid === S.compareOid ? 'selected' : ''}>${esc(cmpLabel(h))}</option>`).join('')}
+               </select><button class="btn sm ghost" data-action="tl-compare-toggle" title="${esc(t('tl.compareOff'))}" aria-label="${esc(t('tl.compareOff'))}">✕</button></div>`
+            : '';
         // Anlık değişiklik satırı varsa "Bugün" başlığı onun üstünde; tekrar etmesin
         let lastDay = ov.pendingCount ? dayLabel(Date.now()) : '';
         const items = S.history
@@ -566,7 +792,8 @@
                 <div class="tl-filter"><label for="tl-filter">${t('tl.filterLabel')}</label><select class="select" id="tl-filter">
                     <option value="">${t('tl.allFiles')}</option>
                     ${docsFirst.map(f => `<option value="${esc(f.rel)}" ${f.rel === S.tlFilter ? 'selected' : ''}>${esc(f.rel)}</option>`).join('')}
-                </select></div>
+                </select>${canCompare ? `<button class="btn sm cmp-btn ${S.compare ? 'on' : ''}" data-action="tl-compare-toggle" title="${esc(t('tl.compareTip'))}">${ic('merge')} ${t('tl.compare')}</button>` : ''}</div>
+                ${compareBox}
                 ${S.tlFilter ? `<div class="tl-only">${ic('doc')}<span>${t('tl.onlyFile')}</span><button class="linkish" data-action="tl-clear-filter">${t('tl.showAllFiles')}</button></div>` : ''}
                 <div class="tl-list">${live}${items || live ? items : `<div class="placeholder" style="height:300px"><div><div class="e">${ic('doc')}</div><p>${t('tl.empty')}</p></div></div>`}</div>
             </div>
@@ -583,10 +810,12 @@
             return `<div class="placeholder"><div><div class="e">${ic('history')}</div><h3>${t('tl.placeholderTitle')}</h3><p>${t('tl.placeholderText')}</p></div></div>`;
         }
         const sel = S.changes.find(c => c.rel === S.selectedFile);
+        const from = comparing() ? S.history.find(x => x.oid === S.compareOid) : null;
+        const cmpChip = from ? `<div class="cmp-row"><span class="chip mod">${ic('merge')} ${esc(t('tl.compareChip', { a: fullDate(from.time), b: fullDate(h.time) }))}</span><span class="hint">${t('tl.compareHint')}</span></div>` : '';
         return `
             <div class="detail-head">
                 <div class="node">${ic(isLive ? 'pencil' : KIND_ICON[h.kind] || 'save')}</div>
-                <div style="flex:1;min-width:0"><h2>${esc(h.title)}</h2>${isLive ? '' : `<div class="when">${fullDate(h.time)} · ${esc(h.author)}</div>`}${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}</div>
+                <div style="flex:1;min-width:0"><h2>${esc(h.title)}</h2>${isLive ? '' : `<div class="when">${fullDate(h.time)} · ${esc(h.author)}</div>`}${h.note ? `<div class="note">${esc(h.note)}</div>` : ''}${cmpChip}</div>
                 ${isLive ? `<button class="btn primary" data-action="save-now">${t('tl.saveNow')}</button>` : ''}
             </div>
             <div class="changed-files">${S.changes
@@ -623,6 +852,13 @@
                 if (S.history[0]) await selectSnapshot(S.history[0].oid, false);
                 render();
             };
+        const c = $('#tl-compare');
+        if (c)
+            c.onchange = async () => {
+                S.compareOid = c.value;
+                await selectSnapshot(S.selectedOid, false);
+                render();
+            };
         const active = document.querySelector('.tl-item.active');
         if (active && !active._scrolled) {
             active.scrollIntoView({ block: 'nearest' });
@@ -634,7 +870,9 @@
     async function selectSnapshot(oid, rerender = true) {
         S.selectedOid = oid;
         S.diffFull = false;
-        S.changes = (await run(() => av.projects.changes(S.activeId, oid))) || [];
+        // Karşılaştırma açıkken seçili kayıt "diğer" ile çakışırsa varsayılanı yeniden seç
+        if (S.compare && oid !== 'working' && (!S.compareOid || S.compareOid === oid || !S.history.some(h => h.oid === S.compareOid))) S.compareOid = defaultCompareOid();
+        S.changes = (await run(() => (comparing() ? av.projects.changesBetween(S.activeId, S.compareOid, oid) : av.projects.changes(S.activeId, oid)))) || [];
         const preferred = S.changes.find(c => c.rel === S.tlFilter) || S.changes.find(c => c.rel === S.selectedFile) || S.changes.find(c => c.kind === 'word') || S.changes[0];
         S.selectedFile = preferred ? preferred.rel : null;
         if (rerender) render();
@@ -680,7 +918,7 @@
             box.innerHTML = `<div class="plain-lines">${t('viewer.noPreview')}</div>`;
             return;
         }
-        const d = await run(() => av.projects.diff(S.activeId, S.selectedFile, S.selectedOid));
+        const d = await run(() => (comparing() ? av.projects.diffBetween(S.activeId, S.selectedFile, S.compareOid, S.selectedOid) : av.projects.diff(S.activeId, S.selectedFile, S.selectedOid)));
         if (seq !== viewerSeq || !d) return;
         if (!d.supported) {
             box.innerHTML = `<div class="plain-lines">${t('viewer.noCompare')}</div>`;
@@ -1351,6 +1589,12 @@
             S.selectedOid = null;
             S.tlFilter = '';
             S.showAllFiles = false;
+            S.journey = null;
+            S.jIndex = null;
+            S.jOutline = {};
+            S.compare = false;
+            S.compareOid = null;
+            stopJourneyPlay();
             av.projects.setActive(d.id);
             render();
             refresh({ history: S.tab === 'timeline' });
@@ -1369,6 +1613,21 @@
                 await loadHistory();
                 if (!S.selectedOid && S.history[0]) await selectSnapshot(S.history[0].oid, false);
             }
+            if (d.tab === 'journey' && !S.journey) {
+                render();
+                await loadJourney();
+            }
+            render();
+        },
+        // Yolculuk: oynat/duraklat, adım, rapor
+        'j-play': toggleJourneyPlay,
+        'j-step': d => { stopJourneyPlay(); setJourneyIndex(S.jIndex + Number(d.d)); },
+        report: makeReport,
+        // Zaman Makinesi: iki kaydı karşılaştır
+        'tl-compare-toggle': async () => {
+            S.compare = !S.compare;
+            S.compareOid = S.compare ? defaultCompareOid() : null;
+            if (S.selectedOid) await selectSnapshot(S.selectedOid, false);
             render();
         },
         'open-folder': () => run(() => av.projects.openFolder(S.activeId)),
@@ -1522,9 +1781,15 @@
             toast(t('kbd.refresh'), 'refresh', 1400);
         }
         const inField = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '');
-        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['1', '2', '3'].includes(e.key) && S.activeId && !inField && !$('#modal-root .modal-back')) {
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['1', '2', '3', '4'].includes(e.key) && S.activeId && !inField && !$('#modal-root .modal-back')) {
             e.preventDefault();
-            actions['goto-tab']({ tab: { 1: 'home', 2: 'timeline', 3: 'cloud' }[e.key] });
+            actions['goto-tab']({ tab: { 1: 'home', 2: 'timeline', 3: 'cloud', 4: 'journey' }[e.key] });
+        }
+        // Yolculuk › kare kare: ← / → bir adım (kaydırıcı odaktayken de aynı şey olur; iki kez ilerlemesin)
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && S.tab === 'journey' && S.journey && !$('#modal-root .modal-back') && !(inField && e.target.id !== 'j-range')) {
+            e.preventDefault();
+            stopJourneyPlay();
+            setJourneyIndex(S.jIndex + (e.key === 'ArrowRight' ? 1 : -1));
         }
     });
 
@@ -1587,7 +1852,7 @@
 
     (async () => {
         await loadApp();
-        await loadOverview();
+        await Promise.all([loadOverview(), loadJourney()]);
         render();
     })();
 })();

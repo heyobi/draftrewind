@@ -497,6 +497,7 @@ class Project {
                 time: entry.commit.committer.timestamp * 1000,
                 author: entry.commit.author.name,
                 total: meta.total,
+                words: meta.words && typeof meta.words === 'object' ? meta.words : null, // yolculuk serisi için (arayüze gönderilmez)
                 delta: meta.delta || {},
                 changed: meta.changed,
                 deleted: meta.deleted || [],

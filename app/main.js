@@ -15,6 +15,8 @@ const { LocalAI, cleanTitle, grounded, hasContent, digestWords } = require('./co
 const facts = require('./core/facts');
 let updater = null;
 const retention = require('./core/retention');
+const journey = require('./core/journey');
+const report = require('./core/report');
 const I18N = require('./i18n/strings');
 const T = (key, vars) => I18N.text(key, vars);
 
@@ -547,6 +549,98 @@ async function fullHistory(rt) {
     return list;
 }
 
+// Yolculuk: tüm geçmiş bir kez kronolojik gezilir; her kayıtta toplam ve dosya başına kelime,
+// yazma oturumları ve bölüm özetleri çıkarılır. historyCache gibi baş kayda göre önbelleklenir.
+const journeyCache = new Map(); // id -> { head, data }
+async function journeyData(rt) {
+    const head = await rt.project.head();
+    const c = journeyCache.get(rt.project.id);
+    if (c && c.head === head) return c.data;
+    const history = await fullHistory(rt);
+    const series = journey.buildSeries(history);
+    const files = journey.topFiles(series, 8);
+    const chapters = journey.chapterStats(series, files);
+    const sessions = journey.sessionStats(series.filter(p => p.kind !== 'merge').map(p => p.time));
+    // Sekmeye giden noktalar: yalnızca ilk 8 dosyanın kelimeleri (harita küçük kalsın)
+    const points = series.map(p => {
+        const words = {};
+        for (const f of files) if (p.words[f] != null) words[f] = p.words[f];
+        return { time: p.time, oid: p.oid, total: p.total, kind: p.kind, title: p.title, words };
+    });
+    const wordDocs = files.filter(f => docs.kindOf(f) === 'word');
+    const mainFile = wordDocs[0] || files[0] || null;
+    let added = 0, removed = 0;
+    for (const h of history) for (const d of Object.values(h.delta || {})) (d > 0 ? (added += d) : (removed -= d));
+    const data = { points, files, chapters, sessions, mainFile, added, removed, firstOid: series.length ? series[0].oid : null, lastOid: series.length ? series[series.length - 1].oid : null };
+    journeyCache.set(rt.project.id, { head, data });
+    return data;
+}
+
+// Belge anahattı: bir kayıttaki Word dosyasının başlıkları (Kare kare gösterimi için)
+async function outlineAt(rt, oid, rel) {
+    if (docs.kindOf(rel) !== 'word') return [];
+    const buf = await rt.project.readAt(oid, rel);
+    if (!buf) return [];
+    const paras = await docs.wordStructure(buf);
+    if (!paras) return [];
+    return paras.filter(p => p.heading).slice(0, 80).map(p => p.text);
+}
+
+// Yazarlık raporu: HTML'i kur, gizli pencerede A4 PDF'e bas
+async function reportPdf(rt) {
+    const record = recordOf(rt.project.id);
+    const data = await journeyData(rt);
+    const history = await fullHistory(rt);
+    const series = journey.buildSeries(history);
+    const now = Date.now();
+    const milestones = series.filter(p => p.kind === 'star').map(p => ({ time: p.time, title: p.title, total: p.total }));
+    // İlk 3 bölüm: ilk ve son sürümden kısa alıntı (evrimi gösterir)
+    const excerpts = [];
+    for (const ch of data.chapters.slice(0, 3)) {
+        const firstPt = series.find(p => p.words[ch.rel] != null);
+        const lastPt = [...series].reverse().find(p => p.words[ch.rel] != null);
+        const read = async (pt, avoid) => {
+            if (!pt) return null;
+            try {
+                const buf = await rt.project.readAt(pt.oid, ch.rel);
+                const lines = buf ? await docs.extractLines(ch.rel, buf) : null;
+                return { time: pt.time, text: report.excerptFromLines(lines, 300, avoid) };
+            } catch (e) {
+                return { time: pt.time, text: '' };
+            }
+        };
+        const first = await read(firstPt);
+        // Son sürümden, ilk alıntıyla aynı olmayan bir paragraf seçilir (evrim görünsün)
+        const last = await read(lastPt, first && first.text);
+        excerpts.push({ rel: ch.rel, first, last });
+    }
+    const html = report.buildReportHtml(
+        {
+            lang: I18N.getLanguage(),
+            name: record.name,
+            period: { from: series.length ? series[0].time : null, to: series.length ? series[series.length - 1].time : null },
+            github: record.github ? { owner: record.github.owner, repo: record.github.repo } : null,
+            firstOid: data.firstOid,
+            lastOid: data.lastOid,
+            totals: { snapshots: series.length, sessions: data.sessions.count, activeDays: data.sessions.activeDays, totalWords: series.length ? series[series.length - 1].total : 0, added: data.added, removed: data.removed },
+            points: series.map(p => ({ time: p.time, total: p.total, kind: p.kind, title: p.title })),
+            sessions: data.sessions,
+            milestones,
+            chapters: data.chapters,
+            excerpts,
+            now
+        },
+        T
+    );
+    const win = new BrowserWindow({ show: false, width: 900, height: 1200, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
+    try {
+        await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+        return await win.webContents.printToPDF({ printBackground: true, pageSize: 'A4', preferCSSPageSize: true });
+    } finally {
+        if (!win.isDestroyed()) win.destroy();
+    }
+}
+
 function computeStats(history) {
     // Günlük yazılan kelime: o günün son toplamı - önceki aktif günün son toplamı
     const chron = [...history].reverse();
@@ -732,6 +826,7 @@ async function thinProject(rt, force = false) {
     const r = await retention.thinHistory(rt.project);
     if (r.removed) {
         historyCache.delete(rt.project.id);
+        journeyCache.delete(rt.project.id);
         const fresh = recordOf(rt.project.id);
         if (fresh) {
             fresh.thinnedAt = Date.now();
@@ -849,8 +944,51 @@ function registerIpc() {
     handle('project:history', async (id, opts = {}) => {
         const rt = rtOf(id);
         const list = await fullHistory(rt);
-        if (!opts.file) return list.slice(0, opts.limit || 400);
-        return list.filter(h => !h.changed || h.changed.includes(opts.file) || h.deleted.includes(opts.file)).slice(0, opts.limit || 400);
+        // Kelime haritası arayüze gitmez (yolculuk verisi ayrı kanaldan, özetlenmiş gider)
+        const slim = h => ({ ...h, words: undefined });
+        if (!opts.file) return list.slice(0, opts.limit || 400).map(slim);
+        return list.filter(h => !h.changed || h.changed.includes(opts.file) || h.deleted.includes(opts.file)).slice(0, opts.limit || 400).map(slim);
+    });
+
+    // Yolculuk sekmesi: seri, bölümler, oturumlar (ağır iş burada; baş kayda göre önbellekli)
+    handle('project:journey', id => journeyData(rtOf(id)));
+    handle('project:outlineAt', (id, oid, rel) => outlineAt(rtOf(id), oid, rel));
+    // İki kayıt arasındaki fark (Zaman Makinesi › Karşılaştır); ebeveynle karşılaştıran project:diff aynen kalır
+    handle('project:diffBetween', (id, rel, fromOid, toOid) => rtOf(id).project.diff(rel, fromOid, toOid));
+    handle('project:changesBetween', async (id, fromOid, toOid) => {
+        const p = rtOf(id).project;
+        const [a, b] = await Promise.all([p.treeFiles(fromOid), p.treeFiles(toOid)]);
+        const d = p.diffMaps(a, b);
+        return [
+            ...d.added.map(rel => ({ rel, change: 'added' })),
+            ...d.modified.map(rel => ({ rel, change: 'modified' })),
+            ...d.deleted.map(rel => ({ rel, change: 'deleted' }))
+        ].map(r => ({ ...r, kind: docs.kindOf(r.rel), delta: null }));
+    });
+    // Yazarlık raporu (PDF): kaydet diyaloğu → dosya yolu
+    handle('project:report', async id => {
+        const rt = rtOf(id);
+        const record = recordOf(id);
+        const safe = String(record.name).replace(/[<>:"/\\|?*]/g, '').trim() || 'DraftRewind';
+        // Geliştirme: DRAFTREWIND_REPORT_OUT=dosya.pdf ile iletişim kutusu olmadan yaz
+        if (process.env.DRAFTREWIND_REPORT_OUT) {
+            fs.writeFileSync(process.env.DRAFTREWIND_REPORT_OUT, await reportPdf(rt));
+            return { path: process.env.DRAFTREWIND_REPORT_OUT };
+        }
+        const r = await dialog.showSaveDialog(mainWindow, {
+            title: T('report.saveTitle'),
+            defaultPath: path.join(app.getPath('documents'), `${safe} - ${T('report.fileSuffix')}.pdf`),
+            filters: [{ name: 'PDF', extensions: ['pdf'] }]
+        });
+        if (r.canceled || !r.filePath) return null;
+        const pdf = await reportPdf(rt);
+        fs.writeFileSync(r.filePath, pdf);
+        return { path: r.filePath };
+    });
+    handle('shell:openPath', async file => {
+        const err = await shell.openPath(String(file));
+        if (err) throw new Error(err);
+        return true;
     });
 
     handle('project:changes', (id, oid) => (oid === 'working' ? rtOf(id).project.workingChanges() : rtOf(id).project.commitChanges(oid)));
@@ -1491,6 +1629,11 @@ function createWindow() {
                 if (fake === 'available') emit('update', { state: 'available', version: '1.1.0', notes: 'New: edits made in Google Drive arrive within a minute.\nFixed: PDF preview on iPhone.' });
                 if (fake === 'downloaded') emit('update', { state: 'downloaded', version: '1.1.0' });
                 if (process.env.DRAFTREWIND_EVAL) await mainWindow.webContents.executeJavaScript(process.env.DRAFTREWIND_EVAL).catch(e => console.error(e));
+                // Geliştirme: DRAFTREWIND_REPORT_PDF=dosya.pdf ile etkin projenin yazarlık raporunu diyalogsuz üret
+                if (process.env.DRAFTREWIND_REPORT_PDF) {
+                    const rt = runtimes.get(store.get('activeId'));
+                    if (rt) await reportPdf(rt).then(pdf => fs.writeFileSync(process.env.DRAFTREWIND_REPORT_PDF, pdf)).catch(e => console.error(e));
+                }
                 setTimeout(async () => {
                     const img = await mainWindow.webContents.capturePage();
                     fs.writeFileSync(process.env.DRAFTREWIND_SCREENSHOT, img.toPNG());
