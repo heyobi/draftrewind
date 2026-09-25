@@ -17,6 +17,9 @@ becomes a restore point you can look at, compare and go back to. No Git, no "com
 - **Cloud without the hassle** — private GitHub backup and two-way Google Drive sync in the background; when two
   devices edit the same file, both versions are kept.
 - **Phone app** — browse projects, history and documents, see coloured diffs, add files from your phone.
+- **Journey** — how the thesis grew: a word-count timeline with milestones, per-chapter growth, a frame-by-frame
+  scrubber, writing sessions, and an **authorship report** (PDF) that documents the writing process with verifiable
+  Git timestamps.
 - **Optional on-device AI** — short summaries of what changed, running locally (Apple Intelligence on iPhone, a small
   local model on Windows). Nothing is sent to an AI service.
 
@@ -25,6 +28,10 @@ becomes a restore point you can look at, compare and go back to. No Git, no "com
 **Time Machine** — pick a save point, see the difference, restore with one click.
 
 ![Time Machine](docs/screenshots/time-machine.png)
+
+**Journey** — the thesis as a timeline; scrub through every snapshot, export an authorship report.
+
+![Journey](docs/screenshots/journey.png)
 
 **Cloud & Phone** — connect GitHub or Google Drive once; backups run on their own.
 
