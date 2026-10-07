@@ -1,0 +1,42 @@
+name: Contributor License & DCO Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  dco-check:
+    name: Check DCO (Signed-off-by)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by on all commits
+        run: |
+          COMMITS=$(git log --no-merges --format="%H" origin/${{ github.base_ref }}..HEAD)
+          FAILED=0
+          for commit in $COMMITS; do
+            MSG=$(git log -1 --format="%B" $commit)
+            AUTHOR=$(git log -1 --format="%an <%ae>" $commit)
+            if ! echo "$MSG" | grep -q "^Signed-off-by:"; then
+              echo "::error::Commit $commit ('$(git log -1 --format="%s" $commit)') is missing 'Signed-off-by:'."
+              echo "Author: $AUTHOR"
+              echo "Fix by running: git commit --amend -s && git push --force"
+              FAILED=1
+            fi
+          done
+
+          if [ $FAILED -ne 0 ]; then
+            echo ""
+            echo "===================================================================================="
+            echo "DraftRewind is distributed on the Apple App Store under dual-licensing terms."
+            echo "All PR commits must be signed off (git commit -s) per CONTRIBUTING.md."
+            echo "===================================================================================="
+            exit 1
+          else
+            echo "All commits have valid Signed-off-by tags. Contributor license certified."
+          fi

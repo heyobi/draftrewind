@@ -1,0 +1,84 @@
+name: Mobile PR & Apple Compliance Check
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'mobile-expo/**'
+      - '.github/workflows/mobile-pr-check.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: mobile-expo
+
+jobs:
+  validate-apple-compliance:
+    name: Verify Apple Guidelines & Expo Health
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: mobile-expo/package-lock.json
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Verify app.json for Apple App Store Compliance
+        run: |
+          node -e "
+            const fs = require('fs');
+            const app = JSON.parse(fs.readFileSync('app.json', 'utf8')).expo;
+            let errors = [];
+
+            // 1. Bundle Identifier
+            if (!app.ios?.bundleIdentifier) {
+              errors.push('Missing ios.bundleIdentifier in app.json');
+            }
+
+            // 2. Encryption Compliance
+            if (typeof app.ios?.infoPlist?.ITSAppUsesNonExemptEncryption !== 'boolean') {
+              errors.push('Missing or invalid ITSAppUsesNonExemptEncryption in ios.infoPlist');
+            }
+
+            // 3. Apple Privacy Manifest
+            const privacy = app.ios?.privacyManifests;
+            if (!privacy || !Array.isArray(privacy.NSPrivacyAccessedAPITypes) || privacy.NSPrivacyAccessedAPITypes.length === 0) {
+              errors.push('Missing or empty ios.privacyManifests.NSPrivacyAccessedAPITypes (Required by Apple)');
+            }
+
+            // 4. Permissions Descriptions
+            const plugins = app.plugins || [];
+            const cameraPlugin = plugins.find(p => Array.isArray(p) && p[0] === 'expo-camera');
+            if (cameraPlugin && !cameraPlugin[1]?.cameraPermission) {
+              errors.push('Missing cameraPermission description for expo-camera (Apple App Review rejection risk)');
+            }
+
+            const imgPlugin = plugins.find(p => Array.isArray(p) && p[0] === 'expo-image-picker');
+            if (imgPlugin && (!imgPlugin[1]?.cameraPermission || !imgPlugin[1]?.photosPermission)) {
+              errors.push('Missing cameraPermission or photosPermission for expo-image-picker');
+            }
+
+            if (errors.length > 0) {
+              console.error('::error::Apple App Store compliance verification failed:');
+              errors.forEach(e => console.error('  - ' + e));
+              process.exit(1);
+            } else {
+              console.log('✓ Apple App Store & Privacy compliance verified successfully.');
+            }
+          "
+
+      - name: Expo Doctor Check
+        run: npx expo-doctor
+
+      - name: Expo Lint
+        run: npm run lint || true
+
+      - name: Verify iOS Prebuild Generation
+        run: npx expo prebuild --platform ios --clean --no-install
