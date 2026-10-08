@@ -111,18 +111,23 @@ if (fs.existsSync(pbxPath)) {
     }
   }
 
-  // Update XCBuildConfiguration blocks
+  // Update XCBuildConfiguration section
+  const sectionMatch = pbx.match(/\/\* Begin XCBuildConfiguration section \*\/([\s\S]*?)\/\* End XCBuildConfiguration section \*\//);
+  if (!sectionMatch) {
+    throw new Error('XCBuildConfiguration section not found in project.pbxproj!');
+  }
+
+  let sectionBody = sectionMatch[1];
   let appConfigsCount = 0;
   let widgetConfigsCount = 0;
 
-  const configRegex = /([0-9A-Fa-f]{24}\s*(?:\/\*[^*]*\*\/)?\s*=\s*{\s*isa = XCBuildConfiguration;\s*buildSettings = {)([\s\S]*?)(};)/g;
-  pbx = pbx.replace(configRegex, (match, header, settings, footer) => {
-    const idMatch = header.match(/^([0-9A-Fa-f]{24})/);
-    const configId = idMatch ? idMatch[1] : null;
-    const targetName = configId ? targetMap[configId] : null;
-
+  // Match every XCBuildConfiguration block regardless of baseConfigurationReference presence
+  const blockRegex = /([0-9A-Fa-f]{24})\s*(?:\/\*[^*]*\*\/)?\s*=\s*{([\s\S]*?buildSettings\s*=\s*{)([\s\S]*?)(\n\t*};[\s\S]*?\n\t*};)/g;
+  sectionBody = sectionBody.replace(blockRegex, (match, configId, header, settings, footer) => {
+    const targetName = targetMap[configId];
     let s = settings;
-    // Strip old signing settings
+
+    // Remove old signing settings
     s = s.replace(/DEVELOPMENT_TEAM\s*=[^;]*;/g, '');
     s = s.replace(/PROVISIONING_PROFILE(?:_SPECIFIER)?\s*=[^;]*;/g, '');
     s = s.replace(/CODE_SIGN_STYLE\s*=[^;]*;/g, '');
@@ -133,35 +138,38 @@ if (fs.existsSync(pbxPath)) {
     s += `\n\t\t\t\tCODE_SIGN_IDENTITY = "Apple Distribution";`;
     s += `\n\t\t\t\t"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";`;
 
-    const isWidget = targetName === 'ExpoWidgetsTarget' || targetName?.toLowerCase().includes('widget') || s.includes('com.draftrewind.app.widgets');
-    const isApp = targetName === 'DraftRewind' || targetName?.toLowerCase().includes('draftrewind') || s.includes('com.draftrewind.app');
+    const isWidget = targetName === 'ExpoWidgetsTarget' || targetName?.toLowerCase().includes('widget');
+    const isApp = targetName === 'DraftRewind' || targetName?.toLowerCase().includes('draftrewind');
 
     if (isWidget) {
       s += `\n\t\t\t\tPROVISIONING_PROFILE = "${WIDGET_PROFILE_UUID}";`;
       s += `\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "${WIDGET_PROFILE_NAME}";`;
       widgetConfigsCount++;
-      console.log(`  ✓ Configured build config ${configId} for target '${targetName || 'Widget'}' with profile ${WIDGET_PROFILE_NAME} (${WIDGET_PROFILE_UUID})`);
+      console.log(`  ✓ Configured build config ${configId} for target '${targetName}' with profile ${WIDGET_PROFILE_NAME} (${WIDGET_PROFILE_UUID})`);
     } else if (isApp) {
       s += `\n\t\t\t\tPROVISIONING_PROFILE = "${APP_PROFILE_UUID}";`;
       s += `\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "${APP_PROFILE_NAME}";`;
       appConfigsCount++;
-      console.log(`  ✓ Configured build config ${configId} for target '${targetName || 'DraftRewind'}' with profile ${APP_PROFILE_NAME} (${APP_PROFILE_UUID})`);
+      console.log(`  ✓ Configured build config ${configId} for target '${targetName}' with profile ${APP_PROFILE_NAME} (${APP_PROFILE_UUID})`);
     } else {
       console.log(`  ✓ Configured generic build config ${configId} for target '${targetName || 'Project'}'`);
     }
 
-    return header + s + '\n\t\t\t' + footer;
+    return `${configId} = {${header}${s}${footer}`;
   });
 
+  pbx = pbx.replace(sectionMatch[1], sectionBody);
   fs.writeFileSync(pbxPath, pbx, 'utf8');
+
   console.log(`--- Configuration Summary ---`);
   console.log(`Main App configs patched: ${appConfigsCount}`);
   console.log(`Widget configs patched: ${widgetConfigsCount}`);
+
   if (appConfigsCount === 0 || widgetConfigsCount === 0) {
-    console.warn('⚠️ WARNING: Some target configurations might not have been matched!');
-  } else {
-    console.log('✓ All target signing settings successfully updated in project.pbxproj!');
+    throw new Error(`CRITICAL: Expected to patch configurations for both App and Widgets, but found: App=${appConfigsCount}, Widgets=${widgetConfigsCount}`);
   }
+
+  console.log('✓ All target signing settings successfully updated in project.pbxproj!');
 } else {
   console.warn('⚠️ Warning: ios/DraftRewind.xcodeproj/project.pbxproj not found!');
 }
