@@ -866,6 +866,7 @@ function Root() {
           <HomeScreen c={c} prefs={prefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} syncTick={syncTick} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
         )}
       </Centered>
+      {ready && signedIn ? <StatusScrim c={c} /> : null}
       <QrScanner c={c} visible={scanning} onClose={() => setScanning(false)} onUrl={(url) => handleUrlRef.current(url, true)} />
       <SettingsSheet
         onScan={() => {
@@ -1093,6 +1094,19 @@ function QrHint({ c, onScan }) {
   );
 }
 
+// Durum çubuğunun arkasında yarı saydam şerit: kaydırılan içerik (geri düğmesi vb.) saatle üst üste binmez
+function StatusScrim({ c }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <LinearGradient
+      pointerEvents="none"
+      colors={[c.bg, c.bg + 'ee', c.bg + '00']}
+      locations={[0, 0.7, 1]}
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, height: insets.top + 14 }}
+    />
+  );
+}
+
 // Seçmeli düğme grubu (dil / tema)
 function Segmented({ c, options, value, onChange }) {
   return (
@@ -1240,6 +1254,13 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Yeni oluşturulan projeler GitHub listesine birkaç saniye geç düşer: o sürede yerelden gösterilir
+  const fresh = useRef([]);
+  const withFresh = (list) => {
+    const keep = fresh.current.filter((p) => Date.now() - p.createdAt < 180000 && !list.some((x) => x.repo === p.repo));
+    fresh.current = keep;
+    return [...keep, ...list];
+  };
   const autoPush = prefs ? prefs.autoPush !== false : true;
 
   // Bu cihazda çalışma alanı olan projeler: Word'de kaydedilenler ana ekrana dönünce de gönderilsin
@@ -1273,14 +1294,26 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
       if (!name) return;
       setCreating(true);
       try {
+        if (!ghToken && drive) {
+          // Yalnızca Drive ile giriş: Drive'da klasör olarak oluştur ve aç
+          const f = await drive.createProject(name);
+          success();
+          setDriveList((l) => [f, ...(l || []).filter((x) => x.id !== f.id)]);
+          onOpen({ type: 'drive', folder: f });
+          return;
+        }
         const p = await GH.createProject(ghToken, name, t('home.newProjectReadme'));
         WS.ensureProjectDir(p);
         const st = WS.loadState(p);
         st.full = true;
+        st.lastPush = Date.now();
         WS.saveState(p, st);
         success();
+        const entry = { ...p, pushedAt: Date.now(), createdAt: Date.now() };
+        fresh.current = [entry, ...fresh.current.filter((x) => x.repo !== p.repo)];
+        setGhList((l) => withFresh(l || []));
         Alert.alert(t('home.newProjectCreated', { name }), t('home.newProjectCreatedBody', { path: WS.filesPath(p) }), [{ text: t('common.ok') }]);
-        await load();
+        onOpen({ type: 'gh', project: { ...entry, index: 0 } });
       } catch (e) {
         warn();
         if (e && e.auth) onAuthErrorGh();
@@ -1311,7 +1344,8 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
     if (ghToken)
       jobs.push(
         GH.listProjects(ghToken)
-          .then(async (list) => {
+          .then(async (raw) => {
+            const list = withFresh(raw);
             setGhList(list);
             // Yedek sağlığı: en yeni kayıt projelerin son gönderim zamanlarından
             const newest = list.reduce((m, p) => Math.max(m, p.pushedAt || 0), 0);
@@ -1321,7 +1355,7 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
             const found = await announceNewSaves(ghToken, list);
             if (found && found.length) setNews(found);
             // Yerel düzenlemeler gönderildiyse "son yedek" zamanı değişmiştir: listeyi tazele
-            if (await syncLocal(list)) GH.listProjects(ghToken).then(setGhList).catch(() => {});
+            if (await syncLocal(list)) GH.listProjects(ghToken).then((l) => setGhList(withFresh(l))).catch(() => {});
           })
           .catch((e) => {
             if (e.auth) onAuthErrorGh();
@@ -1363,7 +1397,13 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
   const name = (ghUser && ghUser.name) || (google && google.user && google.user.name) || '';
   const avatar = (ghUser && ghUser.avatar) || (google && google.user && google.user.picture);
   const loading = (ghToken && ghList === null) || (drive && driveList === null);
-  const empty = !loading && !(ghList && ghList.length) && !(driveList && driveList.length);
+  // Aynı proje hem GitHub'da hem Drive'da: tek satır (GitHub görünümü daha zengin), üstünde "Drive" etiketi
+  const norm = (s) => String(s || '').trim().toLocaleLowerCase('tr-TR');
+  const ghNames = new Set((ghList || []).map((p) => norm(p.name)));
+  const driveNames = new Set((driveList || []).map((f) => norm(f.name)));
+  const driveOnly = (driveList || []).filter((f) => !ghNames.has(norm(f.name)));
+  const empty = !loading && !(ghList && ghList.length) && !driveOnly.length;
+  const canCreate = !!(ghToken && ghList) || !!(!ghToken && drive && driveList);
 
   return (
     <ScrollView
@@ -1424,9 +1464,9 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
       {error ? <Text style={{ color: c.red, marginVertical: 10 }}>{error}</Text> : null}
       {loading && !(ghList && ghList.length) && !(driveList && driveList.length) ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
 
-      {ghToken && ghList ? (
+      {canCreate ? (
         <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 }}>
-          {ghList.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>{t('home.githubHeader')}</Text> : <View style={s.flex} />}
+          {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>{t('home.githubHeader')}</Text> : !ghToken && driveOnly.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>GOOGLE DRIVE</Text> : <View style={s.flex} />}
           <Jelly onPress={newProject} disabled={creating} scaleTo={0.92} accessibilityLabel={t('home.newProject')} testID="new-project-button">
             <Glass c={c} interactive tint={c.accent + '33'} style={[s.pillBtn, s.btnRow, { gap: 5, paddingLeft: 10 }]}>
               {creating ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="plus" size={13} color={c.accent} weight="bold" />}
@@ -1443,15 +1483,18 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
             </LinearGradient>
             <View style={s.flex}>
               <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
-              <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }}>{t('home.lastBackup', { ago: ago(p.pushedAt) })}</Text>
+              <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
+                {t('home.lastBackup', { ago: ago(p.pushedAt) })}
+                {driveNames.has(norm(p.name)) ? ` · ${t('home.alsoDrive')}` : ''}
+              </Text>
             </View>
             <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
           </Glass>
         </Jelly>
       ))}
 
-      {driveList && driveList.length ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
-      {(driveList || []).map((f) => (
+      {driveOnly.length && ghToken ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
+      {driveOnly.map((f) => (
         <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={f.name} testID="project-row">
           <Glass c={c} interactive style={s.projRow}>
             <LinearGradient colors={DRIVE_LOOK.colors} style={s.projTile}>
@@ -1588,7 +1631,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     try {
       const r = await WS.syncProject(token, project, { auto: manual || autoPush, manual: !!manual });
       reportSync(r, project, onAuthError, !!manual);
-      if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.title'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
+      if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.upToDateTitle'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
       if (r && r.pull && r.pull.updated.length) {
         const n = r.pull.updated.length;
         pulse({ icon: 'arrow.down.circle.fill', color: '#38bdf8', title: t('ws.pulled', { n, count: n }), subtitle: project.name, short: t('ws.downloadDoneShort') }, 5000);
@@ -1898,7 +1941,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
                 <Text style={{ color: c.text, fontWeight: '700', fontSize: 15, flex: 1 }}>{t('ws.title')}</Text>
                 {syncing ? <ActivityIndicator color={c.accent} size="small" /> : null}
               </View>
-              <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush) }) : t('ws.statusNone')}</Text>
+              <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? (ws.lastPush || ws.lastPull ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush || ws.lastPull) }) : t('ws.statusSynced', { n: ws.count, count: ws.count })) : t('ws.statusNone')}</Text>
               {ws.count ? <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('ws.filesHint', { path: WS.filesPath(project) })}</Text> : null}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                 <Jelly onPress={downloadProject} disabled={downloading || syncing} scaleTo={0.97} style={s.flex} accessibilityLabel={t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')} testID="download-project-button">
@@ -2583,8 +2626,12 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
     load();
   }, [load]);
 
+  const [dtab, setDtab] = useState('docs');
   const back = () => (stack.length > 1 ? setStack(stack.slice(0, -1)) : onBack());
   const isVersions = current.name === '_Sürümler';
+  const atRoot = stack.length === 1;
+  const versionsFolder = atRoot && items ? items.find((it) => it.folder && it.name === '_Sürümler') : null;
+  const shown = atRoot ? (items || []).filter((it) => it !== versionsFolder) : items || [];
   const openItem = (it) => setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, aiId: `drive:${it.id}:${it.modified}`, load: () => drive.download(it.id) });
   const itemActions = (it) =>
     showActions(c, {
@@ -2657,13 +2704,39 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
           backLabel={stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}
           right={!isVersions && items ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
           look={isVersions ? { colors: DRIVE_LOOK.colors, icon: 'clock.arrow.circlepath' } : DRIVE_LOOK}
-          eyebrow={t('drive.eyebrow')}
+          eyebrow={atRoot ? t('project.eyebrow') : t('drive.eyebrow')}
           title={isVersions ? t('drive.versions') : current.name}
           subtitle={isVersions ? t('drive.versionsSub') : items ? `Google Drive · ${t('drive.itemCount', { n: items.length, count: items.length })}` : 'Google Drive'}
         />
+        {atRoot ? (
+          <Glass c={c} tint={c.accent + '18'} style={{ padding: 14, marginBottom: 12, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+            <Icon name="info.circle" size={20} color={c.accent} />
+            <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, flex: 1 }}>{t('drive.onlyInfo')}</Text>
+          </Glass>
+        ) : null}
+        {atRoot && versionsFolder ? (
+          <Glass c={c} style={[s.seg, { marginBottom: 12 }]}>
+            {[
+              ['docs', t('drive.tabDocs', { n: num(shown.length) })],
+              ['versions', t('drive.tabVersions')],
+            ].map(([k, label]) => (
+              <Pressable
+                key={k}
+                onPress={() => {
+                  tap();
+                  if (k === 'versions') setStack([...stack, versionsFolder]);
+                  else setDtab('docs');
+                }}
+                style={[s.segBtn, dtab === k && k === 'docs' && { backgroundColor: c.dark ? '#ffffff22' : '#ffffffcc' }]}
+              >
+                <Text style={{ color: k === 'docs' ? c.text : c.text2, fontWeight: '700', fontSize: 13.5 }}>{label}</Text>
+              </Pressable>
+            ))}
+          </Glass>
+        ) : null}
         {error ? <Text style={{ color: c.red }}>{error}</Text> : null}
         {items === null && !error ? <SkeletonRows c={c} rows={5} /> : null}
-        {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : items || []).map((it) => (
+        {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : shown).map((it) => (
           <Jelly
             key={it.id}
             scaleTo={0.98}
@@ -2683,7 +2756,7 @@ function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
             </Glass>
           </Jelly>
         ))}
-        {items && items.length === 0 ? <EmptyState c={c} icon="folder" title={t('empty.folder')} body={t('drive.empty')} /> : null}
+        {items && shown.length === 0 && !isVersions ? <EmptyState c={c} icon="folder" title={t('empty.folder')} body={t('drive.empty')} /> : null}
         {items && items.some((it) => !it.folder) ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
       </ScrollView>
       <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} />

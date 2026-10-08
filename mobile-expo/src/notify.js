@@ -79,9 +79,11 @@ export async function checkBackupHealth(newest, notifyEnabled) {
   if (!stale) return { stale: false, showCard: false, newest };
   const h = loadHealth();
   const showCard = h.dismissedDay !== dayKey();
-  if (notifyEnabled && Date.now() - (h.lastNotified || 0) > NOTIFY_EVERY) {
+  // Aynı durgunluk için tek bildirim: yeni bir kayıt gelip yine 3 gün geçerse tekrar uyarılır.
+  // (Yazmaya ara veren öğrenciyi her gün rahatsız etmesin.)
+  if (notifyEnabled && h.notifiedFor !== newest && Date.now() - (h.lastNotified || 0) > NOTIFY_EVERY) {
     // Zaman damgası izin sonucundan bağımsız ilerler: reddedildiyse her açılışta yeniden sorulmaz
-    saveHealth({ ...h, lastNotified: Date.now() });
+    saveHealth({ ...h, lastNotified: Date.now(), notifiedFor: newest });
     if (await ensurePermission()) await notifyNow(STALE_ID, t('notify.staleTitle'), t('notify.staleBody'));
   }
   return { stale, showCard, newest };

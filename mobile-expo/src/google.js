@@ -180,6 +180,37 @@ export class Drive {
     return out.sort((a, b) => b.modified - a.modified);
   }
 
+  // Yalnızca Drive ile girişte "Yeni proje": DraftRewind kök klasörü (yoksa oluşturulur) altında bir klasör.
+  // Aynı adlı klasör varsa "Ad (2)" gibi ayrılır. Masaüstü bu klasörü ad ve appProperties ile tanır.
+  async createProject(name) {
+    const clean = String(name || '').replace(/[\\/:*?"<>|]/g, '-').trim();
+    if (!clean) throw new Error(translate('err.drive', { status: 400 }));
+    const rq = `mimeType='application/vnd.google-apps.folder' and trashed=false and 'root' in parents and name='${ROOT_FOLDERS[0]}'`;
+    const roots = await this.get(`https://www.googleapis.com/drive/v3/files?fields=files(id,name,createdTime)&q=${encodeURIComponent(rq)}`);
+    let rootId = roots.files.sort((a, b) => String(a.createdTime).localeCompare(String(b.createdTime)))[0]?.id;
+    if (!rootId) rootId = (await this.createFolder(ROOT_FOLDERS[0], null)).id;
+    const taken = new Set((await this.children(rootId, true)).map((f) => f.name.toLocaleLowerCase('tr-TR')));
+    let final = clean;
+    for (let i = 2; taken.has(final.toLocaleLowerCase('tr-TR')) && i < 100; i++) final = `${clean} (${i})`;
+    const f = await this.createFolder(final, rootId, { draftrewind: '1' });
+    return { id: f.id, name: final, folder: true, modified: Date.now(), size: 0 };
+  }
+
+  async createFolder(name, parentId, appProperties) {
+    const r = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${await this.token()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: parentId ? [parentId] : undefined, appProperties }),
+    });
+    if (r.status === 401) {
+      const e = new Error(translate('err.googleExpired'));
+      e.auth = true;
+      throw e;
+    }
+    if (!r.ok) throw new Error(translate('err.drive', { status: r.status }));
+    return r.json();
+  }
+
   download(id) {
     return this.get(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, true);
   }
