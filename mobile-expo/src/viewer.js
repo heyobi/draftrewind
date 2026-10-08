@@ -48,7 +48,7 @@ const DECODE = (L) => `
   var L=${jsonForScript(L)};
   function b64ToBytes(b64){var bin=atob(b64);var u=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;}
   function done(){window.ReactNativeWebView&&window.ReactNativeWebView.postMessage('ready');}
-  function fail(e){document.getElementById('msg').textContent=L.failed+e;done();}
+  function fail(e){var s=String(e||'');document.getElementById('msg').textContent=/central directory|zip|corrupt|signature/i.test(s)?(L.damaged||L.failed):(L.failed+s);done();}
 `;
 
 export function wordHtml(b64, dark, labels, libs) {

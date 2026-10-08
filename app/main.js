@@ -646,15 +646,21 @@ function computeStats(history) {
     const chron = [...history].reverse();
     const dayLast = new Map();
     const activeDays = new Set();
+    // İlk günün başlangıcı o günün ilk kaydındaki toplamdır: var olan tezin ilk eklenişi "yazılmış"
+    // sayılmaz, ama o gün sonradan yazılanlar sayılır
+    let firstTotal = null;
     for (const h of chron) {
         const k = dayKey(h.time);
-        if (typeof h.total === 'number') dayLast.set(k, h.total);
+        if (typeof h.total === 'number') {
+            if (firstTotal == null) firstTotal = h.total;
+            dayLast.set(k, h.total);
+        }
         if (h.kind !== 'merge') activeDays.add(k);
     }
     const perDay = new Map();
     let prevTotal = null;
     for (const [k, total] of dayLast) {
-        perDay.set(k, prevTotal == null ? 0 : total - prevTotal);
+        perDay.set(k, total - (prevTotal == null ? firstTotal : prevTotal));
         prevTotal = total;
     }
     const today = new Date();

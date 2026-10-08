@@ -16,15 +16,21 @@ function daily(history) {
   const chron = [...history].reverse();
   const dayLast = new Map();
   const active = new Set();
+  // İlk günün başlangıcı: o günün İLK kaydındaki toplam. (Var olan bir tez ilk kez eklendiğinde
+  // içindeki binlerce kelime "bugün yazıldı" sayılmaz; sıfırdan başlanan projede yazılanlar sayılır.)
+  let firstTotal = null;
   for (const h of chron) {
     const k = dayKey(h.time);
-    if (typeof h.total === 'number') dayLast.set(k, h.total);
+    if (typeof h.total === 'number') {
+      if (firstTotal == null) firstTotal = h.total;
+      dayLast.set(k, h.total);
+    }
     if (isWriting(h)) active.add(k);
   }
   const perDay = new Map();
   let prev = null;
   for (const [k, total] of dayLast) {
-    perDay.set(k, prev == null ? 0 : total - prev);
+    perDay.set(k, total - (prev == null ? firstTotal : prev));
     prev = total;
   }
   return { perDay, active };
