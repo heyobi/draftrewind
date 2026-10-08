@@ -1942,6 +1942,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
                 {syncing ? <ActivityIndicator color={c.accent} size="small" /> : null}
               </View>
               <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? (ws.lastPush || ws.lastPull ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush || ws.lastPull) }) : t('ws.statusSynced', { n: ws.count, count: ws.count })) : t('ws.statusNone')}</Text>
+              {ws.pending ? <Text style={{ color: '#f97316', fontSize: 13, fontWeight: '700', marginTop: 4 }}>{t('ws.pending', { n: ws.pending, count: ws.pending })}</Text> : null}
               {ws.count ? <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('ws.filesHint', { path: WS.filesPath(project) })}</Text> : null}
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                 <Jelly onPress={downloadProject} disabled={downloading || syncing} scaleTo={0.97} style={s.flex} accessibilityLabel={t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')} testID="download-project-button">
@@ -1950,7 +1951,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
                     <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, flexShrink: 1 }} numberOfLines={2}>{t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')}</Text>
                   </View>
                 </Jelly>
-                {ws.count ? (
+                {ws.pending ? (
                   <Jelly onPress={() => runSync({ manual: true })} disabled={syncing || downloading} scaleTo={0.97} accessibilityLabel={t('ws.syncNow')} testID="sync-now-button">
                     <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
                       <Icon name="arrow.up.circle" size={16} color={c.accent} weight="semibold" />

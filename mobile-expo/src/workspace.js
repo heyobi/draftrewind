@@ -111,7 +111,13 @@ function track(st, path, file, sha, snapshot) {
 // Ekrandaki durum satırı için: bu cihazdaki dosya sayısı, son gönderim
 export function status(p) {
   const st = loadState(p);
-  return { count: Object.keys(st.files).length, lastPush: st.lastPush, lastPull: st.lastPull, full: !!st.full };
+  // Gönderilmeyi bekleyen değişiklik sayısı ("Şimdi gönder" yalnızca bunlar varken görünür)
+  let pending = 0;
+  try {
+    const r = scanChanges(p);
+    pending = r.modified.length + r.added.length + r.deleted.length;
+  } catch (e) {}
+  return { count: Object.keys(st.files).length, lastPush: st.lastPush, lastPull: st.lastPull, full: !!st.full, pending };
 }
 
 // Bir dosyanın en yeni halini çalışma alanına indirir ve izlemeye alır
