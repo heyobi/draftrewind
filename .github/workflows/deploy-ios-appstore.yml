@@ -109,7 +109,8 @@ jobs:
             -scheme DraftRewind \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/DraftRewind.xcarchive | tail -n 120
+            -archivePath build/DraftRewind.xcarchive \
+            DEVELOPMENT_TEAM=U99V9TSK2X | tail -n 120
 
       - name: Export Signed IPA
         run: |
