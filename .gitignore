@@ -27,5 +27,6 @@ certs/
 *.cer
 *.p12
 *.mobileprovision
+!mobile-expo/profiles/*.mobileprovision
 AuthKey_*.p8
 
