@@ -314,3 +314,35 @@ test('Drive API: resumable yükleme (8 MB parçalar, kopan bağlantıdan devam) 
         globalThis.fetch = origFetch;
     }
 });
+
+// Telefonda (ya da başka bilgisayarda) oluşturulmuş klasör: masaüstü benimser, "(2)" açmaz;
+// başka bir bilgisayarın işaretli klasörü de paylaşılır (iki eşit düğüm, tek klasör)
+test('Klasör modu: telefonda oluşturulan projeyi benimseme', async () => {
+    const root = h.tmpDir();
+    const driveRoot = path.join(root, 'iCloud');
+    const phoneDir = path.join(driveRoot, 'DraftRewind', 'Telefon Tezi');
+    h.write(path.join(phoneDir, 'giris.txt'), 'telefonda yazıldı');
+    h.write(path.join(phoneDir, '_Sürümler', '2026-10-08 1200 giris.txt'), 'eski');
+    const p = await h.openProject({ root: h.tmpDir(), name: 'Telefon Tezi' });
+    const rec = { id: p.id, name: 'Telefon Tezi', driveFolderName: 'Telefon Tezi', driveAdopted: true };
+    const remote = new drive.FolderRemote(driveRoot);
+    await remote.prepare(p, rec);
+    assert.equal(remote.dir, phoneDir);
+    assert.equal(rec.driveFolderName, 'Telefon Tezi');
+    const res = await drive.reconcile(p, remote, {});
+    assert.deepEqual(res.downloaded, ['giris.txt']);
+    assert.equal(read(path.join(p.dir, 'giris.txt')), 'telefonda yazıldı');
+    assert.equal(fs.existsSync(path.join(driveRoot, 'DraftRewind', 'Telefon Tezi (2)')), false);
+    // Klasör artık bu projenin işaretini taşır
+    assert.equal(JSON.parse(read(path.join(phoneDir, '.draftrewind-proje.json'))).id, p.id);
+
+    // İkinci bilgisayar aynı klasörü benimser (işaret ilkinin kimliğiyle kalır)
+    const p2 = await h.openProject({ root: h.tmpDir(), name: 'Telefon Tezi' });
+    const rec2 = { id: p2.id, name: 'Telefon Tezi', driveFolderName: 'Telefon Tezi', driveAdopted: true, driveMarkerId: p.id };
+    const remote2 = new drive.FolderRemote(driveRoot);
+    await remote2.prepare(p2, rec2);
+    assert.equal(remote2.dir, phoneDir);
+    await drive.reconcile(p2, remote2, {});
+    assert.equal(read(path.join(p2.dir, 'giris.txt')), 'telefonda yazıldı');
+    assert.equal(fs.existsSync(path.join(driveRoot, 'DraftRewind', 'Telefon Tezi (2)')), false);
+});

@@ -994,7 +994,9 @@
                 </div>`;
         }
 
+        setTimeout(() => fillCloudFound(document.getElementById('cloud-found-tab')), 0);
         return `<div class="content">
+            <div id="cloud-found-tab"></div>
             <div class="cloud-grid">
                 <div class="card cloud-card"><div class="top"><div class="logo">${ic('github')}</div><div><h3>${t('cloud.ghTitle')}</h3><div class="sub">${t('cloud.ghSub')}</div></div><span class="badge chip ${gh.connected ? 'add' : 'mod'}">${gh.connected ? t('cloud.connected') : t('cloud.recommended')}</span></div>${ghBody}</div>
                 <div class="card cloud-card"><div class="top"><div class="logo">${ic('drive')}</div><div><h3>Google Drive</h3><div class="sub">${t('cloud.driveSub')}</div></div><span class="badge chip ${dr.mode ? 'add' : 'mod'}">${dr.mode ? t('cloud.connected') : t('cloud.optional')}</span></div>${drBody}</div>
@@ -1072,6 +1074,7 @@
 
     function addProjectModal() {
         const m = openModal(`<div class="modal-ic">${ic('files')}</div><h2>${t('addProj.title')}</h2><p class="sub">${t('addProj.sub')}</p>
+            <div id="cloud-found"></div>
             <div style="display:grid;gap:10px">
                 <button class="btn big primary" data-x="existing">${t('addProj.existing')}</button>
                 <button class="btn big" data-x="new">${t('addProj.new')}</button>
@@ -1081,6 +1084,32 @@
         m.querySelector('[data-x=existing]').onclick = () => { closeModal(); addExisting(); };
         m.querySelector('[data-x=new]').onclick = () => { closeModal(); createNew(); };
         m.querySelector('[data-x=github]').onclick = () => { closeModal(); importGithubModal(); };
+        fillCloudFound(m.querySelector('#cloud-found'));
+    }
+
+    // Bulutta olup bu bilgisayarda olmayan projeler: tek tıkla indir ve bağla
+    const SRC_LABEL = { github: 'GitHub', drive: 'Google Drive', icloud: 'iCloud Drive', folder: 'Drive' };
+    async function fillCloudFound(box) {
+        if (!box) return;
+        box.innerHTML = `<div class="cloud-found loading">${t('cloudFound.searching')}</div>`;
+        let list = [];
+        try { list = (await av.projects.discoverCloud()) || []; } catch (e) { list = []; }
+        if (!box.isConnected) return;
+        if (!list.length) { box.innerHTML = ''; return; }
+        box.innerHTML = `<div class="cloud-found"><div class="cf-title">${ic('cloudUp')} ${t('cloudFound.title')}</div><div class="cf-sub">${t('cloudFound.sub')}</div>
+            ${list.slice(0, 8).map((it, i) => `<div class="cf-row"><div class="cf-main"><b>${esc(it.name)}</b><span>${esc(SRC_LABEL[it.source] || it.source)}${it.alsoCloud ? ` + ${esc(SRC_LABEL[it.alsoCloud.source] || '')}` : ''} · ${ago(it.updatedAt)}</span></div><button class="btn sm primary" data-adopt="${i}">${t('cloudFound.get')}</button></div>`).join('')}</div>`;
+        box.querySelectorAll('[data-adopt]').forEach(b => (b.onclick = async () => {
+            const it = list[Number(b.dataset.adopt)];
+            b.disabled = true;
+            b.textContent = t('cloudFound.getting');
+            const r = await run(() => av.projects.adoptCloud(it));
+            if (!r) { b.disabled = false; b.textContent = t('cloudFound.get'); return; }
+            closeModal();
+            S.activeId = r.id;
+            S.tab = 'home';
+            toast(t('cloudFound.done', { name: r.name }), 'check', 5000);
+            refresh();
+        }));
     }
 
     function starModal() {

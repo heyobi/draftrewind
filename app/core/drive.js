@@ -166,15 +166,26 @@ class FolderRemote {
     // Projeye ait klasörü bul/oluştur. Aynı isimde başka projenin klasörü varsa "(2)" ekle.
     async prepare(project, record) {
         const base = path.join(this.root, ROOT_NAME);
-        const mine = dir => {
+        const markerOf = dir => {
             try {
-                return JSON.parse(fs.readFileSync(path.join(dir, MARKER), 'utf8')).id === project.id;
+                return JSON.parse(fs.readFileSync(path.join(dir, MARKER), 'utf8'));
             } catch (e) {
-                return false;
+                return null;
             }
         };
-        if (record.driveFolderName && mine(path.join(base, record.driveFolderName))) {
-            this.dir = path.join(base, record.driveFolderName);
+        // Benimsenen klasör (telefonda ya da başka bilgisayarda oluşturulmuş): işaretindeki kimlik
+        // record.driveMarkerId olarak saklanır; iki cihaz aynı klasörü paylaşır, "(2)" açılmaz
+        const mine = dir => {
+            const m = markerOf(dir);
+            return !!m && (m.id === project.id || (record.driveMarkerId && m.id === record.driveMarkerId));
+        };
+        const adopted = record.driveFolderName ? path.join(base, record.driveFolderName) : null;
+        if (adopted && fs.existsSync(adopted) && (mine(adopted) || (record.driveAdopted && !markerOf(adopted)))) {
+            this.dir = adopted;
+            if (!markerOf(adopted)) {
+                // İşaretsiz klasör (telefonda oluşturulmuş): bundan sonra bu projeye ait olduğu bilinsin
+                try { fs.writeFileSync(path.join(adopted, MARKER), JSON.stringify({ id: project.id, name: project.name, note: 'DraftRewind bu klasörü eşitliyor. Bu dosyayı silmeyin.' })); } catch (e) {}
+            }
         } else {
             const name = safeName(project.name);
             for (let i = 1; i < 100; i++) {

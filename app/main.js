@@ -848,6 +848,113 @@ async function thinProject(rt, force = false) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Bulutta olup bu bilgisayarda olmayan projeler (telefonda ya da başka bilgisayarda oluşturulmuş).
+// Her cihaz eşit: aynı GitHub deposunu / Drive ya da iCloud klasörünü paylaşırlar.
+// ---------------------------------------------------------------------------
+const normName = s => String(s || '').trim().toLocaleLowerCase('tr-TR');
+
+async function discoverCloudProjects() {
+    const recs = projects();
+    const localIds = new Set(recs.map(r => r.id));
+    const out = [];
+    let token = null;
+    try { token = await freshGithubToken(); } catch (e) { token = githubToken(); }
+    if (token) {
+        const r = await github.api(token, 'GET', '/user/repos?per_page=100&sort=pushed&affiliation=owner');
+        if (r.ok && Array.isArray(r.data)) {
+            for (const repo of r.data) {
+                const tagged = (repo.topics || []).some(t => t === 'draftrewind' || t === 'acadamiv') || /(DraftRewind|AcadamiV) ile otomatik yedeklenir/.test(repo.description || '');
+                if (!tagged) continue;
+                if (recs.some(x => x.github && normName(x.github.owner) === normName(repo.owner.login) && normName(x.github.repo) === normName(repo.name))) continue;
+                out.push({
+                    source: 'github',
+                    key: `gh:${repo.full_name}`,
+                    name: (repo.description || '').split(' — ')[0] || repo.name.replace(/^(draftrewind|acadamiv)-/, ''),
+                    url: repo.html_url,
+                    updatedAt: Date.parse(repo.pushed_at) || 0
+                });
+            }
+        }
+    }
+    const d = store.get('drive', {});
+    if (d.mode === 'account' && driveApi) {
+        try {
+            const root = await new drive.ApiRemote(driveApi).rootFolder();
+            const kids = await driveApi.query(`'${root.id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`, 'files(id,name,modifiedTime,appProperties)');
+            for (const f of kids) {
+                if (recs.some(x => x.driveFolderId === f.id)) continue;
+                const pid = f.appProperties && f.appProperties.draftrewindId;
+                if (pid && localIds.has(pid)) continue;
+                out.push({ source: 'drive', key: `drive:${f.id}`, name: f.name, folderId: f.id, updatedAt: Date.parse(f.modifiedTime) || 0 });
+            }
+        } catch (e) {}
+    } else if (d.mode === 'folder' && d.folder) {
+        const base = path.join(d.folder, 'DraftRewind');
+        const kind = /iCloud~com~draftrewind~app/i.test(d.folder) ? 'icloud' : 'folder';
+        let entries = [];
+        try { entries = fs.readdirSync(base, { withFileTypes: true }); } catch (e) {}
+        for (const e of entries) {
+            if (!e.isDirectory() || e.name.startsWith('.')) continue;
+            const dir = path.join(base, e.name);
+            let marker = null;
+            try { marker = JSON.parse(fs.readFileSync(path.join(dir, '.draftrewind-proje.json'), 'utf8')); } catch (err) {}
+            if (marker && localIds.has(marker.id)) continue;
+            if (recs.some(x => x.driveFolderName === e.name)) continue;
+            let mt = 0;
+            try { mt = fs.statSync(dir).mtimeMs; } catch (err) {}
+            out.push({ source: kind, key: `folder:${e.name}`, name: e.name, folderName: e.name, markerId: marker ? marker.id : null, updatedAt: mt });
+        }
+    }
+    // Aynı proje GitHub'da ve Drive/iCloud'da: tek satır (GitHub geçmişi taşır; indirince klasör de bağlanır)
+    const result = [];
+    for (const o of out) {
+        if (o.source !== 'github') {
+            const g = out.find(x => x.source === 'github' && normName(x.name) === normName(o.name));
+            if (g) {
+                g.alsoCloud = o;
+                continue;
+            }
+        }
+        result.push(o);
+    }
+    return result.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function linkCloudFolder(record, item) {
+    if (item.source === 'drive') record.driveFolderId = item.folderId;
+    else if (item.folderName) {
+        record.driveFolderName = item.folderName;
+        record.driveAdopted = true;
+        if (item.markerId) record.driveMarkerId = item.markerId;
+    }
+}
+
+function freeLocalDir(name) {
+    const base = path.join(app.getPath('documents'), 'DraftRewind');
+    const clean = String(name || 'Proje').replace(/[<>:"/\\|?*]/g, '-').trim() || 'Proje';
+    for (let i = 1; i < 100; i++) {
+        const dir = path.join(base, i === 1 ? clean : `${clean} (${i})`);
+        if (!fs.existsSync(dir) || !fs.readdirSync(dir).length) return dir;
+    }
+    return path.join(base, `${clean} (${Date.now()})`);
+}
+
+async function adoptCloudProject(item) {
+    if (!item || !item.source) throw new Error(T('err.projectNotFound'));
+    if (item.source === 'github') return importGithubRepo(item.url, item.alsoCloud || null);
+    const dir = freeLocalDir(item.name);
+    fs.mkdirSync(dir, { recursive: true });
+    const record = { id: crypto.randomBytes(6).toString('hex'), name: item.name, dir, createdAt: Date.now() };
+    linkCloudFolder(record, item);
+    store.set('projects', [...projects(), record]);
+    store.set('activeId', record.id);
+    const rt = await startProject(record);
+    // Bulut klasöründeki dosyalar şimdi iner (boş yerel klasör → hepsi indirilir)
+    await syncDrive(rt);
+    return { id: record.id, name: record.name, dir };
+}
+
 async function addProjectFromDir(dir, name) {
     const existing = projects().find(p => path.resolve(p.dir).toLowerCase() === path.resolve(dir).toLowerCase());
     if (existing) {
@@ -1391,7 +1498,11 @@ function registerUxIpc() {
     handle('files:import', (id, paths) => copyIntoProject(rtOf(id), Array.isArray(paths) ? paths : []));
 
     // GitHub'dan proje aç: Belgeler/DraftRewind/<depo> içine indir, ayrı gitdir ile kaydet
-    handle('project:importGithub', async input => {
+    handle('project:importGithub', input => importGithubRepo(input));
+    handle('cloud:discover', () => discoverCloudProjects());
+    handle('cloud:adopt', item => adoptCloudProject(item));
+
+    async function importGithubRepo(input, cloud) {
         const importer = require('./core/importer');
         if (!importer.parseRepo(input)) throw new Error(T('imp.errBadLink'));
         let token = null;
@@ -1418,12 +1529,14 @@ function registerUxIpc() {
         if (me && me.login && res.owner && res.owner.toLowerCase() === String(me.login).toLowerCase()) {
             record.github = { owner: res.owner, repo: res.repo, url: `https://github.com/${res.owner}/${res.repo}` };
         }
+        // Aynı proje Drive/iCloud'da da varsa o klasöre bağlan (ikinci bir "(2)" klasörü açılmasın)
+        if (cloud) linkCloudFolder(record, cloud);
         store.set('projects', [...projects(), record]);
         store.set('activeId', id);
         const rt = await startProject(record);
         syncDrive(rt, 'star');
         return { id, name: record.name, dir: res.dir };
-    });
+    }
 
     // Telefonu QR ile eşle: jeton yalnızca QR içinde, 3 dakika geçerli (asla günlüğe yazılmaz)
     handle('phone:pairQr', async () => {

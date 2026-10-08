@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('av', {
         openFolder: id => call('project:openFolder', id),
         openFile: (id, rel) => call('file:open', id, rel),
         revealFile: (id, rel) => call('file:reveal', id, rel),
+        discoverCloud: () => call('cloud:discover'),
+        adoptCloud: item => call('cloud:adopt', item),
         importGithub: input => call('project:importGithub', input)
     },
 
