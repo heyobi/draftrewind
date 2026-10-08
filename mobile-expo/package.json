@@ -4,6 +4,7 @@
   "main": "index.js",
   "dependencies": {
     "@expo/ui": "~57.0.20",
+    "buffer": "^6.0.3",
     "expo": "~57.0.25",
     "expo-blur": "^57.0.3",
     "expo-camera": "~57.0.5",
@@ -25,6 +26,7 @@
     "expo-symbols": "~57.0.3",
     "expo-web-browser": "~57.0.3",
     "expo-widgets": "~57.0.21",
+    "isomorphic-git": "^1.42.2",
     "jszip": "^3.10.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
