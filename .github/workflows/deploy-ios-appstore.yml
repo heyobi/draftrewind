@@ -129,9 +129,26 @@ jobs:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.appstoreconnect/private_keys ~/.private_keys
-          printf '%s\n' "$API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
-          cp ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 ~/.private_keys/
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            const os = require('os');
+            const keyId = process.env.KEY_ID;
+            let raw = (process.env.API_KEY_CONTENT || '').trim();
+            raw = raw.replace(/^[\"']|[\"']$/g, '');
+            raw = raw.replace(/\\\\n/g, '\n').replace(/\\n/g, '\n').trim() + '\n';
+
+            const dirs = [
+              path.join(os.homedir(), '.appstoreconnect', 'private_keys'),
+              path.join(os.homedir(), '.private_keys')
+            ];
+            for (const d of dirs) {
+              fs.mkdirSync(d, { recursive: true });
+              const target = path.join(d, 'AuthKey_' + keyId + '.p8');
+              fs.writeFileSync(target, raw, 'utf8');
+              console.log('✓ Wrote private key to', target, '(' + raw.length + ' bytes)');
+            }
+          "
 
           IPA_PATH=$(find build/ipa -name "*.ipa" | head -n 1)
           echo "Uploading $IPA_PATH to App Store Connect..."
