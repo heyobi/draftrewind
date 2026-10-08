@@ -98,19 +98,8 @@ jobs:
       - name: Generate Native iOS Project (Expo Prebuild)
         run: npx expo prebuild --platform ios --clean
 
-      - name: Configure Manual Signing in Xcode Project
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pbxPath = 'ios/DraftRewind.xcodeproj/project.pbxproj';
-            if (fs.existsSync(pbxPath)) {
-              let pbx = fs.readFileSync(pbxPath, 'utf8');
-              pbx = pbx.replace(/ProvisioningStyle = Automatic;/g, 'ProvisioningStyle = Manual;');
-              pbx = pbx.replace(/CODE_SIGN_STYLE = Automatic;/g, 'CODE_SIGN_STYLE = Manual;');
-              fs.writeFileSync(pbxPath, pbx);
-              console.log('Successfully configured Manual code signing in Xcode project.');
-            }
-          "
+      - name: Configure Signing & Entitlements in Xcode Project
+        run: node scripts/configure-signing.js
 
       - name: Build Archive (Xcode)
         run: |
@@ -120,10 +109,7 @@ jobs:
             -scheme DraftRewind \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/DraftRewind.xcarchive \
-            CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM=U99V9TSK2X \
-            CODE_SIGN_IDENTITY="Apple Distribution" | tail -n 120
+            -archivePath build/DraftRewind.xcarchive | tail -n 120
 
       - name: Export Signed IPA
         run: |
