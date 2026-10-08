@@ -376,6 +376,13 @@ const tr = {
   'ws.noProjects': 'Önce bir proje oluştur; sonra dosyayı ona ekleyebilirsin.',
 
   'settings.workspace': 'BU CİHAZDA DÜZENLEME',
+  'settings.advanced': 'GELİŞMİŞ',
+  'settings.engineTest': 'Senkron motoru testi',
+  'settings.engineTestSub': 'Yeni senkron motorunu bu cihazda dener. Projelerine dokunmaz; GitHub bağlıysa en küçük projeni yalnızca okur.',
+  'settings.engineTestRunning': 'Çalışıyor…',
+  'settings.engineTestOk': 'Motor bu cihazda çalışıyor',
+  'settings.engineTestFail': 'Motor testinde sorun var',
+  'settings.engineTestShare': 'Raporu paylaş',
   'settings.autoPush': 'Bu cihazda otomatik gönder',
   'settings.autoPushSub': 'Word/Pages ile kaydettiğin haller uygulama açılınca kendiliğinden gönderilir. Kapalıysa “Şimdi gönder” ile gönderirsin.',
 
@@ -849,6 +856,13 @@ const en = {
   'ws.noProjects': 'Create a project first; then you can add the file to it.',
 
   'settings.workspace': 'EDITING ON THIS DEVICE',
+  'settings.advanced': 'ADVANCED',
+  'settings.engineTest': 'Sync engine test',
+  'settings.engineTestSub': 'Tries the new sync engine on this device. Does not touch your projects; if GitHub is connected it only reads your smallest project.',
+  'settings.engineTestRunning': 'Running…',
+  'settings.engineTestOk': 'The engine works on this device',
+  'settings.engineTestFail': 'The engine test found a problem',
+  'settings.engineTestShare': 'Share report',
   'settings.autoPush': 'Auto-upload edits on this device',
   'settings.autoPushSub': 'Versions you save with Word/Pages are sent automatically when the app opens. When off, use “Send now”.',
 

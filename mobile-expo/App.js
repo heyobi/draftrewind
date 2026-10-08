@@ -13,6 +13,7 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -1186,6 +1187,33 @@ function Segmented({ c, options, value, onChange }) {
 function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
+  // Senkron motoru öz-testi: geçici klasörlerde çalışır, projelere dokunmaz; rapor paylaşım sayfasıyla gönderilir
+  const [engineTest, setEngineTest] = useState(null);
+  const runEngineTest = async () => {
+    if (engineTest) return;
+    setEngineTest(t('settings.engineTestRunning'));
+    let report = '';
+    try {
+      const { runSelfTest } = require('./src/git/selftest');
+      let github = null;
+      if (ghToken) {
+        try {
+          const list = await GH.listProjects(ghToken);
+          const small = [...list].sort((x, y) => (x.size || 0) - (y.size || 0))[0];
+          if (small) github = { owner: small.owner, repo: small.repo, token: ghToken };
+        } catch (e) {}
+      }
+      report = await runSelfTest({ github, onStep: (name) => setEngineTest(name) });
+    } catch (e) {
+      report = 'HATA motor yüklenemedi — ' + (e && e.message ? e.message : String(e));
+    }
+    setEngineTest(null);
+    const ok = report.includes('SONUÇ: hepsi tamam');
+    Alert.alert(ok ? t('settings.engineTestOk') : t('settings.engineTestFail'), report.split('\n').slice(-12).join('\n'), [
+      { text: t('common.ok') },
+      { text: t('settings.engineTestShare'), onPress: () => Share.share({ message: report }).catch(() => {}) },
+    ]);
+  };
   // iCloud anahtarı yalnızca iCloud kullanılabilirken açılabilir (sayfa her açıldığında yeniden bakılır)
   const [icloudOk, setIcloudOk] = useState(false);
   useEffect(() => {
@@ -1321,6 +1349,17 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             </View>
             <Switch value={prefs.autoPush !== false} onValueChange={(autoPush) => onPrefs({ autoPush })} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.autoPush')} testID="auto-push-toggle" />
           </Glass>
+
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.advanced')}</Text>
+          <Jelly onPress={runEngineTest} disabled={!!engineTest} scaleTo={0.98} accessibilityLabel={t('settings.engineTest')} testID="engine-test-button">
+            <Glass c={c} interactive style={s.accountRow}>
+              <View style={s.accountIcon}>{engineTest ? <ActivityIndicator color={c.accent} /> : <Icon name="stethoscope" size={22} color={c.text2} />}</View>
+              <View style={s.flex}>
+                <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('settings.engineTest')}</Text>
+                <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }} numberOfLines={2}>{engineTest || t('settings.engineTestSub')}</Text>
+              </View>
+            </Glass>
+          </Jelly>
           <View style={{ height: 30 }} />
         </ScrollView>
       </View>

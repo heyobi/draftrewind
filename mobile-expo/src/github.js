@@ -135,6 +135,7 @@ export async function listProjects(token) {
       pushedAt: new Date(r.pushed_at).getTime(),
       private: r.private,
       branch: r.default_branch || 'main',
+      size: r.size || 0, // KB (motor testi en küçük projeyi seçer)
     }));
 }
 
