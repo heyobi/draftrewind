@@ -65,15 +65,24 @@ jobs:
           node -e "
             const fs = require('fs');
             const path = require('path');
+            let raw = (process.env.BUILD_CERTIFICATE_BASE64 || '').trim();
+            raw = raw.replace(/^BUILD_CERTIFICATE_BASE64\s*=\s*/i, '');
+            while (raw.startsWith('=')) raw = raw.slice(1).trim();
+            raw = raw.replace(/^[\"']|[\"']$/g, '');
+            raw = raw.replace(/\s+/g, '');
+
+            const buf = Buffer.from(raw, 'base64');
             const certPath = path.join(process.env.RUNNER_TEMP, 'build_certificate.p12');
-            fs.writeFileSync(certPath, Buffer.from(process.env.BUILD_CERTIFICATE_BASE64, 'base64'));
+            fs.writeFileSync(certPath, buf);
+            console.log('Decoded p12 size:', buf.length, 'Hex header:', buf.slice(0, 4).toString('hex'));
           "
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          CLEAN_PASS=$(printf '%s' "$P12_PASSWORD" | tr -d '\r\n')
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CLEAN_PASS" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
@@ -89,9 +98,17 @@ jobs:
             const dir = path.join(process.env.HOME, 'Library/MobileDevice/Provisioning Profiles');
             fs.mkdirSync(dir, { recursive: true });
 
+            const cleanB64 = (s) => {
+              let r = (s || '').trim();
+              r = r.replace(/^[A-Z0-9_]+\s*=\s*/i, '');
+              while (r.startsWith('=')) r = r.slice(1).trim();
+              r = r.replace(/^[\"']|[\"']$/g, '');
+              return r.replace(/\s+/g, '');
+            };
+
             const profiles = [
-              { name: 'app', b64: process.env.APP_PROFILE_BASE64 },
-              { name: 'widget', b64: process.env.WIDGET_PROFILE_BASE64 }
+              { name: 'app', b64: cleanB64(process.env.APP_PROFILE_BASE64) },
+              { name: 'widget', b64: cleanB64(process.env.WIDGET_PROFILE_BASE64) }
             ];
 
             for (const p of profiles) {
