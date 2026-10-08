@@ -40,9 +40,10 @@ import { computeStats, deepStats, latestWords, ago, dayLabel, hm, num, kindOf } 
 import { arrayBufferToBase64, wordHtml, sheetHtml, textHtml, utf8Decode, diffHtml } from './src/viewer';
 import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
 import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
-import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, readBase64, discardPicked, mb } from './src/files';
+import { MAX_UPLOAD, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import * as WS from './src/workspace';
+import * as REPO from './src/repo';
 import * as LOCAL from './src/local';
 import * as IC from './src/icloud';
 import { isSignedIn, previousCopy } from './src/localCore';
@@ -780,7 +781,7 @@ function Root() {
       const path = await WS.importIncoming(target.project, url, name, target.path);
       success();
       pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: t('ws.incomingTitle'), subtitle: t('ws.incomingBody', { name: path.split('/').pop(), project: target.project.name }), short: t('ws.pushedShort') }, 8000);
-      const r = await WS.syncProject(ghToken, target.project, { auto: true, manual: true });
+      const r = await REPO.syncProject(ghToken, target.project, { auto: true, manual: true });
       reportSync(r, target.project, logoutGithub, true);
       if (!r.push) Alert.alert(t('ws.incomingTitle'), `${path.split('/').pop()} → ${target.project.name}`, [{ text: t('common.ok') }]);
       setSyncTick((n) => n + 1);
@@ -1439,10 +1440,9 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
     let pushed = 0;
     let changed = false;
     for (const p of list) {
-      const st = WS.status(p);
-      if (!st.count && !st.full) continue;
+      if (!REPO.hasLocal(p)) continue;
       try {
-        const r = await WS.syncProject(ghToken, p, { auto: autoPush });
+        const r = await REPO.syncProject(ghToken, p, { auto: autoPush });
         if (r && r.push) pushed += r.push.pushed.length + r.push.removed.length;
         if (r && ((r.push && r.push.commit) || (r.pull && r.pull.moved))) changed = true;
         if (r && r.pull && r.pull.conflicts.length) reportSync({ pull: r.pull }, p);
@@ -1882,16 +1882,17 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
   const scrollRef = useRef(null);
   const tabsY = useRef(0);
   // Yerel çalışma alanı (bu cihazdaki dosyalar) durumu ve eşitleme
-  const [ws, setWs] = useState(() => WS.status(project));
+  const [ws, setWs] = useState(() => REPO.status(project));
   const [syncing, setSyncing] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const syncRef = useRef(false);
   const autoPush = prefs ? prefs.autoPush !== false : true;
 
   const load = useCallback(async () => {
     try {
       setError(null);
-      const [h, f] = await Promise.all([GH.listSnapshots(token, project), GH.listFiles(token, project)]);
+      // İlk açılışta proje önce bu cihaza iner (eşitleme); o zamana kadar iskelet görünür
+      if (!(await REPO.ready(project))) return;
+      const [h, f] = await Promise.all([REPO.history(project), REPO.files(project)]);
       setHistory(h);
       setFiles(f);
     } catch (e) {
@@ -1905,7 +1906,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     load();
   }, [load]);
 
-  const refreshWs = () => setWs(WS.status(project));
+  const refreshWs = () => setWs(REPO.status(project));
 
   // Eşitleme: önce bilgisayardan gelenler, sonra bu cihazda değişenler (otomatik gönderim açıksa ya da elle).
   // Aynı anda tek iş; sonuçta geçmiş yenilenir ve kısa bildirim gösterilir.
@@ -1914,7 +1915,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     syncRef.current = true;
     if (manual) setSyncing(true);
     try {
-      const r = await WS.syncProject(token, project, { auto: manual || autoPush, manual: !!manual });
+      const r = await REPO.syncProject(token, project, { auto: manual || autoPush, manual: !!manual });
       reportSync(r, project, onAuthError, !!manual);
       if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.upToDateTitle'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
       if (r && r.pull && r.pull.updated.length) {
@@ -1922,11 +1923,12 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
         pulse({ icon: 'arrow.down.circle.fill', color: '#38bdf8', title: t('ws.pulled', { n, count: n }), subtitle: project.name, short: t('ws.downloadDoneShort') }, 5000);
       }
       refreshWs();
-      if (r && ((r.push && r.push.commit) || (r.pull && r.pull.moved))) await load();
+      await load();
     } catch (e) {
       warn();
       if (e && e.auth) onAuthError();
-      else Alert.alert(t('ws.pushFailedTitle'), errText(e), [{ text: t('common.ok') }]);
+      else if (!(await REPO.ready(project).catch(() => false))) setError(t('ws.firstSyncFailed', { error: errText(e) }));
+      else if (manual) Alert.alert(t('ws.pushFailedTitle'), errText(e), [{ text: t('common.ok') }]);
     } finally {
       syncRef.current = false;
       setSyncing(false);
@@ -1960,45 +1962,17 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       WS.saveFlags({ ...flags, editHint: true });
       await new Promise((resolve) => Alert.alert(t('ws.editHintTitle'), t('ws.editHint', { project: WS.folderName(project) }), [{ text: t('common.ok'), onPress: resolve }]));
     }
-    setBusy(t('ws.preparing'));
     try {
-      const file = await WS.ensureLocal(token, project, f);
-      setBusy(null);
-      refreshWs();
+      const file = REPO.localFile(project, f.path);
+      if (!file.exists) throw new Error(t('viewer.missing'));
       const { mimeType, UTI } = fileType(f.path);
       await Sharing.shareAsync(file.uri, { mimeType, UTI, dialogTitle: baseName(f.path) });
     } catch (e) {
-      setBusy(null);
       warn();
-      if (e && e.auth) onAuthError();
-      else Alert.alert(t('ws.editFailed'), errText(e), [{ text: t('common.ok') }]);
+      Alert.alert(t('ws.editFailed'), errText(e), [{ text: t('common.ok') }]);
     }
   };
 
-  // "Bu projeyi iPad'e/telefona indir": tüm dosyalar çalışma alanına (Dinamik Ada'da ilerleme)
-  const downloadProject = async () => {
-    if (downloading) return;
-    setDownloading(true);
-    const island = pulse({ icon: 'arrow.down.circle', color: '#38bdf8', title: project.name, subtitle: t('pulse.downloading'), short: t('pulse.downloadingShort') }, 180000);
-    try {
-      const r = await WS.downloadProject(token, project, {
-        onProgress: (i, n) => island.update({ subtitle: t('ws.downloading', { i: i + 1, n }), short: t('ws.downloadingShort', { i: i + 1, n }) }),
-      });
-      const n = r.updated.length;
-      success();
-      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('ws.downloadDone', { n, count: n }), subtitle: t('ws.downloadDoneSub', { path: WS.filesPath(project) }), short: t('ws.downloadDoneShort') }, 5000);
-      refreshWs();
-      reportSync({ pull: r }, project, onAuthError, true);
-      Alert.alert(t('ws.downloadDone', { n, count: n }), t('ws.filesHint', { path: WS.filesPath(project) }), [{ text: t('common.ok') }]);
-    } catch (e) {
-      island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: errText(e), short: t('pulse.failedShort') });
-      warn();
-      if (e && e.auth) onAuthError();
-      else Alert.alert(t('ws.downloadFailed'), errText(e), [{ text: t('common.ok') }]);
-    } finally {
-      setDownloading(false);
-    }
-  };
   const editable = (path) => ['word', 'sheet', 'slides', 'text'].includes(kindOf(path));
   const openFile = (path, ref, time) =>
     setViewer({
@@ -2007,7 +1981,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       subtitle: ref ? t('project.oldVersion') : t('project.current'),
       size: sizeOf(path),
       aiId: `${project.owner}/${project.repo}@${ref || 'HEAD'}:${path}`,
-      load: () => GH.fileContent(token, project, path, ref),
+      load: () => REPO.content(project, path, ref),
     });
   // autoAi: "Neler değişti?" ile açıldıysa özet kendiliğinden başlar
   const openDiff = (path, ref, parentRef, autoAi) =>
@@ -2018,11 +1992,11 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       autoAi: !!autoAi,
       diff: {
         // Yalnızca "önceki sürümde yoktu" (404) boş sayılır; ağ hatası gerçek hata olarak görünür
-        loadOld: () => (parentRef ? GH.fileContent(token, project, path, parentRef).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))) : Promise.resolve(null)),
-        loadNew: () => GH.fileContent(token, project, path, ref),
+        loadOld: () => (parentRef ? REPO.content(project, path, parentRef).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))) : Promise.resolve(null)),
+        loadNew: () => REPO.content(project, path, ref),
       },
     });
-  const shareFile = (path, ref, time) => shareDoc(setBusy, ref ? versionName(baseName(path), time) : baseName(path), () => GH.fileContent(token, project, path, ref));
+  const shareFile = (path, ref, time) => shareDoc(setBusy, ref ? versionName(baseName(path), time) : baseName(path), () => REPO.content(project, path, ref));
   const showHistory = (path) => {
     setSnapshot(null);
     setTab('time');
@@ -2072,35 +2046,12 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     setUploading(true);
     const n = ok.length;
     const island = pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: n === 1 ? ok[0].name : project.name, subtitle: t('upload.progress', { i: 1, n }), short: t('upload.progressShort', { i: 1, n }) }, 180000);
-    const taken = new Set((files || []).map((f) => f.path));
     const done = [];
     let failure = null;
     try {
-      // Aynı adlı dosya varsa "ad (2).uzantı"; seçilenlerin kendi arasında çakışması da önlenir
-      const jobs = [];
-      for (const a of ok) {
-        const name = await uniqueName(safeName(a.name), async (candidate) => {
-          const p = `${PHONE_FOLDER}/${candidate}`;
-          return taken.has(p) || (await GH.pathExists(token, project, p));
-        });
-        const path = `${PHONE_FOLDER}/${name}`;
-        taken.add(path);
-        jobs.push({ path, read: () => readBase64(a) });
-      }
-      const nameOf = (path) => path.slice(PHONE_FOLDER.length + 1);
-      const r = await GH.addFiles(
-        token,
-        project,
-        jobs,
-        (paths) => {
-          const names = paths.map(nameOf);
-          const title = names.length <= 2 ? names.join(', ') : t('upload.doneMany', { n: names.length });
-          return `${t('upload.fromPhone')}: ${title}\n\nacadamiv: ${JSON.stringify({ v: 1, kind: 'mobile', changed: paths })}`;
-        },
-        (i) => i > 0 && island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) })
-      );
-      done.push(...r.done.map(nameOf));
-      if (r.failed.length) failure = new Error(r.failed.map((f) => `${nameOf(f.path)}: ${f.error.message}`).join('\n\n'));
+      const r = await REPO.addFiles(project, ok, (i) => i > 0 && island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) }));
+      done.push(...r.done);
+      if (r.failed.length) failure = new Error(r.failed.map((x) => `${x.name}: ${errText(x.error)}`).join('\n\n'));
     } catch (e) {
       failure = e;
     } finally {
@@ -2111,6 +2062,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       success();
       island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: done.length === 1 ? t('upload.doneOne', { name: done[0] }) : t('upload.doneMany', { n: done.length }), subtitle: t('upload.doneSub'), short: t('upload.doneShort') }, 5000);
       await load();
+      runSync({ manual: true });
     } else island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: failure ? failure.message : '', short: t('upload.failedShort') });
     if (failure) {
       warn();
@@ -2229,22 +2181,16 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
               <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? (ws.lastPush || ws.lastPull ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush || ws.lastPull) }) : t('ws.statusSynced', { n: ws.count, count: ws.count })) : t('ws.statusNone')}</Text>
               {ws.pending ? <Text style={{ color: '#f97316', fontSize: 13, fontWeight: '700', marginTop: 4 }}>{t('ws.pending', { n: ws.pending, count: ws.pending })}</Text> : null}
               {ws.count ? <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('ws.filesHint', { path: WS.filesPath(project) })}</Text> : null}
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                <Jelly onPress={downloadProject} disabled={downloading || syncing} scaleTo={0.97} style={s.flex} accessibilityLabel={t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')} testID="download-project-button">
-                  <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
-                    {downloading ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="arrow.down.circle" size={16} color={c.accent} weight="semibold" />}
-                    <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, flexShrink: 1 }} numberOfLines={2}>{t(Platform.isPad ? 'ws.downloadIpad' : 'ws.download')}</Text>
-                  </View>
-                </Jelly>
-                {ws.pending ? (
-                  <Jelly onPress={() => runSync({ manual: true })} disabled={syncing || downloading} scaleTo={0.97} accessibilityLabel={t('ws.syncNow')} testID="sync-now-button">
+              {ws.pending ? (
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                  <Jelly onPress={() => runSync({ manual: true })} disabled={syncing} scaleTo={0.97} accessibilityLabel={t('ws.syncNow')} testID="sync-now-button">
                     <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
                       <Icon name="arrow.up.circle" size={16} color={c.accent} weight="semibold" />
                       <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5 }}>{syncing ? t('ws.syncing') : t('ws.syncNow')}</Text>
                     </View>
                   </Jelly>
-                ) : null}
-              </View>
+                </View>
+              ) : null}
             </Glass>
 
             <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
@@ -2386,7 +2332,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       />
       {/* iOS'ta açık bir sayfanın üstüne ikinci sayfa açılamaz: kayıt ayrıntısı açıkken görüntüleyici onun içinde */}
       {!snapshot ? <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} /> : null}
-      {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={token} project={project} history={history} /> : null}
+      {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={null} project={project} history={history} /> : null}
       <BusyHud c={c} text={busy} />
     </View>
   );
@@ -2698,7 +2644,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
     setParent(null);
     reportReq.current++;
     setBusy(null);
-    GH.commitFiles(token, project, snapshot.oid)
+    REPO.commitFiles(project, snapshot.oid)
       .then((r) => {
         setFiles(r.files);
         setParent(r.parent);
@@ -2731,8 +2677,8 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
         try {
           const [oldBuf, newBuf] = await Promise.all([
             // Yalnızca "önceki sürümde yoktu" (404) boş sayılır; ağ hatası gerçek hata olarak görünür
-            f.status === 'added' || !parent ? Promise.resolve(null) : GH.fileContent(token, project, f.path, parent).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))),
-            GH.fileContent(token, project, f.path, snapshot.oid),
+            f.status === 'added' || !parent ? Promise.resolve(null) : REPO.content(project, f.path, parent).catch((e) => (e && e.status === 404 ? null : Promise.reject(e))),
+            REPO.content(project, f.path, snapshot.oid),
           ]);
           if (!alive()) return;
           const html = diffHtml(oldBuf ? arrayBufferToBase64(oldBuf) : null, arrayBufferToBase64(newBuf), kindOf(name), false, viewerLabels(), libs, { report: true, maxBlocks: REPORT_MAX_BLOCKS });
@@ -2770,7 +2716,7 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
         { label: t('doc.previewVersion'), onPress: () => onOpenFile(f.path, snapshot.oid, snapshot.time) },
         {
           label: t('doc.shareVersion'),
-          onPress: () => shareDoc(setBusy, versionName(f.path.split('/').pop(), snapshot.time), () => GH.fileContent(token, project, f.path, snapshot.oid)),
+          onPress: () => shareDoc(setBusy, versionName(f.path.split('/').pop(), snapshot.time), () => REPO.content(project, f.path, snapshot.oid)),
         },
         canDiff && { label: t('doc.whatChanged'), onPress: () => onOpenDiff(f.path, snapshot.oid, f.status === 'added' ? null : parent) },
         { label: t('doc.history'), onPress: () => onShowHistory(f.path) },

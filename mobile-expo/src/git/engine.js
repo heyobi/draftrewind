@@ -522,6 +522,11 @@ export class GitProject {
   //   pushedOid  : bu cihazın en son gönderdiği kayıt (masaüstündeki meta.githubOid); uzak zincir yeniden
   //                yazılmışsa (seyreltme) ve yerelde gönderilmemiş kayıt yoksa uzak zincir benimsenir
   //   repoExists : async () => boolean; uzak boş/bulunamadı ise depo silinmiş mi diye sorulur (false → EGHREPO)
+  //   noPush     : yalnızca al (otomatik gönderim kapalıyken); yerel kayıtlar bekler
+  //   baseFiles  : { yol: blobOid } — bu cihazda henüz kayıt yokken klasördeki dosyaların hangi uzak halden
+  //                geldiği (eski çalışma alanının indirme kaydı). Verilirse ilk alışta bu dosyalar "yerelde
+  //                düzenlenmiş" sayılmaz; düzenlenmemiş eski kopyalar uzaktaki yeni halle değişir.
+  // Dönen: { pushed, pulled, conflicts, head, remote, ahead, at }
   sync(opts) {
     return this.exclusive(() => this.syncNow(opts));
   }
@@ -535,7 +540,7 @@ export class GitProject {
     });
   }
 
-  async syncNow({ remoteUrl, token, http = defaultHttp, force = false, pushedOid = null, repoExists = null } = {}) {
+  async syncNow({ remoteUrl, token, http = defaultHttp, force = false, pushedOid = null, repoExists = null, noPush = false, baseFiles = null } = {}) {
     if (!remoteUrl) throw codedError('ENOREMOTE', 'remoteUrl gerekli');
     const auth = onAuth(token || '');
     await git.addRemote(this.g({ remote: 'origin', url: remoteUrl, force: true }));
@@ -562,6 +567,7 @@ export class GitProject {
     let local = await this.head();
     let pulled = 0;
     let conflicts = [];
+    this.pulledCopies = [];
 
     if (remoteOid && local && remoteOid !== local) {
       const remoteAhead = await git.isDescendent(this.g({ oid: remoteOid, ancestor: local, depth: -1 }));
@@ -586,12 +592,12 @@ export class GitProject {
         }
       }
     } else if (remoteOid && !local) {
-      pulled = await this.applyRemote(null, remoteOid);
+      pulled = await this.applyRemote(null, remoteOid, baseFiles ? new Map(Object.entries(baseFiles)) : null);
       await this.setHead(remoteOid);
       local = remoteOid;
     }
 
-    if (local && local !== remoteOid) {
+    if (local && local !== remoteOid && !noPush) {
       let r;
       try {
         r = await git.push(this.g({ http, url: remoteUrl, remote: 'origin', ref: BRANCH, remoteRef: BRANCH, force: !!force, onAuth: auth }));
@@ -602,7 +608,10 @@ export class GitProject {
       }
       if (r && r.ok === false) throw codedError('EGHPUSH', 'push failed');
     }
-    return { pushed: !!local && local !== remoteOid, pulled, conflicts, head: local || null, at: Date.now() };
+    conflicts = [...this.pulledCopies, ...conflicts];
+    const pushed = !noPush && !!local && local !== remoteOid;
+    const remote = pushed ? local : remoteOid;
+    return { pushed, pulled, conflicts, head: local || null, remote: remote || null, ahead: !!local && local !== remote, at: Date.now() };
   }
 
   // Klasördeki dosya HEAD halinden farklı mı? (kayıt noktasına girmemiş düzenleme). Okunamıyorsa "farklı".
@@ -627,6 +636,42 @@ export class GitProject {
     }
   }
 
+  // Klasördeki dosyanın blob oid'i: undefined (dosya yok), null (okunamadı) ya da oid
+  async workingOid(rel) {
+    let st;
+    try {
+      st = await this.backend.stat(this.work(rel));
+    } catch (e) {
+      return null;
+    }
+    if (!st) return undefined;
+    if (st.type !== 'file') return null;
+    const c = this.hashCache[rel];
+    if (c && c.m === st.mtimeMs && c.s === st.size) return c.oid;
+    try {
+      const { oid } = await git.hashBlob({ object: await this.readWorking(rel) });
+      return oid;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Bir kaydın ilk ebeveyni ve değişen dosyaları (GitHub'ın "commit files" yanıtı biçiminde)
+  async commitFiles(oid) {
+    const { commit } = await git.readCommit(this.g({ oid }));
+    const rows = await this.changes(oid);
+    return { parent: commit.parent[0] || null, files: rows.map((r) => ({ path: r.rel, status: r.change === 'deleted' ? 'removed' : r.change })) };
+  }
+
+  // Uzaktaki dalın bu cihazın bildiği son hali (eşitlemeden sonra); yoksa null
+  async remoteHead() {
+    try {
+      return await git.resolveRef(this.g({ ref: `refs/remotes/origin/${BRANCH}` }));
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Büyük/küçük harf değişimi: aynı dosya sayılır (iOS/Windows/macOS dosya sistemleri harf duyarsız)
   static sameNameOtherCase(rel, map) {
     const low = rel.toLowerCase();
@@ -635,8 +680,8 @@ export class GitProject {
   }
 
   // Uzak kayıt yerelin devamı: yalnızca değişen dosyalar klasöre yazılır; yerel düzenleme ezilmez.
-  async applyRemote(localOid, remoteOid) {
-    const before = await this.treeFiles(localOid);
+  async applyRemote(localOid, remoteOid, beforeOverride = null) {
+    const before = beforeOverride || (await this.treeFiles(localOid));
     const after = await this.treeFiles(remoteOid);
     let n = 0;
     for (const rel of before.keys()) {
@@ -645,13 +690,18 @@ export class GitProject {
       await this.removeWorking(rel);
     }
     for (const [rel, oid] of after) {
-      if (before.get(rel) === oid) continue;
-      const keepLocal = await this.localDiffers(rel, before.get(rel));
+      if (before.get(rel) === oid && !beforeOverride) continue;
+      const wo = await this.workingOid(rel);
+      if (wo === oid) continue; // klasörde zaten bu hali var
+      if (before.get(rel) === oid && wo !== undefined) continue; // uzak değişmemiş; yerel düzenleme kalır
+      const keepLocal = wo !== undefined && wo !== before.get(rel);
       let blob = await this.readBlob(oid);
       try {
         await this.writeWorking(keepLocal ? conflictName(rel) : rel, blob);
+        if (keepLocal && this.pulledCopies) this.pulledCopies.push(conflictName(rel));
       } catch (e) {
         await this.writeWorking(conflictName(rel), blob);
+        if (this.pulledCopies) this.pulledCopies.push(conflictName(rel));
       }
       blob = null;
       n++;

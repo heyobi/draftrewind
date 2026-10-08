@@ -328,3 +328,67 @@ test('http istemcisi: Node fetch ile clone / fetch / push (isomorphic-git, fsAda
   const denied = makeHttp(async (u) => new Response('no', { status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'text/plain' } }));
   await assert.rejects(ph.sync({ remoteUrl: url, token: 'yanlis', http: denied }), (e) => e.code === 'EGHAUTH');
 });
+
+test('eski çalışma alanından geçiş (baseFiles): düzenlenmemiş eski kopya güncellenir, düzenlenen korunur, kopya çoğalmaz', async () => {
+  const url = await newRemote();
+  const pc = await desktop('gecis');
+  put(pc, 'tez.txt', 'birinci hali');
+  put(pc, 'notlar.md', 'not birinci');
+  put(pc, 'silinecek.txt', 'eski');
+  put(pc, 'aynı.txt', 'değişmedi');
+  await pc.snapshot();
+  await dsync(pc, url);
+  const base = await pc.head();
+  const oidOf = async (rel) => (await git.readBlob({ fs, gitdir: pc.gitdir, oid: base, filepath: rel })).oid;
+  const baseFiles = { 'tez.txt': await oidOf('tez.txt'), 'notlar.md': await oidOf('notlar.md'), 'silinecek.txt': await oidOf('silinecek.txt'), 'aynı.txt': await oidOf('aynı.txt') };
+
+  // Eski telefon çalışma alanı: dosyalar bu kayıttan indirilmişti; notlar.md telefonda düzenlendi
+  const ph = await phone('gecis');
+  put(ph, 'tez.txt', 'birinci hali');
+  put(ph, 'notlar.md', 'not telefonda düzenlendi');
+  put(ph, 'silinecek.txt', 'eski');
+  put(ph, 'aynı.txt', 'değişmedi');
+  put(ph, 'yeni-telefon.txt', 'yalnızca telefonda');
+
+  // Bu arada masaüstü ilerler
+  put(pc, 'tez.txt', 'ikinci hali');
+  fs.rmSync(file(pc, 'silinecek.txt'));
+  await pc.snapshot();
+  await dsync(pc, url);
+
+  // İlk eşitleme: yalnızca al
+  const r = await ph.sync({ remoteUrl: url, token: 'x', http, noPush: true, baseFiles });
+  assert.equal(r.pushed, false);
+  assert.equal(r.ahead, false);
+  assert.equal(read(ph, 'tez.txt'), 'ikinci hali'); // eski kopya güncellendi
+  assert.equal(exists(ph, 'silinecek.txt'), false); // masaüstünde silinen, düzenlenmemiş kopya gitti
+  assert.equal(read(ph, 'notlar.md'), 'not telefonda düzenlendi'); // düzenleme korundu
+  assert.equal(exists(ph, COPY('notlar', '.md')), false); // uzak değişmediği için kopya yok
+  assert.equal(exists(ph, COPY('tez', '.txt')), false);
+  assert.equal(exists(ph, COPY('aynı', '.txt')), false);
+
+  // Sonra kayıt + gönderim: masaüstü telefonun düzenlemesini ve yeni dosyasını alır
+  const r2 = await ph.syncWithSnapshot({ remoteUrl: url, token: 'x', http });
+  assert.ok(r2.snapshot);
+  assert.deepEqual([...r2.snapshot.changed].sort(), ['notlar.md', 'yeni-telefon.txt']);
+  assert.equal(r2.pushed, true);
+  await dsync(pc, url);
+  assert.equal(read(pc, 'notlar.md'), 'not telefonda düzenlendi');
+  assert.deepEqual(listing(pc.dir), listing(ph.dir));
+});
+
+test('noPush: kayıtlar bekler (ahead), sonraki eşitlemede gönderilir', async () => {
+  const url = await newRemote();
+  const ph = await phone('nopush');
+  put(ph, 'a.txt', 'bir');
+  const r = await ph.syncWithSnapshot({ remoteUrl: url, token: 'x', http, noPush: true });
+  assert.equal(r.pushed, false);
+  assert.equal(r.ahead, true);
+  assert.equal(await ph.remoteHead(), null);
+  const r2 = await ph.sync({ remoteUrl: url, token: 'x', http });
+  assert.equal(r2.pushed, true);
+  assert.equal(r2.ahead, false);
+  assert.equal(await ph.remoteHead(), await ph.head());
+  const cf = await ph.commitFiles(await ph.head());
+  assert.deepEqual(cf, { parent: null, files: [{ path: 'a.txt', status: 'added' }] });
+});
