@@ -85,14 +85,17 @@ jobs:
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CLEAN_PASS" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Install Provisioning Profiles
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           cp profiles/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
           cp profiles/DraftRewind_AppStore_Profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/833cf625-a225-4288-a388-d36f091a5e6f.mobileprovision
           cp profiles/DraftRewind_Widgets_AppStore_Profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/d2c98500-ecdd-462e-b7f7-681f7e1dc608.mobileprovision
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/* ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/ 2>/dev/null || true
           ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Generate Native iOS Project (Expo Prebuild)
@@ -109,8 +112,7 @@ jobs:
             -scheme DraftRewind \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/DraftRewind.xcarchive \
-            DEVELOPMENT_TEAM=U99V9TSK2X | tail -n 120
+            -archivePath build/DraftRewind.xcarchive | tail -n 120
 
       - name: Export Signed IPA
         run: |
@@ -127,8 +129,9 @@ jobs:
           ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.appstoreconnect/private_keys
-          echo -e "$API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          mkdir -p ~/.appstoreconnect/private_keys ~/.private_keys
+          printf '%s\n' "$API_KEY_CONTENT" > ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8
+          cp ~/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8 ~/.private_keys/
 
           IPA_PATH=$(find build/ipa -name "*.ipa" | head -n 1)
           echo "Uploading $IPA_PATH to App Store Connect..."
