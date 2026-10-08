@@ -18,7 +18,7 @@ const driveCopyName = (rel) => conflictName(rel).replace(' (diğer cihazdan)', "
 
 // opts: { kind, upload (false: yalnızca indir), now }
 // Dönen: { uploaded: [rel], downloaded: [rel], conflicts: [rel], archived: [rel], pending: [rel] }
-export async function mirror(project, remote, state, { kind = 'auto', upload = true, now = Date.now() } = {}) {
+export async function mirror(project, remote, state, { kind = 'auto', upload = true, now = Date.now(), onProgress = null } = {}) {
   state.base = state.base || {};
   state.versionTimes = state.versionTimes || {};
   const base = state.base;
@@ -57,7 +57,10 @@ export async function mirror(project, remote, state, { kind = 'auto', upload = t
   };
 
   const all = new Set([...localFiles.keys(), ...remoteFiles.keys()]);
+  let i = 0;
   for (const rel of all) {
+    if (onProgress) onProgress({ phase: 'files', i: ++i, n: all.size, rel });
+    await new Promise((resolve) => setTimeout(resolve, 0)); // arayüze sıra ver
     try {
       const L = localFiles.has(rel) ? await project.workingOid(rel) : null;
       if (L === undefined) continue;

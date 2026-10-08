@@ -715,6 +715,7 @@ export function moveToGithub(token, p, onProgress) {
 // Başarılıysa ve atlanan büyük dosya yoksa yerel klasör kaldırılır (artık Drive projesi). onProgress(i, n)
 // Dönen: { folder, tooBig, keptLocal }
 export function moveToDrive(drive, p, onProgress) {
+  if (usesEngine(p)) return exclusive(p, () => engineMoveToDrive(drive, p));
   return exclusive(p, async () => {
     await (usesEngine(p) ? engineSnapshot(p, {}) : doSnapshot(p)).catch(() => null);
     const { eligible, tooBig } = cloudCandidates(p);
@@ -905,4 +906,19 @@ async function engineMoveToGithub(token, p, onProgress) {
   engineItems.delete(gitKey(p));
   safeDelete(stateFile(p));
   return { project: gh, tooBig };
+}
+
+// Drive'a taşıma: Drive'da proje klasörü açılır; bu cihazdaki klasör ve git geçmişi Drive projesinin olur.
+// Dosyalar ve geçmiş, proje açılınca ilk eşitlemede yüklenir (.draftrewind + okunabilir dosyalar + _Sürümler).
+// Hiçbir şey silinmez: klasör yerinde kalır, yalnızca artık Drive projesi olarak listelenir.
+async function engineMoveToDrive(drive, p) {
+  await engineSnapshot(p, {});
+  const { tooBig } = cloudCandidates(p);
+  const folder = await drive.createProject(p.name);
+  const dp = { kind: 'drive', owner: 'drive', repo: folder.id, driveId: folder.id, name: folder.name, folder: p.folder };
+  WS.saveState(dp, { head: null, files: {}, full: true, engine: true, gitKey: gitKey(p) });
+  engines.delete(gitKey(p));
+  engineItems.delete(gitKey(p));
+  safeDelete(stateFile(p));
+  return { folder, tooBig, keptLocal: false };
 }

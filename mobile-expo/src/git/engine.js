@@ -699,7 +699,7 @@ export class GitProject {
     });
   }
 
-  async syncStoreNow({ store, deviceId, deviceName = '', noPush = false } = {}) {
+  async syncStoreNow({ store, deviceId, deviceName = '', noPush = false, onProgress = null } = {}) {
     if (!store || !deviceId) throw codedError('ENOSTORE', 'store ve deviceId gerekli');
     const stateFile = joinPath(this.gitdir, 'draftrewind-stores.json');
     let all = {};
@@ -720,6 +720,7 @@ export class GitProject {
     for (const name of names) {
       const m = /^packs\/(pack-[0-9a-f]{40}\.pack)$/.exec(name);
       if (!m || imported.has(name)) continue;
+      if (onProgress) onProgress({ phase: 'download', i: ++k, n: names.length });
       const local = joinPath(packDir, m[1]);
       if (!(await this.backend.stat(joinPath(packDir, m[1].replace(/\.pack$/, '.idx'))))) {
         let bytes = await store.read(name);
@@ -738,7 +739,7 @@ export class GitProject {
         }
       }
       imported.add(name);
-      if (++k % 3 === 0) await tick();
+      await tick();
     }
     this.gitCache = {};
 
@@ -779,8 +780,13 @@ export class GitProject {
     if (local && !noPush && local !== st.published) {
       const boundary = [...known, ...(st.published ? [st.published] : [])];
       const oids = await this.objectsSince(local, boundary);
-      if (oids.length) {
-        const { filename, packfile } = await git.packObjects(this.g({ oids, write: false }));
+      // Küçük paketler: her biri ayrı sıkıştırılır, arada arayüze sıra verilir (telefon donmasın);
+      // uç dosyası ancak hepsi yüklendikten sonra yazılır
+      const CHUNK = 25;
+      for (let i = 0; i < oids.length; i += CHUNK) {
+        if (onProgress) onProgress({ phase: 'upload', i: Math.min(i + CHUNK, oids.length), n: oids.length });
+        await tick();
+        const { filename, packfile } = await git.packObjects(this.g({ oids: oids.slice(i, i + CHUNK), write: false }));
         await store.write(`packs/${filename}`, packfile);
         imported.add(`packs/${filename}`);
       }

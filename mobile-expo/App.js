@@ -40,7 +40,7 @@ import { computeStats, deepStats, latestWords, ago, dayLabel, hm, num, kindOf } 
 import { arrayBufferToBase64, wordHtml, sheetHtml, textHtml, utf8Decode, diffHtml } from './src/viewer';
 import { loadViewerLibs, LIBS_FOR } from './src/viewerLibs';
 import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendingNews, savePendingNews } from './src/island';
-import { MAX_UPLOAD, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, discardPicked, mb } from './src/files';
+import { MAX_UPLOAD, fileType, safeName, shareBuffer, pickFiles, takePhotos, pickPhotos, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import * as WS from './src/workspace';
 import * as REPO from './src/repo';
@@ -1895,6 +1895,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
   // Yerel çalışma alanı (bu cihazdaki dosyalar) durumu ve eşitleme
   const [ws, setWs] = useState(() => REPO.status(project));
   const [syncing, setSyncing] = useState(false);
+  const [prep, setPrep] = useState(null); // ilk indirmede ilerleme metni
   const syncRef = useRef(false);
   const autoPush = prefs ? prefs.autoPush !== false : true;
 
@@ -1926,7 +1927,8 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     syncRef.current = true;
     if (manual) setSyncing(true);
     try {
-      const r = await REPO.syncProject(token, project, { auto: manual || autoPush, manual: !!manual });
+      const onProgress = (e) => setPrep(t(e.phase === 'download' ? 'ws.prepHistory' : e.phase === 'upload' ? 'ws.prepUpload' : 'ws.prepFiles', { i: e.i, n: e.n }));
+      const r = await REPO.syncProject(token, project, { auto: manual || autoPush, manual: !!manual, onProgress });
       reportSync(r, project, onAuthError, !!manual);
       if (manual && r && !r.push && r.pending && !r.pending.n && !(r.pull && r.pull.moved)) Alert.alert(t('ws.upToDateTitle'), t('ws.nothingToSend'), [{ text: t('common.ok') }]);
       if (r && r.pull && r.pull.updated.length) {
@@ -1943,6 +1945,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     } finally {
       syncRef.current = false;
       setSyncing(false);
+      setPrep(null);
     }
   };
   const runSyncRef = useRef(runSync);
@@ -2152,6 +2155,15 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
         />
 
         {error ? <Text style={{ color: c.red, marginBottom: 12 }}>{error}</Text> : null}
+        {!stats && !error && prep ? (
+          <Glass c={c} style={{ padding: 16, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <ActivityIndicator color={c.accent} />
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '700', fontSize: 15 }}>{prep}</Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 3 }}>{t('ws.prepHint')}</Text>
+            </View>
+          </Glass>
+        ) : null}
         {!stats && !error ? <ProjectSkeleton c={c} /> : null}
 
         {stats ? (
@@ -3511,173 +3523,6 @@ function LocalSnapshotSheet({ c, log, record, readOnly, onClose, onOpenCopy, onO
       <BusyHud c={c} text={busy} />
       <ViewerSheet c={c} target={viewer} onClose={onCloseViewer} />
     </Modal>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Drive klasörü
-// ---------------------------------------------------------------------------
-function DriveScreen({ c, drive, folder, onBack, onAuthError }) {
-  const insets = useSafeAreaInsets();
-  const [stack, setStack] = useState([folder]);
-  const [items, setItems] = useState(null);
-  const [error, setError] = useState(null);
-  const [viewer, setViewer] = useState(null);
-  const [busy, setBusy] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const current = stack[stack.length - 1];
-
-  const load = useCallback(async () => {
-    setItems(null);
-    setError(null);
-    try {
-      setItems(await drive.children(current.id));
-    } catch (e) {
-      if (e.auth) onAuthError();
-      setError(e.message);
-    }
-  }, [current.id]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const [dtab, setDtab] = useState('docs');
-  const back = () => (stack.length > 1 ? setStack(stack.slice(0, -1)) : onBack());
-  const isVersions = current.name === '_Sürümler';
-  const atRoot = stack.length === 1;
-  const versionsFolder = atRoot && items ? items.find((it) => it.folder && it.name === '_Sürümler') : null;
-  const shown = atRoot ? (items || []).filter((it) => it !== versionsFolder) : items || [];
-  const openItem = (it) => setViewer({ name: it.name, subtitle: `Drive · ${ago(it.modified)}`, size: it.size, aiId: `drive:${it.id}:${it.modified}`, load: () => drive.download(it.id) });
-  const itemActions = (it) =>
-    showActions(c, {
-      title: it.name,
-      actions: [
-        { label: t('doc.preview'), onPress: () => openItem(it) },
-        { label: t('doc.share'), onPress: () => shareDoc(setBusy, it.name, () => drive.download(it.id)) },
-      ],
-    });
-
-  // Telefondan dosya ekleme: bu klasöre yüklenir, masaüstü bir sonraki eşitlemede alır
-  const addFiles = async () => {
-    let picked;
-    try {
-      picked = await pickFiles();
-    } catch (e) {
-      Alert.alert(t('upload.failedTitle'), e.message);
-      return;
-    }
-    if (!picked.length) return;
-    const tooBig = picked.filter((a) => a.size > MAX_UPLOAD);
-    const ok = picked.filter((a) => a.size <= MAX_UPLOAD);
-    tooBig.forEach(discardPicked);
-    if (tooBig.length) {
-      warn();
-      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => (a.sizeUnknown ? t('upload.sizeUnknown', { name: a.name }) : t('upload.tooBig', { name: a.name, size: mb(a.size) }))).join('\n\n'), [{ text: t('common.ok') }]);
-    }
-    if (!ok.length) return;
-    setUploading(true);
-    const n = ok.length;
-    const island = pulse({ icon: 'arrow.up.circle', color: '#38bdf8', title: n === 1 ? ok[0].name : current.name, subtitle: t('upload.progress', { i: 1, n }), short: t('upload.progressShort', { i: 1, n }) }, 180000);
-    const taken = new Set((items || []).map((it) => it.name));
-    const done = [];
-    let failure = null;
-    for (let i = 0; i < n; i++) {
-      const a = ok[i];
-      if (i > 0) island.update({ subtitle: t('upload.progress', { i: i + 1, n }), short: t('upload.progressShort', { i: i + 1, n }) });
-      try {
-        const name = await uniqueName(safeName(a.name), async (candidate) => taken.has(candidate));
-        const bytes = await readBytes(a);
-        await drive.upload(current.id, name, bytes, a.mimeType || fileType(name).mimeType);
-        taken.add(name);
-        done.push(name);
-      } catch (e) {
-        failure = e;
-        if (e.auth) break;
-      } finally {
-        discardPicked(a);
-      }
-    }
-    setUploading(false);
-    if (done.length) {
-      success();
-      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: done.length === 1 ? t('upload.doneOne', { name: done[0] }) : t('upload.doneMany', { n: done.length }), subtitle: t('upload.doneSub'), short: t('upload.doneShort') }, 5000);
-      await load();
-    } else island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: failure ? failure.message : '', short: t('upload.failedShort') });
-    if (failure) {
-      warn();
-      if (failure.auth) onAuthError();
-      else Alert.alert(t('upload.failedTitle'), failure.message, [{ text: t('common.ok') }]);
-    }
-  };
-
-  return (
-    <View style={s.flex}>
-      <ScrollView style={s.flex} contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}>
-        <ScreenHeader
-          c={c}
-          onBack={back}
-          backLabel={stack.length > 1 ? stack[stack.length - 2].name : t('nav.projects')}
-          right={!isVersions && items ? <AddButton c={c} onPress={addFiles} busy={uploading} /> : null}
-          look={isVersions ? { colors: DRIVE_LOOK.colors, icon: 'clock.arrow.circlepath' } : DRIVE_LOOK}
-          eyebrow={atRoot ? t('project.eyebrow') : t('drive.eyebrow')}
-          title={isVersions ? t('drive.versions') : current.name}
-          subtitle={isVersions ? t('drive.versionsSub') : items ? `Google Drive · ${t('drive.itemCount', { n: items.length, count: items.length })}` : 'Google Drive'}
-        />
-        {atRoot ? (
-          <Glass c={c} tint={c.accent + '18'} style={{ padding: 14, marginBottom: 12, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
-            <Icon name="info.circle" size={20} color={c.accent} />
-            <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, flex: 1 }}>{t('drive.onlyInfo')}</Text>
-          </Glass>
-        ) : null}
-        {atRoot && versionsFolder ? (
-          <Glass c={c} style={[s.seg, { marginBottom: 12 }]}>
-            {[
-              ['docs', t('drive.tabDocs', { n: num(shown.length) })],
-              ['versions', t('drive.tabVersions')],
-            ].map(([k, label]) => (
-              <Pressable
-                key={k}
-                onPress={() => {
-                  tap();
-                  if (k === 'versions') setStack([...stack, versionsFolder]);
-                  else setDtab('docs');
-                }}
-                style={[s.segBtn, dtab === k && k === 'docs' && { backgroundColor: c.dark ? '#ffffff22' : '#ffffffcc' }]}
-              >
-                <Text style={{ color: k === 'docs' ? c.text : c.text2, fontWeight: '700', fontSize: 13.5 }}>{label}</Text>
-              </Pressable>
-            ))}
-          </Glass>
-        ) : null}
-        {error ? <Text style={{ color: c.red }}>{error}</Text> : null}
-        {items === null && !error ? <SkeletonRows c={c} rows={5} /> : null}
-        {(isVersions ? [...(items || [])].sort((a, b) => (a.folder === b.folder ? b.name.localeCompare(a.name) : a.folder ? -1 : 1)) : shown).map((it) => (
-          <Jelly
-            key={it.id}
-            scaleTo={0.98}
-            style={{ marginBottom: 8 }}
-            onPress={() => (it.folder ? setStack([...stack, it]) : openItem(it))}
-            onLongPress={it.folder ? undefined : () => itemActions(it)}
-          >
-            <Glass c={c} interactive style={s.tlItem}>
-              <FileBadge name={it.name} folder={it.folder} />
-              <View style={s.flex}>
-                <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={2}>{it.name === '_Sürümler' ? t('drive.versionsFolder') : it.name}</Text>
-                <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }}>
-                  {it.folder ? t('drive.folder') : `${Math.max(1, Math.round(it.size / 1024))} KB`} · {ago(it.modified)}
-                </Text>
-              </View>
-              <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
-            </Glass>
-          </Jelly>
-        ))}
-        {items && shown.length === 0 && !isVersions ? <EmptyState c={c} icon="folder" title={t('empty.folder')} body={t('drive.empty')} /> : null}
-        {items && items.some((it) => !it.folder) ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
-      </ScrollView>
-      <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} />
-      <BusyHud c={c} text={busy} />
-    </View>
   );
 }
 

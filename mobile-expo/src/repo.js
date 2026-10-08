@@ -333,15 +333,16 @@ async function doDriveSync(drive, p, opts) {
   const st = WS.loadState(p);
   const startRemote = st.pushedOid || null;
   const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
-  const h1 = await r.syncStore({ ...dev, noPush: true });
+  const progress = opts.onProgress || null;
+  const h1 = await r.syncStore({ ...dev, noPush: true, onProgress: progress });
   await r.snapshot({ kind: 'auto' });
   const mstate = st.mirror || {};
-  const m = await mirror(r, driveRemote(drive, p.driveId), mstate, { upload: push });
+  const m = await mirror(r, driveRemote(drive, p.driveId), mstate, { upload: push, onProgress: progress });
   if (m.downloaded.length) {
     const names = [...new Set(m.downloaded.map((x) => x.split('/').pop()))];
     await r.snapshot({ kind: 'merge', title: t('ws.driveEdits', { names: names.slice(0, 3).join(', '), n: names.length, count: names.length }) });
   }
-  const h2 = push ? await r.syncStore(dev) : { pushed: false, head: await r.head(), ahead: true };
+  const h2 = push ? await r.syncStore({ ...dev, onProgress: progress }) : { pushed: false, head: await r.head(), ahead: true };
   const pulled = h1.pulled + m.downloaded.length;
   out.pull.updated = Array.from({ length: pulled }, () => '');
   out.pull.conflicts = [...h1.conflicts, ...m.conflicts].map((copy) => ({ path: stripCopy(copy).replace(" (Drive'dan)", ''), copy }));
