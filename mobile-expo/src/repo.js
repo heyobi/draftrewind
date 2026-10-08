@@ -1,4 +1,4 @@
-// GitHub projeleri ↔ telefonun git motoru (aşama 1b). Her proje bu cihazda tam bir git deposudur:
+// GitHub projeleri ve telefonun git motoru (aşama 1b). Her proje bu cihazda tam bir git deposudur:
 // geçmiş, eski sürümler ve "neler değişti" internetsiz çalışır; GitHub yalnızca uzak depodur.
 // Çalışma klasörü yine Belgeler/Projeler/<proje> (Dosyalar'da görünür, Word yerinde açar);
 // git verisi Library/Application Support/DraftRewind/git/<anahtar> (Dosyalar'da görünmez).
@@ -6,7 +6,7 @@
 // syncProject() eski çalışma alanı modülünün (workspace.js) sonuç biçimini döndürür; ekranlar aynı kalır.
 // Eski çalışma alanından geçiş: ilk eşitlemede ws-state'teki "hangi dosya hangi uzak halden indi" bilgisi
 // motora verilir (baseFiles) — düzenlenmemiş eski kopyalar güncellenir, telefonda düzenlenenler korunur.
-import { File } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 import { openProject, backendExpo, ensureGitRoot, uriToPath, defaultT } from './git';
 import * as WS from './workspace';
@@ -88,16 +88,41 @@ const stripCopy = (copy) => copy.replace(/ \(diğer cihazdan\)(?=\.[^./]*$|$)/, 
 // { pull: { updated: [path], conflicts: [{ path, copy }], removed: [], skipped: [], moved }, pullError,
 //   push: { pushed: [path], removed: [path], skipped, commit } | null, pending: { n, skipped } | null }
 const inflight = new Map();
+const lastSync = new Map(); // anahtar → zaman (ms)
+const RECENT_MS = 15000;
 export function syncProject(token, p, opts = {}) {
   const key = repoKey(p);
+  // Az önce eşitlendi (ör. ana ekran → proje ekranı): kendiliğinden tekrar etme
+  if (!opts.manual && !inflight.get(key) && Date.now() - (lastSync.get(key) || 0) < RECENT_MS) {
+    const st = status(p);
+    return Promise.resolve({ pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: { n: st.pending, skipped: [] }, recent: true });
+  }
   const running = inflight.get(key);
   if (running && !opts.manual) return running;
   const start = running ? running.catch(() => {}).then(() => doSync(token, p, opts)) : doSync(token, p, opts);
-  const job = start.finally(() => {
-    if (inflight.get(key) === job) inflight.delete(key);
-  });
+  const t0 = Date.now();
+  const job = start
+    .then((r) => {
+      lastSync.set(key, Date.now());
+      timing(p, 'sync', Date.now() - t0);
+      return r;
+    })
+    .finally(() => {
+      if (inflight.get(key) === job) inflight.delete(key);
+    });
   inflight.set(key, job);
   return job;
+}
+
+// Son ölçülen süreler (Ayarlar › Gelişmiş › Senkron motoru testi raporunda görünür)
+const timings = new Map();
+function timing(p, what, ms) {
+  const row = timings.get(p.name) || {};
+  row[what] = ms;
+  timings.set(p.name, row);
+}
+export function timingsReport() {
+  return [...timings].map(([name, r]) => `SÜRE ${name}: ${Object.entries(r).map(([k, v]) => `${k} ${v} ms`).join(', ')}`);
 }
 
 async function doSync(token, p, opts) {
@@ -160,16 +185,58 @@ export function status(p) {
 }
 
 // ---------------------------------------------------------------- okuma
+// Ekranın son hali (geçmiş + dosyalar): proje anında açılsın, sonra arka planda tazelensin.
+// Bellekte ve Caches'te (silinirse yeniden okunur). Geçmiş yalnızca yeni kayıtlar kadar okunur.
+const views = new Map();
+const viewFile = (p) => new File(new Directory(Paths.cache, 'dr-view'), `${repoKey(p)}.json`);
+
+export function cachedView(p) {
+  const key = repoKey(p);
+  if (views.has(key)) return views.get(key);
+  try {
+    const f = viewFile(p);
+    if (!f.exists) return null;
+    const v = JSON.parse(f.textSync());
+    if (v && Array.isArray(v.history) && Array.isArray(v.files)) {
+      views.set(key, v);
+      return v;
+    }
+  } catch (e) {}
+  return null;
+}
+
+function saveView(p, patch) {
+  const key = repoKey(p);
+  const v = { history: [], files: [], ...(views.get(key) || {}), ...patch };
+  views.set(key, v);
+  try {
+    const dir = new Directory(Paths.cache, 'dr-view');
+    dir.create({ intermediates: true, idempotent: true });
+    // Diskte yer tutmasın: kelime haritası yalnızca son kayıtlarda kalır (istatistik en yenisini kullanır)
+    const slim = v.history.map((h, i) => (i < 5 ? h : { ...h, words: null }));
+    viewFile(p).write(JSON.stringify({ ...v, history: slim }));
+  } catch (e) {}
+}
+
 export async function history(p, limit = 1000) {
   const r = await repoFor(p);
-  return r.history({ limit });
+  const t0 = Date.now();
+  const v = views.get(repoKey(p)) || cachedView(p);
+  const h = await r.history({ limit, known: v ? v.history : null });
+  timing(p, 'history', Date.now() - t0);
+  saveView(p, { history: h });
+  return h;
 }
 
 // Klasördeki dosyalar → [{ path, size }]
 export async function files(p) {
   const r = await repoFor(p);
+  const t0 = Date.now();
   const { files: map } = await r.scan();
-  return [...map].map(([path, f]) => ({ path, size: f.size }));
+  const list = [...map].map(([path, f]) => ({ path, size: f.size }));
+  timing(p, 'files', Date.now() - t0);
+  saveView(p, { files: list });
+  return list;
 }
 
 const toArrayBuffer = (u8) => u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);

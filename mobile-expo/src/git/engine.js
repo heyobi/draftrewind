@@ -97,6 +97,27 @@ function who(author, now) {
 
 const sumWords = (words) => Object.values(words || {}).reduce((a, b) => a + (Number(b) || 0), 0);
 
+// Uzun döngülerde arayüze sıra ver (telefonda JS ve dokunmatik aynı iş parçacığında)
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function historyItem(oid, commit) {
+  const { title, note, meta } = parseMessage(commit.message);
+  return {
+    oid,
+    title,
+    note,
+    kind: meta.kind || 'auto',
+    time: commit.committer.timestamp * 1000,
+    author: commit.author.name,
+    total: meta.total,
+    words: meta.words && typeof meta.words === 'object' ? meta.words : null,
+    delta: meta.delta || {},
+    changed: meta.changed,
+    deleted: meta.deleted || [],
+    parents: commit.parent,
+  };
+}
+
 function codedError(code, message, cause) {
   const e = new Error(message);
   e.code = code;
@@ -230,7 +251,9 @@ export class GitProject {
         return;
       }
       names = [...names].sort();
+      let k = 0;
       for (const name of names) {
+        if (++k % 25 === 0) await tick();
         const full = joinPath(abs, name);
         let st;
         try {
@@ -396,7 +419,9 @@ export class GitProject {
     const changed = [];
     const counts = {};
     // Sırayla: her dosya okunur → özetlenir → gerekiyorsa yazılır → bellekten bırakılır
+    let k = 0;
     for (const [rel, f] of files) {
+      if (++k % 10 === 0) await tick();
       const c = this.hashCache[rel];
       const headOid = headFiles.get(rel);
       if (c && c.m === f.mtimeMs && c.s === f.size && c.oid === headOid) {
@@ -458,39 +483,58 @@ export class GitProject {
   }
 
   // ------------------------------------------------------------ geçmiş
-  async history({ limit = 300, file } = {}) {
+  // En yeniden eskiye (git log gibi: tüm ebeveynler, işleme zamanına göre). known: daha önce okunmuş
+  // liste (en yenisi başta) — eski uç bu zincirdeyse yalnızca yeni kayıtlar okunur. Arada arayüze nefes aldırır.
+  async history({ limit = 300, file, known = null } = {}) {
     const head = await this.head();
     if (!head) return [];
-    let log;
-    try {
-      log = await git.log(this.g({ ref: BRANCH, depth: limit }));
-    } catch (e) {
-      return [];
+    let base = known && known.length ? known : null;
+    let items;
+    if (base && base[0].oid === head) items = base.slice(0, limit);
+    else {
+      items = await this.walkHistory(head, limit, base);
+      if (!items) items = await this.walkHistory(head, limit, null);
     }
-    const out = [];
-    for (const entry of log) {
-      const { title, note, meta } = parseMessage(entry.commit.message);
-      const item = {
-        oid: entry.oid,
-        title,
-        note,
-        kind: meta.kind || 'auto',
-        time: entry.commit.committer.timestamp * 1000,
-        author: entry.commit.author.name,
-        total: meta.total,
-        words: meta.words && typeof meta.words === 'object' ? meta.words : null,
-        delta: meta.delta || {},
-        changed: meta.changed,
-        deleted: meta.deleted || [],
-        parents: entry.commit.parent,
-      };
-      if (file) {
-        const touched = (item.changed || []).includes(file) || item.deleted.includes(file);
-        if (!touched && item.changed) continue;
+    if (!file) return items;
+    return items.filter((it) => (it.changed || []).includes(file) || (it.deleted || []).includes(file) || !it.changed);
+  }
+
+  // base verilirse ve eski uç (base[0]) bu zincirde değilse (geçmiş yeniden yazılmış) null döner
+  async walkHistory(head, limit, base) {
+    const knownIds = base ? new Set(base.map((k) => k.oid)) : null;
+    const seen = new Set();
+    const pending = new Map();
+    let hitHead = false;
+    const load = async (oid) => {
+      if (seen.has(oid)) return;
+      seen.add(oid);
+      if (knownIds && knownIds.has(oid)) {
+        if (oid === base[0].oid) hitHead = true;
+        return;
       }
-      out.push(item);
+      try {
+        const { commit } = await git.readCommit(this.g({ oid }));
+        pending.set(oid, commit);
+      } catch (e) {}
+    };
+    await load(head);
+    const fresh = [];
+    while (pending.size && fresh.length < limit) {
+      let best = null;
+      for (const [oid, c] of pending) if (!best || c.committer.timestamp > best[1].committer.timestamp) best = [oid, c];
+      pending.delete(best[0]);
+      fresh.push(historyItem(best[0], best[1]));
+      for (const par of best[1].parent) await load(par);
+      if (fresh.length % 20 === 0) await tick();
     }
-    return out;
+    if (!base || fresh.length >= limit) return fresh;
+    if (!hitHead) return null;
+    const all = fresh.concat(base);
+    const uniq = [];
+    const ids = new Set();
+    for (const it of all) if (!ids.has(it.oid)) (ids.add(it.oid), uniq.push(it));
+    uniq.sort((a, b) => b.time - a.time);
+    return uniq.slice(0, limit);
   }
 
   // Bir dosyanın bir kayıttaki hali (Uint8Array) ya da null. oid === 'working' → klasördeki hali.
@@ -691,6 +735,7 @@ export class GitProject {
     }
     for (const [rel, oid] of after) {
       if (before.get(rel) === oid && !beforeOverride) continue;
+      await tick();
       const wo = await this.workingOid(rel);
       if (wo === oid) continue; // klasörde zaten bu hali var
       if (before.get(rel) === oid && wo !== undefined) continue; // uzak değişmemiş; yerel düzenleme kalır

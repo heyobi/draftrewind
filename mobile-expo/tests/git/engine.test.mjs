@@ -212,3 +212,23 @@ test('iOS ayrışık (NFD) adları: geçmişe NFC yazılır, okuma/değişiklik/
   const s3 = await p.snapshot();
   assert.deepEqual(s3.deleted, ['Bölüm 2/Özet çalışması.txt']);
 });
+
+test('history(known): yalnızca yeni kayıtlar okunur, sonuç tam okumayla aynı; geçmiş yeniden yazılınca tam okuma', async () => {
+  const { p, w } = await phone('hist');
+  for (let i = 0; i < 5; i++) {
+    w('a.txt', `sürüm ${i} ${'k '.repeat(i)}`);
+    await p.snapshot({ now: Date.UTC(2026, 9, 8, 10, i) });
+  }
+  const known = await p.history({ limit: 100 });
+  assert.equal(known.length, 5);
+  assert.deepEqual((await p.history({ limit: 100, known })).map((x) => x.oid), known.map((x) => x.oid)); // uç değişmedi: aynı liste
+  w('b.txt', 'yeni');
+  await p.snapshot({ now: Date.UTC(2026, 9, 8, 11, 0) });
+  const inc = await p.history({ limit: 100, known });
+  const full = await p.history({ limit: 100 });
+  assert.deepEqual(inc.map((x) => x.oid), full.map((x) => x.oid));
+  assert.equal(inc.length, 6);
+  // Uydurma (artık zincirde olmayan) eski liste: tam okumaya düşer
+  const fake = [{ ...known[0], oid: 'f'.repeat(40) }, ...known.slice(1)];
+  assert.deepEqual((await p.history({ limit: 100, known: fake })).map((x) => x.oid), full.map((x) => x.oid));
+});

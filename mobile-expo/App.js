@@ -1205,6 +1205,8 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
         } catch (e) {}
       }
       report = await runSelfTest({ github, onStep: (name) => setEngineTest(name) });
+      const times = REPO.timingsReport();
+      if (times.length) report = report.replace('\nSONUÇ:', `\n${times.join('\n')}\nSONUÇ:`);
     } catch (e) {
       report = 'HATA motor yüklenemedi — ' + (e && e.message ? e.message : String(e));
     }
@@ -1866,8 +1868,15 @@ const touchesFile = (h, path) => (h.changed || []).includes(path) || (h.delta &&
 
 function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError }) {
   const insets = useSafeAreaInsets();
-  const [history, setHistory] = useState(null);
-  const [files, setFiles] = useState(null);
+  // Son görünüm önbellekten: proje anında açılır, arka planda tazelenir
+  const [history, setHistory] = useState(() => {
+    const v = REPO.cachedView(project);
+    return v && v.history.length ? v.history : null;
+  });
+  const [files, setFiles] = useState(() => {
+    const v = REPO.cachedView(project);
+    return v && v.history.length ? v.files : null;
+  });
   const [tab, setTab] = useState('time');
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
