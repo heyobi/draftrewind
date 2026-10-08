@@ -10,6 +10,7 @@ import { MAX_UPLOAD, safeName, uniqueName } from './files';
 import { latestWords } from './stats';
 import { t } from './i18n';
 import { countWords, countsWords, classifyChanges, decideRemoteChange, conflictName, advanceWords, buildMessage, ignoredName, isLocallyModified, recentlyTouched } from './wsCore';
+import { plainBytes } from './bytes';
 
 export const ROOT_FOLDER = 'Projeler';
 const root = () => new Directory(Paths.document, ROOT_FOLDER);
@@ -117,7 +118,7 @@ function writeLocal(p, path, bytes) {
   const f = new File(dir, segs[segs.length - 1]);
   const tmp = new File(dir, `.dr-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try {
-    tmp.write(bytes);
+    tmp.write(plainBytes(bytes));
     try {
       tmp.moveSync(f, { overwrite: true });
     } catch (e) {

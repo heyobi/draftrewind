@@ -4,6 +4,7 @@ import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
 import { arrayBufferToBase64 } from './viewer';
 import { t } from './i18n';
+import { plainBytes } from './bytes';
 
 export const MAX_UPLOAD = 50 * 1024 * 1024;
 // Masaüstü dosyaları yola göre eşleştirir: klasör adı her dilde aynı kalmalı.
@@ -71,7 +72,7 @@ export async function shareBuffer(name, buf) {
   const dir = new Directory(root, String(Date.now()));
   dir.create({ intermediates: true, idempotent: true });
   const file = new File(dir, safeName(name));
-  file.write(buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+  file.write(plainBytes(buf));
   const { mimeType, UTI } = fileType(name);
   await Sharing.shareAsync(file.uri, { mimeType, UTI, dialogTitle: name });
 }

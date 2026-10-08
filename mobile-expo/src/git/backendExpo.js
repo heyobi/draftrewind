@@ -7,6 +7,7 @@
 //   Directory: exists, list() → (File|Directory)[] (.name), create({ intermediates, idempotent }), delete(),
 //         info() → { modificationTime }
 import { Directory, File, Paths } from 'expo-file-system';
+import { plainBytes } from '../bytes.js';
 import { libraryGitRootUri, pathToUri, uriToPath } from './paths.js';
 
 export function backendExpo() {
@@ -40,7 +41,7 @@ export function backendExpo() {
     writeBytes(p, bytes) {
       const f = new File(uri(p));
       if (!f.exists) f.create();
-      f.write(bytes);
+      f.write(plainBytes(bytes));
     },
     append(p, text) {
       const f = new File(uri(p));

@@ -7,6 +7,7 @@ import './polyfill.js';
 import { openProject, gitEngineVersion } from './engine.js';
 import { backendExpo, ensureGitRoot } from './backendExpo.js';
 import { uriToPath, pathToUri } from './paths.js';
+import { plainBytes } from '../bytes.js';
 
 const now = () => Date.now();
 
@@ -63,20 +64,28 @@ export async function runSelfTest({ github, onStep } = {}) {
   };
 
   const backend = backendExpo();
-  const root = ensureGitRoot();
-  const base = `${root}/_selftest`;
+  let base = null;
   const work = `${uriToPath(Paths.cache.uri)}/dr-selftest-work`;
-  wipe(base);
-  wipe(work);
   let p = null;
   let first = null;
 
-  await step('Klasörler', async () => `git: ${base}`);
+  // Expo'nun yeni dosya API'si yalnızca Documents ve Caches altına izin veriyor olabilir;
+  // Library/Application Support reddedilirse rapora düşsün, uygulama durmasın
+  const okRoot = await step('Klasörler', async () => {
+    base = `${ensureGitRoot()}/_selftest`;
+    wipe(base);
+    wipe(work);
+    return `git: ${base}`;
+  });
+  if (!okRoot) {
+    lines.push('SONUÇ: hata var');
+    return lines.join('\n');
+  }
   await step('Türkçe adlı dosyalar yazma', async () => {
     writeText(`${work}/Bölüm 1 – Giriş.txt`, 'Bu çalışmada kentsel ısı adası incelenmiştir.');
     writeText(`${work}/notlar/Çalışma planı.md`, '# Plan\nİlk hafta literatür.');
     const docx = await tinyDocx(['Yöntem bölümü.', 'Veriler Landsat 8 uydusundan alınmıştır.']);
-    new File(pathToUri(`${work}/Tez.docx`)).write(docx);
+    new File(pathToUri(`${work}/Tez.docx`)).write(plainBytes(docx));
     // NFD (ayrışık) ad: Dosyalar uygulaması bazen böyle yazar
     writeText(`${work}/${'Özet'.normalize('NFD')}.txt`, 'özet');
     return '4 dosya';
@@ -111,7 +120,7 @@ export async function runSelfTest({ github, onStep } = {}) {
     await step('Büyük dosya (5 MB) kaydı', async () => {
       const big = new Uint8Array(5 * 1024 * 1024);
       for (let i = 0; i < big.length; i += 4096) big[i] = (i * 31) & 255;
-      new File(pathToUri(`${work}/veri.bin`)).write(big);
+      new File(pathToUri(`${work}/veri.bin`)).write(plainBytes(big));
       const t0 = now();
       const r = await p.snapshot({ kind: 'auto' });
       if (!r) throw new Error('büyük dosya kaydedilmedi');

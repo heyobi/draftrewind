@@ -17,6 +17,7 @@ import * as GH from './github';
 import * as IC from './icloud';
 import * as Core from './localCore';
 import * as WS from './workspace';
+import { plainBytes } from './bytes';
 
 const { ROOT_FOLDER, claimedFolders } = WS;
 
@@ -67,7 +68,7 @@ export function atomicWrite(file, bytes) {
   dir.create({ intermediates: true, idempotent: true });
   const tmp = new File(dir, `.dr-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try {
-    tmp.write(bytes);
+    tmp.write(plainBytes(bytes));
     tmp.moveSync(file, { overwrite: true });
   } catch (e) {
     try {
