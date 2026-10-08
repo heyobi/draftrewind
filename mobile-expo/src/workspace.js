@@ -15,7 +15,7 @@ import { plainBytes } from './bytes';
 export const ROOT_FOLDER = 'Projeler';
 const root = () => new Directory(Paths.document, ROOT_FOLDER);
 const stateDir = () => new Directory(Paths.document, 'ws-state');
-export const folderName = (p) => safeName(p.name);
+export const folderName = (p) => safeName(p.folder || p.name);
 export const projectDir = (p) => new Directory(root(), folderName(p));
 const stateFile = (p) => new File(stateDir(), `${safeName(p.owner)}__${safeName(p.repo)}.json`);
 

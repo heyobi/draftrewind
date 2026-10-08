@@ -215,6 +215,59 @@ export class Drive {
     return this.get(`https://www.googleapis.com/drive/v3/files/${id}?alt=media`, true);
   }
 
+  // Genel istek (eşitleme için): 401 → oturum hatası, diğer hatalar kodlu
+  async req(method, url, { headers, body } = {}) {
+    const r = await fetch(url, { method, headers: { Authorization: `Bearer ${await this.token()}`, ...(headers || {}) }, body });
+    if (r.status === 401) {
+      const e = new Error(translate('err.googleExpired'));
+      e.auth = true;
+      throw e;
+    }
+    if (!r.ok) {
+      const e = new Error(translate('err.drive', { status: r.status }));
+      e.status = r.status;
+      throw e;
+    }
+    return r.status === 204 ? {} : r.json();
+  }
+
+  // Sayfalı sorgu (q: Drive arama ifadesi)
+  async query(q, fields = 'files(id,name,mimeType,md5Checksum,size,createdTime)') {
+    const out = [];
+    let pageToken = '';
+    do {
+      const d = await this.get(`https://www.googleapis.com/drive/v3/files?pageSize=1000&fields=nextPageToken,${fields}&q=${encodeURIComponent(q)}${pageToken ? `&pageToken=${pageToken}` : ''}`);
+      out.push(...(d.files || []));
+      pageToken = d.nextPageToken || '';
+    } while (pageToken);
+    return out;
+  }
+
+  // Yeni dosya (multipart) ya da var olanın içeriğini değiştirme (id verilirse). Dönen: { id, md5Checksum }
+  async put({ id, name, parentId, bytes, mimeType }) {
+    if (!id) return this.upload(parentId, name, bytes, mimeType);
+    const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(id)}?uploadType=media&fields=id,md5Checksum`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${await this.token()}`, 'Content-Type': mimeType || 'application/octet-stream' },
+      body: bytes,
+    });
+    if (r.status === 401) {
+      const e = new Error(translate('err.googleExpired'));
+      e.auth = true;
+      throw e;
+    }
+    if (!r.ok) throw new Error(translate('err.drive', { status: r.status }));
+    return r.json();
+  }
+
+  // Dosyayı başka klasöre taşı (ve yeniden adlandır)
+  move(id, addParent, removeParent, name) {
+    return this.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?addParents=${addParent}&removeParents=${removeParent}&fields=id`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(name ? { name } : {}),
+    });
+  }
+
   // Telefondan dosya ekleme: çok parçalı (multipart) yükleme. drive.file kapsamı uygulamanın
   // oluşturduğu klasörlere/dosyalara yazmaya izin verir. bytes: Uint8Array
   async upload(parentId, name, bytes, mimeType) {
@@ -230,7 +283,7 @@ export class Drive {
     body.set(head, 0);
     body.set(bytes, head.length);
     body.set(tail, head.length + bytes.length);
-    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size', {
+    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,md5Checksum', {
       method: 'POST',
       headers: { Authorization: `Bearer ${await this.token()}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
       body,

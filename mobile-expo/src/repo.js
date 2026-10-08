@@ -12,10 +12,32 @@ import { openProject, backendExpo, ensureGitRoot, uriToPath, defaultT } from './
 import * as WS from './workspace';
 import { safeName, uniqueName, readBytes, PHONE_FOLDER } from './files';
 import { t } from './i18n';
+import { mirror } from './git/mirror';
+import { historyStore, driveRemote } from './driveSync';
 
 const opened = new Map(); // anahtar → Promise<GitProject>
 
-export const repoKey = (p) => `gh-${safeName(p.owner)}__${safeName(p.repo)}`;
+export const repoKey = (p) => (p.kind === 'drive' ? `drive-${safeName(p.repo)}` : `gh-${safeName(p.owner)}__${safeName(p.repo)}`);
+
+// Drive klasörü → proje nesnesi (ekranlar GitHub projesiyle aynı alanları kullanır; owner 'drive', repo klasör kimliği)
+export function driveProject(folder, index = 0) {
+  const p = { kind: 'drive', owner: 'drive', repo: folder.id, driveId: folder.id, name: folder.name, branch: 'main', pushedAt: folder.modified || 0, index };
+  // Klasör adı: daha önce seçilmişse o; bu adda başka bir projenin klasörü varsa "<ad> (Drive)"
+  const st = WS.loadState(p);
+  if (st.folder) return { ...p, folder: st.folder };
+  const chosen = WS.projectDir(p).exists ? { ...p, folder: `${safeName(folder.name)} (Drive)` } : p;
+  WS.saveState(chosen, st); // seçim kalıcı (klasör adı bundan sonra değişmez)
+  return chosen;
+}
+
+// Bu cihazın kalıcı kimliği (paylaşılan geçmiş deposunda heads/<kimlik>.json)
+export function deviceId() {
+  const flags = WS.loadFlags();
+  if (flags.deviceId) return flags.deviceId;
+  const id = `tel-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  WS.saveFlags({ ...flags, deviceId: id });
+  return id;
+}
 const remoteUrl = (p) => `https://github.com/${p.owner}/${p.repo}.git`;
 
 // Uygulama dilindeki metinler; eksik anahtar varsa motorun Türkçe varsayılanı
@@ -126,6 +148,7 @@ export function timingsReport() {
 }
 
 async function doSync(token, p, opts) {
+  if (p.kind === 'drive') return doDriveSync(token, p, opts);
   const r = await repoFor(p);
   const st = WS.loadState(p);
   const push = opts.auto !== false;
@@ -296,4 +319,48 @@ export async function addFiles(p, assets, onProgress) {
 export async function ready(p) {
   const r = await repoFor(p);
   return !!(await r.head());
+}
+
+// ---------------------------------------------------------------- Drive projesi
+// Sıra: (1) diğer cihazların kayıtları geçmişleriyle gelir → (2) bu cihazdaki düzenlemeler kayda girer →
+// (3) Drive'daki dosyalarla eşitleme (Drive / Google Dokümanlar düzenlemeleri iner, bu cihazınkiler yüklenir) →
+// (4) yeni kayıtlar diğer cihazlar için yayımlanır. auto false: yalnızca alınır, gönderilmez.
+async function doDriveSync(drive, p, opts) {
+  const r = await repoFor(p);
+  const push = opts.auto !== false;
+  const store = historyStore(drive, p.driveId);
+  const dev = { store, deviceId: deviceId(), deviceName: author().name };
+  const st = WS.loadState(p);
+  const startRemote = st.pushedOid || null;
+  const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
+  const h1 = await r.syncStore({ ...dev, noPush: true });
+  await r.snapshot({ kind: 'auto' });
+  const mstate = st.mirror || {};
+  const m = await mirror(r, driveRemote(drive, p.driveId), mstate, { upload: push });
+  if (m.downloaded.length) {
+    const names = [...new Set(m.downloaded.map((x) => x.split('/').pop()))];
+    await r.snapshot({ kind: 'merge', title: t('ws.driveEdits', { names: names.slice(0, 3).join(', '), n: names.length, count: names.length }) });
+  }
+  const h2 = push ? await r.syncStore(dev) : { pushed: false, head: await r.head(), ahead: true };
+  const pulled = h1.pulled + m.downloaded.length;
+  out.pull.updated = Array.from({ length: pulled }, () => '');
+  out.pull.conflicts = [...h1.conflicts, ...m.conflicts].map((copy) => ({ path: stripCopy(copy).replace(" (Drive'dan)", ''), copy }));
+  out.pull.moved = pulled > 0;
+  if (push && (m.uploaded.length || m.archived.length || h2.pushed)) {
+    out.push = { pushed: m.uploaded, removed: m.archived, skipped: r.skipped || [], commit: h2.head };
+  } else if (!push) {
+    out.pending = { n: m.pending.length, skipped: r.skipped || [] };
+  }
+  const files = await r.treeFiles(await r.head());
+  WS.saveState(p, {
+    ...WS.loadState(p),
+    engine: true,
+    mirror: mstate,
+    pushedOid: push ? h2.head : startRemote,
+    lastPush: out.push ? Date.now() : st.lastPush,
+    lastPull: pulled ? Date.now() : st.lastPull,
+    count: files.size,
+    pendingN: out.pending ? out.pending.n : 0,
+  });
+  return out;
 }

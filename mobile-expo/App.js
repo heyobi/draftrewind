@@ -706,6 +706,8 @@ function Root() {
   const [ghUser, setGhUser] = useState(null);
   const [google, setGoogle] = useState(null);
   const [screen, setScreen] = useState(null); // { type: 'gh', project } | { type: 'drive', folder }
+  // Drive projesi nesnesi açılışta bir kez üretilir (klasör seçimi kalıcı, ekran gereksiz yere yeniden yüklenmez)
+  const driveProj = useMemo(() => (screen && screen.type === 'drive' ? REPO.driveProject(screen.folder) : null), [screen]);
   const [accounts, setAccounts] = useState(false);
 
   useEffect(() => {
@@ -892,7 +894,7 @@ function Root() {
             }}
           />
         ) : screen && screen.type === 'drive' ? (
-          <DriveScreen c={c} drive={drive} folder={screen.folder} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
+          <ProjectScreen c={c} prefs={prefs} token={drive} project={driveProj} syncTick={syncTick} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
         ) : (
           <HomeScreen c={c} prefs={prefs} onPrefs={updatePrefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} syncTick={syncTick} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
         )}
