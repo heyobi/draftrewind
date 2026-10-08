@@ -10,6 +10,7 @@ const { Project } = require('./core/engine');
 const { Guardian } = require('./core/guardian');
 const docs = require('./core/docs');
 const github = require('./core/github');
+const storeSync = require('./core/storeSync');
 const drive = require('./core/drive');
 const { LocalAI, cleanTitle, grounded, hasContent, digestWords } = require('./core/ai');
 const facts = require('./core/facts');
@@ -383,6 +384,16 @@ function watchDriveFolder() {
     }
 }
 
+// Bu bilgisayarın kalıcı kimliği (paylaşılan geçmiş deposunda heads/<kimlik>.json)
+function deviceId() {
+    let id = store.get('deviceId');
+    if (!id) {
+        id = `pc-${require('crypto').randomBytes(6).toString('hex')}`;
+        store.set('deviceId', id);
+    }
+    return id;
+}
+
 // Drive ile çift yönlü eşitleme (Drive'da yapılan düzenlemeler de bilgisayara gelir)
 function driveRemote() {
     const d = store.get('drive', {});
@@ -406,6 +417,21 @@ async function syncDrive(rt, kind = 'auto') {
             Object.assign(early, { driveFolderId: record.driveFolderId, driveFolderName: record.driveFolderName, driveUrl: info.url });
             saveProjectRecord(early);
         }
+        // Önce geçmiş: diğer cihazların kayıtları (telefon, başka bilgisayar) geçmişleriyle birlikte gelir.
+        // Sonra dosya eşitlemesi (Drive'da/Google Dokümanlar'da yapılan düzenlemeler), en sonda yayım.
+        const history = remote.historyStore ? remote.historyStore() : null;
+        const shareHistory = async () => {
+            if (!history) return null;
+            try {
+                return await storeSync.syncStore(rt.project, { store: history, deviceId: deviceId(), deviceName: os.hostname() });
+            } catch (e) {
+                console.warn('[DraftRewind] Drive geçmiş eşitleme:', e.message);
+                return null;
+            }
+        };
+        const pulledHistory = await shareHistory();
+        if (pulledHistory && pulledHistory.conflicts.length) emit('toast', { icon: 'merge', text: T('main.driveConflicts', { n: pulledHistory.conflicts.length }) });
+        rt.shareHistory = shareHistory;
         const state = record.driveState || {};
         result = await drive.reconcile(rt.project, remote, state, kind);
         const fresh = recordOf(rt.project.id) || record;
@@ -427,6 +453,12 @@ async function syncDrive(rt, kind = 'auto') {
         clearTimeout(rt.timer);
         await doSnapshot(rt, { kind: 'merge', title: T('main.driveMerged', { names: names.slice(0, 3).join(', '), more: names.length > 3 ? T('common.andMore', { n: names.length - 3 }) : '' }) });
         emit('toast', { icon: 'cloud', text: T('main.driveDownloaded', { n: names.length }) });
+    }
+    // Bu turdaki kayıtlar (Drive'dan gelen düzenlemeler dahil) diğer cihazlar için yayımlanır
+    if (rt.shareHistory) {
+        const share = rt.shareHistory;
+        rt.shareHistory = null;
+        await share();
     }
     if (result && result.conflicts.length) {
         emit('toast', { icon: 'merge', text: T('main.driveConflicts', { n: result.conflicts.length }) });

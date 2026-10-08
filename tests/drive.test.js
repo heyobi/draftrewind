@@ -346,3 +346,92 @@ test('Klasör modu: telefonda oluşturulan projeyi benimseme', async () => {
     assert.equal(read(path.join(p2.dir, 'giris.txt')), 'telefonda yazıldı');
     assert.equal(fs.existsSync(path.join(driveRoot, 'DraftRewind', 'Telefon Tezi (2)')), false);
 });
+
+// ---------------------------------------------------------------------------
+// Geçmiş paylaşımı (aşama 2b): iki bilgisayar aynı Drive klasörü üzerinden kayıtlarıyla birlikte eşitlenir
+// ---------------------------------------------------------------------------
+const storeSync = require('../app/core/storeSync');
+
+test('Klasör modu: geçmiş .draftrewind altında paylaşılır, dosya eşitlemesi bu klasörü görmez', async () => {
+    const driveRoot = h.tmpDir();
+    const a = await h.openProject({ root: h.tmpDir(), id: 'ortak', name: 'Tezim' });
+    h.write(path.join(a.dir, 'tez.txt'), 'A yazdı');
+    await a.snapshot();
+    const ra = new drive.FolderRemote(driveRoot);
+    const recA = {};
+    await ra.prepare(a, recA);
+    const s1 = await storeSync.syncStore(a, { store: ra.historyStore(), deviceId: 'pc-a' });
+    assert.equal(s1.pushed, true);
+    assert.ok(fs.existsSync(path.join(ra.dir, '.draftrewind', 'heads', 'pc-a.json')));
+    assert.ok(![...(await ra.list()).keys()].some(k => k.startsWith('.draftrewind')));
+
+    const b = await h.openProject({ root: h.tmpDir(), id: 'ortak', name: 'Tezim' });
+    const rb = new drive.FolderRemote(driveRoot);
+    await rb.prepare(b, { driveFolderName: recA.driveFolderName, driveMarkerId: 'ortak' });
+    const s2 = await storeSync.syncStore(b, { store: rb.historyStore(), deviceId: 'pc-b' });
+    assert.equal(s2.pulled, 1);
+    assert.equal(fs.readFileSync(path.join(b.dir, 'tez.txt'), 'utf8'), 'A yazdı');
+    assert.equal(await b.head(), await a.head());
+});
+
+// Drive API'nin geçmiş deposunun kullandığı kısmı: klasör/sorgu/yükleme/okuma (bellekte)
+function memDriveApi() {
+    const items = new Map(); // id → { name, parent, folder, data, createdTime }
+    let n = 0;
+    const api = {
+        esc: s => String(s), // testteki adlarda tırnak yok
+        async query(q) {
+            const parent = (q.match(/'([^']+)' in parents/) || [])[1];
+            const name = (q.match(/name='([^']*)'/) || [])[1];
+            const onlyFolders = q.includes("mimeType='application/vnd.google-apps.folder'");
+            return [...items.entries()]
+                .filter(([, f]) => f.parent === parent && (!name || f.name === name) && (!onlyFolders || f.folder))
+                .map(([id, f]) => ({ id, name: f.name, createdTime: f.createdTime }));
+        },
+        async createFolder(name, parent) {
+            const id = `d${++n}`;
+            items.set(id, { name, parent, folder: true, createdTime: `2026-10-09T00:00:${String(n).padStart(2, '0')}Z` });
+            return { id, name };
+        },
+        async upload({ id, name, parentId, buf }) {
+            const fid = id || `f${++n}`;
+            items.set(fid, { name, parent: parentId, folder: false, data: Buffer.from(buf), createdTime: '2026-10-09T01:00:00Z' });
+            return { id: fid, md5Checksum: h.md5(buf) };
+        },
+        async req(method, url) {
+            const id = decodeURIComponent(url.match(/files\/([^?]+)\?alt=media/)[1]);
+            return items.has(id) ? items.get(id).data : null;
+        }
+    };
+    return { api, items };
+}
+
+test('Hesap modu: geçmiş deposu Drive API üzerinde; iki ".draftrewind" klasörü olsa da hepsi okunur', async () => {
+    const { api, items } = memDriveApi();
+    const proj = await api.createFolder('Tezim', 'kok');
+    const a = await h.openProject({ root: h.tmpDir(), id: 'ortak', name: 'Tezim' });
+    h.write(path.join(a.dir, 'tez.txt'), 'hesap modu');
+    await a.snapshot();
+    const ra = new drive.ApiRemote(api);
+    ra.folderId = proj.id;
+    await storeSync.syncStore(a, { store: ra.historyStore(), deviceId: 'pc-a' });
+    // Başka bir cihaz aynı anda ikinci bir .draftrewind açmış ve oraya yazmış olsun
+    const dr2 = await api.createFolder('.draftrewind', proj.id);
+    const heads2 = await api.createFolder('heads', dr2.id);
+    await api.createFolder('packs', dr2.id);
+    await api.upload({ name: 'eski-cihaz.json', parentId: heads2.id, buf: Buffer.from('{"head":"bozuk"}') });
+
+    const b = await h.openProject({ root: h.tmpDir(), id: 'ortak', name: 'Tezim' });
+    const rb = new drive.ApiRemote(api);
+    rb.folderId = proj.id;
+    const store = rb.historyStore();
+    const names = await store.list();
+    assert.ok(names.includes('heads/pc-a.json') && names.includes('heads/eski-cihaz.json'));
+    const s = await storeSync.syncStore(b, { store, deviceId: 'pc-b' });
+    assert.equal(s.pulled, 1);
+    assert.equal(fs.readFileSync(path.join(b.dir, 'tez.txt'), 'utf8'), 'hesap modu');
+    // b'nin yayımı en eski .draftrewind'e gider (tek yazma yeri)
+    const firstDr = [...items.entries()].filter(([, f]) => f.name === '.draftrewind').sort((x, y) => x[1].createdTime.localeCompare(y[1].createdTime))[0][0];
+    const headsDirs = [...items.entries()].filter(([, f]) => f.name === 'heads' && f.parent === firstDr).map(([id]) => id);
+    assert.ok([...items.values()].some(f => f.name === 'pc-b.json' && headsDirs.includes(f.parent)));
+});

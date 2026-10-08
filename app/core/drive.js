@@ -21,6 +21,7 @@ const config = require('./config');
 const ROOT_NAME = 'DraftRewind';
 const VERSIONS = '_Sürümler';
 const MARKER = '.draftrewind-proje.json';
+const HISTORY_DIR = '.draftrewind';
 const MIME = {
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -280,6 +281,35 @@ class FolderRemote {
         const vDir = path.join(this.dir, VERSIONS, ...rel.split('/').slice(0, -1));
         fs.mkdirSync(vDir, { recursive: true });
         fs.writeFileSync(path.join(vDir, versionName(rel, kind)), buf);
+    }
+
+    // Geçmiş deposu (storeSync): <proje klasörü>/.draftrewind/{packs,heads}. Dosya eşitlemesi bu klasörü
+    // görmez (nokta ile başlayan adlar yok sayılır).
+    historyStore() {
+        const base = path.join(this.dir, HISTORY_DIR);
+        return {
+            id: 'drive',
+            async list() {
+                const out = [];
+                for (const sub of ['packs', 'heads']) {
+                    let names = [];
+                    try { names = fs.readdirSync(path.join(base, sub)); } catch (e) {}
+                    for (const n of names) if (!n.endsWith('.tmp')) out.push(`${sub}/${n}`);
+                }
+                return out;
+            },
+            async read(name) {
+                try { return fs.readFileSync(path.join(base, ...name.split('/'))); } catch (e) { return null; }
+            },
+            async write(name, buf) {
+                const dst = path.join(base, ...name.split('/'));
+                fs.mkdirSync(path.dirname(dst), { recursive: true });
+                const tmp = `${dst}.${process.pid}.tmp`;
+                fs.writeFileSync(tmp, buf);
+                fs.renameSync(tmp, dst);
+                try { require('child_process').execFile('attrib', ['+h', base], { windowsHide: true }, () => {}); } catch (e) {}
+            }
+        };
     }
 }
 
@@ -751,6 +781,57 @@ class ApiRemote {
 
     async version(rel, buf, kind) {
         await this.api.upload({ name: versionName(rel, kind), parentId: await this.versionDir(rel), buf });
+    }
+
+    // Geçmiş deposu (storeSync) Drive'da: <proje klasörü>/.draftrewind/{packs,heads}. İki cihaz klasörü
+    // aynı anda oluşturursa birden fazla ".draftrewind" olabilir: okurken hepsi birleştirilir, yazarken en eskisi.
+    historyStore() {
+        const api = this.api;
+        const root = this.folderId;
+        const files = new Map(); // ad → dosya kimliği
+        let target = null; // { packs, heads } yazılacak klasörler
+        const folders = async (name, parent) => {
+            const found = await api.query(`'${parent}' in parents and trashed=false and mimeType='${FOLDER_MIME}' and name='${api.esc(name)}'`, 'files(id,name,createdTime)');
+            return found.sort((a, b) => String(a.createdTime || '').localeCompare(String(b.createdTime || '')));
+        };
+        const ensure = async () => {
+            if (target) return target;
+            const dr = (await folders(HISTORY_DIR, root))[0] || (await api.createFolder(HISTORY_DIR, root));
+            const sub = async name => ((await folders(name, dr.id))[0] || (await api.createFolder(name, dr.id))).id;
+            target = { packs: await sub('packs'), heads: await sub('heads') };
+            return target;
+        };
+        return {
+            id: 'drive',
+            async list() {
+                files.clear();
+                const out = [];
+                for (const dr of await folders(HISTORY_DIR, root)) {
+                    for (const sub of ['packs', 'heads']) {
+                        for (const d of await folders(sub, dr.id)) {
+                            for (const f of await api.query(`'${d.id}' in parents and trashed=false`, 'files(id,name,createdTime)')) {
+                                const n = `${sub}/${f.name}`;
+                                if (files.has(n)) continue;
+                                files.set(n, f.id);
+                                out.push(n);
+                            }
+                        }
+                    }
+                }
+                return out;
+            },
+            async read(name) {
+                const id = files.get(name);
+                if (!id) return null;
+                return api.req('GET', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { raw: true });
+            },
+            async write(name, buf) {
+                const t = await ensure();
+                const [sub, fileName] = name.split('/');
+                const r = await api.upload({ id: files.get(name), name: fileName, parentId: sub === 'packs' ? t.packs : t.heads, buf });
+                files.set(name, r.id);
+            }
+        };
     }
 }
 
