@@ -62,7 +62,7 @@ jobs:
           CERT_PATH=$RUNNER_TEMP/build_certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
 
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          node -e "fs.writeFileSync(process.env.CERT_PATH, Buffer.from(process.env.BUILD_CERTIFICATE_BASE64, 'base64'))"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -79,8 +79,8 @@ jobs:
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
 
-          echo -n "$APP_PROFILE_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/app.mobileprovision
-          echo -n "$WIDGET_PROFILE_BASE64" | base64 --decode -o ~/Library/MobileDevice/Provisioning\ Profiles/widget.mobileprovision
+          node -e "fs.writeFileSync(process.env.HOME + '/Library/MobileDevice/Provisioning Profiles/app.mobileprovision', Buffer.from(process.env.APP_PROFILE_BASE64, 'base64'))"
+          node -e "fs.writeFileSync(process.env.HOME + '/Library/MobileDevice/Provisioning Profiles/widget.mobileprovision', Buffer.from(process.env.WIDGET_PROFILE_BASE64, 'base64'))"
 
           # Extract UUIDs and rename files to UUID.mobileprovision
           for f in ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision; do
