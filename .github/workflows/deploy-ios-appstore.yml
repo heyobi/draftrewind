@@ -93,12 +93,18 @@ jobs:
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           mkdir -p ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles
           cp profiles/*.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/
-          cp profiles/DraftRewind_AppStore_Profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/833cf625-a225-4288-a388-d36f091a5e6f.mobileprovision
-          cp profiles/DraftRewind_Widgets_AppStore_Profile.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/d2c98500-ecdd-462e-b7f7-681f7e1dc608.mobileprovision
+          # Her profil kendi UUID'siyle kurulur (UUID dosyanın içinden okunur; profil yenilenince değişiklik gerekmez)
+          for p in profiles/*.mobileprovision; do
+            uuid=$(grep -a -A1 '<key>UUID</key>' "$p" | grep -o '[0-9a-fA-F-]\{36\}' | head -1)
+            echo "$p -> $uuid"
+            cp "$p" ~/Library/MobileDevice/Provisioning\ Profiles/"$uuid".mobileprovision
+          done
           cp ~/Library/MobileDevice/Provisioning\ Profiles/* ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/ 2>/dev/null || true
           ls -la ~/Library/MobileDevice/Provisioning\ Profiles/
 
       - name: Generate Native iOS Project (Expo Prebuild)
+        env:
+          DRAFTREWIND_ICLOUD: ${{ vars.DRAFTREWIND_ICLOUD }}
         run: npx expo prebuild --platform ios --clean
 
       - name: Configure Signing & Entitlements in Xcode Project

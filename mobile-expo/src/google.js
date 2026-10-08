@@ -230,7 +230,7 @@ export class Drive {
     body.set(head, 0);
     body.set(bytes, head.length);
     body.set(tail, head.length + bytes.length);
-    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name', {
+    const r = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size', {
       method: 'POST',
       headers: { Authorization: `Bearer ${await this.token()}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
       body,

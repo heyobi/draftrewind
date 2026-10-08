@@ -4,10 +4,24 @@ const path = require('path');
 console.log('--- Configuring Signing & Entitlements for App Store Release ---');
 
 const TEAM_ID = 'U99V9TSK2X';
-const APP_PROFILE_NAME = 'DraftRewind AppStore Profile';
-const APP_PROFILE_UUID = '833cf625-a225-4288-a388-d36f091a5e6f';
-const WIDGET_PROFILE_NAME = 'DraftRewind Widgets AppStore Profile';
-const WIDGET_PROFILE_UUID = 'd2c98500-ecdd-462e-b7f7-681f7e1dc608';
+// Profil adı ve UUID'si doğrudan profiles/ içindeki dosyadan okunur: profil Apple portalında
+// yenilendiğinde (ör. iCloud eklendiğinde) burada hiçbir şeyi değiştirmek gerekmez.
+function profileInfo(file) {
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'profiles', file), 'latin1');
+  const pick = (key) => {
+    const m = raw.match(new RegExp('<key>' + key + '</key>\\s*<string>([^<]+)</string>'));
+    if (!m) throw new Error(file + ': ' + key + ' okunamadı');
+    return m[1];
+  };
+  return { name: pick('Name'), uuid: pick('UUID') };
+}
+const APP_PROFILE = profileInfo('DraftRewind_AppStore_Profile.mobileprovision');
+const WIDGET_PROFILE = profileInfo('DraftRewind_Widgets_AppStore_Profile.mobileprovision');
+const APP_PROFILE_NAME = APP_PROFILE.name;
+const APP_PROFILE_UUID = APP_PROFILE.uuid;
+const WIDGET_PROFILE_NAME = WIDGET_PROFILE.name;
+const WIDGET_PROFILE_UUID = WIDGET_PROFILE.uuid;
+console.log('Profiles:', APP_PROFILE_NAME, APP_PROFILE_UUID, '|', WIDGET_PROFILE_NAME, WIDGET_PROFILE_UUID);
 
 // 1. Remove aps-environment from any .entitlements files in ios/
 function cleanEntitlements(dir) {

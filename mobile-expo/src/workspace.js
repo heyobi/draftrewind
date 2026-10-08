@@ -37,8 +37,40 @@ export function loadState(p) {
 export function saveState(p, st) {
   try {
     stateDir().create({ intermediates: true, idempotent: true });
-    stateFile(p).write(JSON.stringify(st));
+    // Klasör adı da saklanır: bu klasör bir GitHub projesine ait, "hesapsız" yerel proje sayılmasın
+    stateFile(p).write(JSON.stringify({ ...st, folder: folderName(p) }));
   } catch (e) {}
+}
+
+// GitHub projelerine ait çalışma alanı klasörlerinin adları (ws-state/<sahip>__<depo>.json'lardan)
+export function claimedFolders() {
+  const out = [];
+  try {
+    const dir = stateDir();
+    if (!dir.exists) return out;
+    for (const it of dir.list()) {
+      const name = it.name || '';
+      if (it instanceof Directory || !name.endsWith('.json') || !name.includes('__') || name.startsWith('local-')) continue;
+      try {
+        const st = JSON.parse(it.textSync()) || {};
+        if (typeof st.folder === 'string' && st.folder) out.push(st.folder);
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return out;
+}
+
+// Eski durum dosyalarına klasör adını ekler (GitHub listesi yüklenince çağrılır)
+export function rememberFolders(projects) {
+  for (const p of projects || []) {
+    try {
+      const f = stateFile(p);
+      if (!f.exists) continue;
+      const st = JSON.parse(f.textSync()) || {};
+      if (st.folder === folderName(p)) continue;
+      f.write(JSON.stringify({ ...st, folder: folderName(p) }));
+    } catch (e) {}
+  }
 }
 
 // Genel bayraklar (ör. "Word ile düzenleme" ipucu bir kez gösterildi)

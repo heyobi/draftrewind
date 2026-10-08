@@ -42,6 +42,9 @@ import { pulse, isIslandUsable, setIslandEnabled, loadSeen, saveSeen, loadPendin
 import { MAX_UPLOAD, PHONE_FOLDER, fileType, safeName, uniqueName, shareBuffer, pickFiles, takePhotos, pickPhotos, readBytes, readBase64, discardPicked, mb } from './src/files';
 import { isPairLink, decodePairLink } from './src/pair';
 import * as WS from './src/workspace';
+import * as LOCAL from './src/local';
+import * as IC from './src/icloud';
+import { isSignedIn, previousCopy } from './src/localCore';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
 import { ensurePermission, checkBackupHealth, dismissBackupCard } from './src/notify';
 import { reportHtml, htmlToPdf, reportFileName, REPORT_MAX_FILES, REPORT_MAX_BLOCKS } from './src/report';
@@ -321,6 +324,11 @@ function reportSync(r, project, onAuthError, manual = false) {
 
 // Hata nesnesini kullanıcıya gösterilecek metne çevirir (ham iz yok)
 const errText = (e) => (e && e.message ? e.message : String(e || ''));
+// Yerel/iCloud işlemleri: yalnızca bizim (çevrilmiş) hata metinlerimiz gösterilir, gerisi genel mesaj
+const friendly = (e) => (e && e.user && e.message ? e.message : t('local.failed'));
+const LOCAL_LOOK = { colors: ['#34d399', '#0ea5e9'], icon: 'iphone' };
+const ICLOUD_LOOK = { colors: ['#38bdf8', '#6366f1'], icon: 'icloud.fill' };
+const lookOf = (p) => (p.store === 'icloud' ? ICLOUD_LOOK : LOCAL_LOOK);
 
 // iOS 26'da Liquid Glass, diğerlerinde klasik kart
 function Glass({ c, style, children, tint, interactive }) {
@@ -345,9 +353,9 @@ function GradientButton({ title, onPress, disabled, icon }) {
   );
 }
 
-function SecondaryButton({ c, title, onPress, disabled, icon }) {
+function SecondaryButton({ c, title, onPress, disabled, icon, testID }) {
   return (
-    <Jelly onPress={onPress} disabled={disabled}>
+    <Jelly onPress={onPress} disabled={disabled} testID={testID} accessibilityLabel={title}>
       <Glass c={c} interactive style={[s.secBtn, icon && s.btnRow]}>
         {icon ? <Icon name={icon} size={18} color={c.text} weight="semibold" /> : null}
         <Text style={{ color: c.text, fontSize: 16, fontWeight: '700' }}>{title}</Text>
@@ -629,7 +637,7 @@ function AiWeekCard({ c, status, project, history, streak }) {
     const id = ++req.current;
     setState({ status: 'loading' });
     try {
-      const text = await weekRecap(`${project.owner}/${project.repo}`, history, week, streak);
+      const text = await weekRecap(project.id || `${project.owner}/${project.repo}`, history, week, streak);
       if (id !== req.current) return;
       success();
       setState({ status: 'done', text });
@@ -846,7 +854,8 @@ function Root() {
     return () => sub.remove();
   }, [ready]);
 
-  const signedIn = ghToken || google;
+  // Hesap yoksa da "hesapsız (yalnızca bu cihaz)" ya da iCloud seçildiyse uygulama açılır
+  const signedIn = isSignedIn({ ghToken, google, prefs });
   return (
     <View style={{ flex: 1, backgroundColor: c.bg }}>
       <StatusBar style={dark ? 'light' : 'dark'} />
@@ -857,13 +866,33 @@ function Root() {
             <ActivityIndicator color={c.accent} />
           </View>
         ) : !signedIn ? (
-          <LoginScreen c={c} onGithub={loginGithub} onGoogle={setGoogle} onScan={() => setScanning(true)} />
+          <LoginScreen
+            c={c}
+            onGithub={loginGithub}
+            onGoogle={setGoogle}
+            onScan={() => setScanning(true)}
+            onLocal={() => updatePrefs({ localOnly: true })}
+            onIcloud={() => updatePrefs({ localOnly: true, icloud: true })}
+          />
         ) : screen && screen.type === 'gh' ? (
           <ProjectScreen c={c} prefs={prefs} token={ghToken} project={screen.project} syncTick={syncTick} onBack={() => setScreen(null)} onAuthError={logoutGithub} />
+        ) : screen && screen.type === 'local' ? (
+          <LocalProjectScreen
+            c={c}
+            prefs={prefs}
+            project={screen.project}
+            ghToken={ghToken}
+            drive={drive}
+            onBack={() => setScreen(null)}
+            onMoved={(next) => {
+              setSyncTick((n) => n + 1);
+              setScreen(next || null);
+            }}
+          />
         ) : screen && screen.type === 'drive' ? (
           <DriveScreen c={c} drive={drive} folder={screen.folder} onBack={() => setScreen(null)} onAuthError={logoutGoogle} />
         ) : (
-          <HomeScreen c={c} prefs={prefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} syncTick={syncTick} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
+          <HomeScreen c={c} prefs={prefs} onPrefs={updatePrefs} ghToken={ghToken} ghUser={ghUser} google={google} drive={drive} syncTick={syncTick} onOpen={setScreen} onAccounts={() => setAccounts(true)} onAuthErrorGh={logoutGithub} onAuthErrorGoogle={logoutGoogle} />
         )}
       </Centered>
       {ready && signedIn ? <StatusScrim c={c} /> : null}
@@ -983,10 +1012,22 @@ function GithubCodeCard({ c, flow, onCancel }) {
   );
 }
 
-function LoginScreen({ c, onGithub, onGoogle, onScan }) {
+function LoginScreen({ c, onGithub, onGoogle, onScan, onLocal, onIcloud }) {
   const insets = useSafeAreaInsets();
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
+  // "iCloud ile devam et" yalnızca iCloud'a giriş yapılmışsa ve kapsayıcı çözülebiliyorsa görünür
+  const [icloudOk, setIcloudOk] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    if (IC.icloudAvailable())
+      IC.containerPath(true)
+        .then((path) => alive && setIcloudOk(!!path))
+        .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
   const spin = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -1018,7 +1059,21 @@ function LoginScreen({ c, onGithub, onGoogle, onScan }) {
           <QrHint c={c} onScan={onScan} />
           <GradientButton icon="chevron.left.forwardslash.chevron.right" title={gh.busy ? t('common.connecting') : t('login.github')} onPress={gh.start} disabled={gh.busy} />
           <SecondaryButton c={c} icon="externaldrive.fill" title={go.busy ? t('common.connecting') : t('login.google')} onPress={go.start} disabled={go.busy} />
+          {icloudOk ? <SecondaryButton c={c} icon="icloud.fill" title={t('login.icloud')} onPress={onIcloud} testID="continue-icloud-button" /> : null}
           <Text style={{ color: c.text3, textAlign: 'center', fontSize: 12.5 }}>{t('login.hint')}</Text>
+          <Pressable
+            onPress={() => {
+              tap();
+              onLocal();
+            }}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={t('login.local')}
+            testID="continue-local-button"
+            style={{ alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 12 }}
+          >
+            <Text style={{ color: c.text2, fontSize: 14, fontWeight: '600', textAlign: 'center' }}>{t('login.local')}</Text>
+          </Pressable>
         </View>
       ) : null}
     </View>
@@ -1131,6 +1186,16 @@ function Segmented({ c, options, value, onChange }) {
 function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
+  // iCloud anahtarı yalnızca iCloud kullanılabilirken açılabilir (sayfa her açıldığında yeniden bakılır)
+  const [icloudOk, setIcloudOk] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true;
+    (IC.icloudAvailable() ? IC.containerPath(true) : Promise.resolve(null)).then((path) => alive && setIcloudOk(!!path)).catch(() => alive && setIcloudOk(false));
+    return () => {
+      alive = false;
+    };
+  }, [visible]);
   // Yedek uyarıları açılırken bildirim izni istenir; reddedilirse anahtar geri kapanır ve açıklanır
   const toggleBackupAlerts = async (on) => {
     if (!on) return onPrefs({ backupAlerts: false });
@@ -1184,6 +1249,25 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             </Pressable>
           </Glass>
           {gh.error || go.error ? <Text style={{ color: c.red, marginTop: 14 }}>{gh.error || go.error}</Text> : null}
+          {prefs.localOnly && !ghToken && !google ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>{t('settings.localMode')}</Text> : null}
+
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('icloud.settingsHeader')}</Text>
+          <Glass c={c} style={s.accountRow}>
+            <View style={s.accountIcon}><Icon name="icloud.fill" size={22} color={c.text2} /></View>
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('icloud.settingsTitle')}</Text>
+              <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{t('icloud.settingsSub')}</Text>
+            </View>
+            <Switch
+              value={!!prefs.icloud && icloudOk}
+              disabled={!icloudOk}
+              onValueChange={(on) => onPrefs(on ? { icloud: true } : { icloud: false, localOnly: prefs.localOnly || (!ghToken && !google) })}
+              trackColor={{ true: c.accent }}
+              accessibilityLabel={t('icloud.settingsTitle')}
+              testID="icloud-toggle"
+            />
+          </Glass>
+          {!icloudOk ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginTop: 8, marginHorizontal: 6 }}>{t('icloud.unavailable')}</Text> : null}
 
           <Text style={[s.dayHeader, { color: c.text3, marginTop: 26 }]}>{t('settings.language')}</Text>
           <Segmented
@@ -1247,7 +1331,7 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
 // ---------------------------------------------------------------------------
 // Ana ekran: GitHub projeleri + Drive klasörleri
 // ---------------------------------------------------------------------------
-function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
+function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTick, onOpen, onAccounts, onAuthErrorGh, onAuthErrorGoogle }) {
   const insets = useSafeAreaInsets();
   const [ghList, setGhList] = useState(null);
   const [driveList, setDriveList] = useState(null);
@@ -1262,6 +1346,54 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
     return [...keep, ...list];
   };
   const autoPush = prefs ? prefs.autoPush !== false : true;
+  // Hesapsız (yalnızca bu cihaz) ve iCloud projeleri
+  const wantIcloud = !!(prefs && prefs.icloud);
+  const localMode = !!(prefs && (prefs.localOnly || prefs.icloud));
+  const [localList, setLocalList] = useState(null);
+  const [icloudInfo, setIcloudInfo] = useState({ available: false, projects: [] });
+  const [moving, setMoving] = useState(null);
+  const ghListRef = useRef(null);
+  // Listeler okunur; snapshot true ise her projede değişenlerin kopyası alınır (açılış, öne gelme, aşağı çekme)
+  const refreshLocal = async (snapshot) => {
+    const ghFolders = (ghListRef.current || []).map((p) => WS.folderName(p));
+    let locals = LOCAL.listLocalProjects(ghFolders);
+    let ic = wantIcloud ? await LOCAL.listIcloudProjects(true) : { available: false, projects: [] };
+    setLocalList(locals);
+    setIcloudInfo(ic);
+    if (!snapshot) return;
+    const n = await LOCAL.snapshotAll([...locals, ...(ic.available ? ic.projects : [])]);
+    if (n) {
+      locals = LOCAL.listLocalProjects(ghFolders);
+      if (wantIcloud) ic = await LOCAL.listIcloudProjects();
+      setLocalList(locals);
+      setIcloudInfo(ic);
+    }
+  };
+
+  // Yerel projeleri iCloud Drive'a taşı (kopyala → doğrula → asılları kaldır)
+  const moveToIcloud = async () => {
+    const list = localList || [];
+    if (moving || !list.length) return;
+    const n = list.length;
+    setMoving(t('home.moving', { i: 1, n }));
+    try {
+      const r = await LOCAL.moveLocalToIcloud(list, (i) => setMoving(t('home.moving', { i: i + 1, n })));
+      setMoving(null);
+      await refreshLocal(false);
+      if (r.moved.length) {
+        success();
+        pulse({ icon: 'icloud.fill', color: '#38bdf8', title: t('home.moveDone', { n: r.moved.length, count: r.moved.length }), subtitle: t('move.done'), short: t('move.doneShort') }, 6000);
+      }
+      if (r.failed.length) {
+        warn();
+        Alert.alert(t('move.failedTitle'), t('home.moveFailed', { names: r.failed.join(', ') }), [{ text: t('common.ok') }]);
+      } else onPrefs && onPrefs({ icloudMoveDismissed: true });
+    } catch (e) {
+      setMoving(null);
+      warn();
+      Alert.alert(t('move.failedTitle'), friendly(e), [{ text: t('common.ok') }]);
+    }
+  };
 
   // Bu cihazda çalışma alanı olan projeler: Word'de kaydedilenler ana ekrana dönünce de gönderilsin
   const syncLocal = async (list) => {
@@ -1294,6 +1426,23 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
       if (!name) return;
       setCreating(true);
       try {
+        if (!ghToken && (localMode || !drive)) {
+          // Hesapsız ya da iCloud: proje klasörü bu cihazda / iCloud Drive'da
+          const store = wantIcloud && icloudInfo.available ? 'icloud' : 'local';
+          let lp;
+          try {
+            lp = await LOCAL.createProject(name, store);
+          } catch (e) {
+            warn();
+            Alert.alert(t('home.newProjectFailed'), friendly(e), [{ text: t('common.ok') }]);
+            return;
+          }
+          success();
+          await refreshLocal(false);
+          Alert.alert(t('home.newProjectCreated', { name: lp.name }), t('home.newLocalCreatedBody', { path: LOCAL.filesPath(lp) }), [{ text: t('common.ok') }]);
+          onOpen({ type: 'local', project: lp });
+          return;
+        }
         if (!ghToken && drive) {
           // Yalnızca Drive ile giriş: Drive'da klasör olarak oluştur ve aç
           const f = await drive.createProject(name);
@@ -1347,6 +1496,8 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
           .then(async (raw) => {
             const list = withFresh(raw);
             setGhList(list);
+            ghListRef.current = list;
+            WS.rememberFolders(list);
             // Yedek sağlığı: en yeni kayıt projelerin son gönderim zamanlarından
             const newest = list.reduce((m, p) => Math.max(m, p.pushedAt || 0), 0);
             checkBackupHealth(newest, backupAlerts)
@@ -1372,9 +1523,12 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
             setError(e.message);
           })
       );
+    // Yerel liste hemen; GitHub listesi gelince (çalışma alanı klasörleri ayıklanır) kayıt noktaları alınır
+    if (localMode || !jobs.length) await refreshLocal(false).catch(() => {});
     await Promise.all(jobs);
+    await refreshLocal(true).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ghToken, drive, backupAlerts, autoPush, syncTick]);
+  }, [ghToken, drive, backupAlerts, autoPush, syncTick, wantIcloud, localMode]);
 
   useEffect(() => {
     load();
@@ -1396,16 +1550,26 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
   const greet = t(h < 6 ? 'greet.night' : h < 12 ? 'greet.morning' : h < 18 ? 'greet.day' : 'greet.evening');
   const name = (ghUser && ghUser.name) || (google && google.user && google.user.name) || '';
   const avatar = (ghUser && ghUser.avatar) || (google && google.user && google.user.picture);
-  const loading = (ghToken && ghList === null) || (drive && driveList === null);
+  const loading = (ghToken && ghList === null) || (drive && driveList === null) || (localMode && localList === null);
   // Aynı proje hem GitHub'da hem Drive'da: tek satır (GitHub görünümü daha zengin), üstünde "Drive" etiketi
   const norm = (s) => String(s || '').trim().toLocaleLowerCase('tr-TR');
   const ghNames = new Set((ghList || []).map((p) => norm(p.name)));
   const driveNames = new Set((driveList || []).map((f) => norm(f.name)));
   const driveOnly = (driveList || []).filter((f) => !ghNames.has(norm(f.name)));
-  const empty = !loading && !(ghList && ghList.length) && !driveOnly.length;
-  const canCreate = !!(ghToken && ghList) || !!(!ghToken && drive && driveList);
+  // iCloud projeleri GitHub ile ada göre birleşir (ikisinde de varsa GitHub satırı "iCloud'da da var" der)
+  const icloudNames = new Set(wantIcloud ? icloudInfo.projects.map((p) => norm(p.name)) : []);
+  const icloudOnly = wantIcloud ? icloudInfo.projects.filter((p) => !ghNames.has(norm(p.name))) : [];
+  const locals = localList || [];
+  const empty = !loading && !(ghList && ghList.length) && !driveOnly.length && !icloudOnly.length && !locals.length;
+  const canCreate = !!(ghToken && ghList) || !!(!ghToken && drive && driveList) || (!ghToken && localMode);
+  const firstHeader = ghList && ghList.length ? 'gh' : !ghToken && driveOnly.length ? 'drive' : icloudOnly.length ? 'icloud' : locals.length ? 'local' : null;
+  const headerShown = canCreate ? firstHeader : null;
+  const HEADERS = { gh: t('home.githubHeader'), drive: 'GOOGLE DRIVE', icloud: t('home.icloudHeader'), local: t('home.localHeader') };
+  const showMove = wantIcloud && icloudInfo.available && locals.length > 0 && !(prefs && prefs.icloudMoveDismissed);
+  const showLocalHint = !!(prefs && prefs.localOnly && !prefs.icloud && !prefs.localHintDismissed);
 
   return (
+    <View style={s.flex}>
     <ScrollView
       style={s.flex}
       contentContainerStyle={{ paddingTop: insets.top + 16, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}
@@ -1461,12 +1625,55 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
         </Jelly>
       ) : null}
 
+      {showLocalHint ? (
+        <Glass c={c} tint="#38bdf822" style={{ padding: 16, flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
+          <Icon name="iphone" size={24} color="#0ea5e9" />
+          <View style={s.flex}>
+            <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>{t('home.localHintTitle')}</Text>
+            <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, marginTop: 3 }}>{t('home.localHint')}</Text>
+          </View>
+          <Pressable
+            hitSlop={12}
+            accessibilityRole="button"
+            accessibilityLabel={t('common.close')}
+            testID="local-hint-close"
+            onPress={() => {
+              tap();
+              onPrefs && onPrefs({ localHintDismissed: true });
+            }}
+          >
+            <Text style={{ color: c.text3, fontSize: 15 }}>✕</Text>
+          </Pressable>
+        </Glass>
+      ) : null}
+
+      {showMove ? (
+        <Glass c={c} tint="#38bdf822" style={{ padding: 16, marginBottom: 14 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+            <Icon name="icloud.and.arrow.up" size={24} color="#0ea5e9" />
+            <View style={s.flex}>
+              <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>{t('home.moveTitle')}</Text>
+              <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, marginTop: 3 }}>{t('home.moveBody', { n: locals.length, count: locals.length })}</Text>
+            </View>
+            <Pressable hitSlop={12} accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={() => (tap(), onPrefs && onPrefs({ icloudMoveDismissed: true }))}>
+              <Text style={{ color: c.text3, fontSize: 15 }}>✕</Text>
+            </Pressable>
+          </View>
+          <Jelly onPress={moveToIcloud} disabled={!!moving} scaleTo={0.97} style={{ marginTop: 12 }} accessibilityLabel={t('icloud.moveAction')} testID="move-to-icloud-button">
+            <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
+              <Icon name="icloud.and.arrow.up" size={16} color={c.accent} weight="semibold" />
+              <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14 }}>{t('icloud.moveAction')}</Text>
+            </View>
+          </Jelly>
+        </Glass>
+      ) : null}
+
       {error ? <Text style={{ color: c.red, marginVertical: 10 }}>{error}</Text> : null}
-      {loading && !(ghList && ghList.length) && !(driveList && driveList.length) ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
+      {loading && !(ghList && ghList.length) && !(driveList && driveList.length) && !locals.length && !icloudOnly.length ? <SkeletonRows c={c} rows={3} variant="project" style={{ marginTop: 8 }} /> : null}
 
       {canCreate ? (
         <View style={{ flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 }}>
-          {ghList && ghList.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>{t('home.githubHeader')}</Text> : !ghToken && driveOnly.length ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>GOOGLE DRIVE</Text> : <View style={s.flex} />}
+          {headerShown ? <Text style={[s.dayHeader, { color: c.text3, marginBottom: 0, flex: 1 }]}>{HEADERS[headerShown]}</Text> : <View style={s.flex} />}
           <Jelly onPress={newProject} disabled={creating} scaleTo={0.92} accessibilityLabel={t('home.newProject')} testID="new-project-button">
             <Glass c={c} interactive tint={c.accent + '33'} style={[s.pillBtn, s.btnRow, { gap: 5, paddingLeft: 10 }]}>
               {creating ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="plus" size={13} color={c.accent} weight="bold" />}
@@ -1486,6 +1693,7 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
               <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
                 {t('home.lastBackup', { ago: ago(p.pushedAt) })}
                 {driveNames.has(norm(p.name)) ? ` · ${t('home.alsoDrive')}` : ''}
+                {icloudNames.has(norm(p.name)) ? ` · ${t('home.alsoIcloud')}` : ''}
               </Text>
             </View>
             <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
@@ -1493,7 +1701,7 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
         </Jelly>
       ))}
 
-      {driveOnly.length && ghToken ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
+      {driveOnly.length && headerShown !== 'drive' ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
       {driveOnly.map((f) => (
         <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={f.name} testID="project-row">
           <Glass c={c} interactive style={s.projRow}>
@@ -1509,8 +1717,46 @@ function HomeScreen({ c, prefs, ghToken, ghUser, google, drive, syncTick, onOpen
         </Jelly>
       ))}
 
-      {empty ? <EmptyState c={c} icon="leaf.fill" title={t('home.emptyTitle')} body={t('home.emptyBody')} action={{ title: t('home.emptyAction'), icon: 'arrow.down.circle', onPress: () => Linking.openURL('https://draftrewind.com/?from=app') }} /> : null}
+      {icloudOnly.length && headerShown !== 'icloud' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.icloudHeader')}</Text> : null}
+      {wantIcloud && !icloudInfo.available && icloudOnly.length ? <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginBottom: 8, marginHorizontal: 4 }}>{t('home.icloudUnavailable')}</Text> : null}
+      {icloudOnly.map((p) => (
+        <LocalProjectRow key={p.id} c={c} p={p} disabled={!!p.unavailable} testID="icloud-project-row" onPress={() => onOpen({ type: 'local', project: p })} />
+      ))}
+
+      {locals.length && headerShown !== 'local' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.localHeader')}</Text> : null}
+      {locals.map((p) => (
+        <LocalProjectRow key={p.id} c={c} p={p} testID="local-project-row" onPress={() => onOpen({ type: 'local', project: p })} />
+      ))}
+
+      {empty && localMode && !ghToken && !drive ? (
+        <EmptyState c={c} icon="folder.badge.plus" title={t('home.localEmptyTitle')} body={t('home.localEmptyBody')} action={{ title: t('home.newProject'), icon: 'plus', onPress: newProject }} />
+      ) : empty ? (
+        <EmptyState c={c} icon="leaf.fill" title={t('home.emptyTitle')} body={t('home.emptyBody')} action={{ title: t('home.emptyAction'), icon: 'arrow.down.circle', onPress: () => Linking.openURL('https://draftrewind.com/?from=app') }} />
+      ) : null}
     </ScrollView>
+    <BusyHud c={c} text={moving} />
+    </View>
+  );
+}
+
+// Ana ekranda yerel / iCloud proje satırı (GitHub satırıyla aynı görünüm)
+function LocalProjectRow({ c, p, onPress, disabled, testID }) {
+  const look = lookOf(p);
+  return (
+    <Jelly onPress={onPress} disabled={disabled} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={p.name} testID={testID}>
+      <Glass c={c} interactive style={s.projRow}>
+        <LinearGradient colors={look.colors} style={s.projTile}>
+          <Icon name={look.icon} size={24} color="#fff" />
+        </LinearGradient>
+        <View style={s.flex}>
+          <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
+          <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
+            {disabled ? t('icloud.goneTitle') : p.modified ? t('project.lastSave', { ago: ago(p.modified) }) : LOCAL.filesPath(p)}
+          </Text>
+        </View>
+        <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
+      </Glass>
+    </Jelly>
   );
 }
 
@@ -2137,7 +2383,8 @@ function StatsSheet({ c, visible, onClose, token, project, history }) {
 
   // 16 hafta için yüklenen kayıtlar yetmiyorsa (sayfa dolu ve en eskisi yeterince eski değil) daha fazlasını getir
   useEffect(() => {
-    if (!visible || !history.length) return;
+    // Yerel/iCloud projelerinde tüm geçmiş zaten elde (GitHub'dan ek sayfa yok)
+    if (!visible || !history.length || !token) return;
     const cutoff = Date.now() - (HEAT_WEEKS * 7 + 7) * 86400000;
     const oldest = history[history.length - 1].time;
     if (oldest <= cutoff || history.length % 100 !== 0) return;
@@ -2593,6 +2840,676 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
         </ScrollView>
       </View>
       {worker.element}
+      <BusyHud c={c} text={busy} />
+      <ViewerSheet c={c} target={viewer} onClose={onCloseViewer} />
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Yerel (hesapsız) ve iCloud projesi: ProjectScreen ile aynı görünüm, geçmiş bu cihazdaki kopyalardan
+// ---------------------------------------------------------------------------
+function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved }) {
+  const insets = useSafeAreaInsets();
+  const [log, setLog] = useState(null);
+  const [files, setFiles] = useState(null);
+  const [tab, setTab] = useState('time');
+  const [refreshing, setRefreshing] = useState(false);
+  const [record, setRecord] = useState(null);
+  const [viewer, setViewer] = useState(null);
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [fileFilter, setFileFilter] = useState(null);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('name');
+  const [busy, setBusy] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [gone, setGone] = useState(false); // iCloud oturumu kapandı: salt okunur
+  const [moving, setMoving] = useState(false);
+  const scrollRef = useRef(null);
+  const tabsY = useRef(0);
+  const isIcloud = project.store === 'icloud';
+  const baseName = (path) => path.split('/').pop();
+
+  const reload = () => {
+    setLog(LOCAL.loadLog(project));
+    setFiles(LOCAL.listFiles(project));
+  };
+
+  // Açılışta, aşağı çekince ve uygulama öne gelince: değişenlerin kopyası alınır, liste yenilenir
+  const scan = useCallback(async () => {
+    setScanning(true);
+    try {
+      if (isIcloud && !(await IC.containerPath(true))) {
+        setGone(true);
+        setLog(LOCAL.loadLog(project));
+        setFiles([]);
+        return;
+      }
+      setGone(false);
+      const r = await LOCAL.snapshot(project);
+      const big = r && r.skipped ? r.skipped.filter((x) => x.reason === 'tooBig') : [];
+      if (big.length) {
+        const flags = WS.loadFlags();
+        const shown = new Set(flags.skippedShown || []);
+        const fresh = big.filter((x) => !shown.has(`${project.id}:${x.path}`));
+        if (fresh.length) {
+          WS.saveFlags({ ...flags, skippedShown: [...shown, ...fresh.map((x) => `${project.id}:${x.path}`)].slice(-200) });
+          Alert.alert(t('ws.skippedTitle'), fresh.map((x) => t('ws.skippedTooBig', { name: baseName(x.path) })).join('\n\n'), [{ text: t('common.ok') }]);
+        }
+      }
+    } catch (e) {
+      if (e && e.code === 'icloudGone') setGone(true);
+    } finally {
+      reload();
+      setScanning(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  useEffect(() => {
+    reload();
+    scan();
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') scan();
+    });
+    return () => sub.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
+
+  const history = useMemo(() => (log ? log.map((r) => ({ ...r, oid: r.id })) : null), [log]);
+  const language = lang();
+  const stats = useMemo(() => (history ? computeStats(history) : null), [history, language]);
+  const words = useMemo(() => (history ? latestWords(history) : {}), [history]);
+  const lastChanged = useMemo(() => {
+    const m = {};
+    for (const h of history || []) for (const p of [...(h.changed || []), ...Object.keys(h.delta || {})]) if (m[p] === undefined) m[p] = h.time;
+    return m;
+  }, [history]);
+  const visibleFiles = useMemo(() => {
+    if (!files) return [];
+    const q = query.trim().toLocaleLowerCase(locale());
+    const list = q ? files.filter((f) => f.path.toLocaleLowerCase(locale()).includes(q)) : [...files];
+    const byName = (a, b) => (kindOf(a.path) === 'word' ? -1 : 0) - (kindOf(b.path) === 'word' ? -1 : 0) || a.path.localeCompare(b.path, language);
+    if (sort === 'changed') list.sort((a, b) => (lastChanged[b.path] || b.mtime || 0) - (lastChanged[a.path] || a.mtime || 0) || byName(a, b));
+    else if (sort === 'size') list.sort((a, b) => b.size - a.size || byName(a, b));
+    else list.sort(byName);
+    return list;
+  }, [files, language, query, sort, lastChanged]);
+  const shownHistory = useMemo(() => (history ? (fileFilter ? history.filter((h) => touchesFile(h, fileFilter)) : history) : []), [history, fileFilter]);
+  const maxWeek = stats ? Math.max(1, ...stats.week.map((w) => w.words)) : 1;
+  const lastSave = history && history.length ? t('project.lastSave', { ago: ago(history[0].time) }) : '';
+  const headerSub = [lastSave, files ? t('project.fileCount', { n: files.length, count: files.length }) : ''].filter(Boolean).join(' · ');
+
+  const sizeOf = (path) => ((files || []).find((f) => f.path === path) || {}).size || 0;
+  const openFile = (path) =>
+    setViewer({
+      name: baseName(path),
+      shareName: baseName(path),
+      subtitle: t('project.current'),
+      size: sizeOf(path),
+      aiId: `${project.id}:${path}:${((files || []).find((f) => f.path === path) || {}).mtime || 0}`,
+      load: () => LOCAL.readCurrent(project, path),
+    });
+  const openCopy = (rec, path) =>
+    setViewer({
+      name: baseName(path),
+      shareName: versionName(baseName(path), rec.time),
+      subtitle: t('project.oldVersion'),
+      aiId: `${project.id}@${rec.id}:${path}`,
+      load: () => LOCAL.readCopy(project, rec, path),
+    });
+  const openDiff = (rec, path) => {
+    const idx = (log || []).findIndex((r) => r.id === rec.id);
+    const prev = idx >= 0 ? previousCopy(log, idx, path) : null;
+    setViewer({
+      name: baseName(path),
+      subtitle: t('project.whatChanged'),
+      aiId: `${project.id}@${rec.id}:${path}`,
+      diff: {
+        loadOld: () => (prev ? LOCAL.readCopy(project, prev, path) : Promise.resolve(null)),
+        loadNew: () => LOCAL.readCopy(project, rec, path),
+      },
+    });
+  };
+  const showHistory = (path) => {
+    setRecord(null);
+    setTab('time');
+    setFileFilter(path);
+    setTimeout(() => scrollRef.current && scrollRef.current.scrollTo({ y: Math.max(0, tabsY.current - 8), animated: true }), 350);
+  };
+  // "Düzenle": dosyanın kendisi (kopya değil) sistemin "Şununla aç" sayfasıyla açılır; kaydedilen hal
+  // bir sonraki taramada yeni kayıt olur
+  const editFile = async (path) => {
+    setBusy(isIcloud ? t('viewer.downloading') : t('ws.preparing'));
+    try {
+      await LOCAL.readCurrent(project, path);
+      setBusy(null);
+      const { mimeType, UTI } = fileType(path);
+      await Sharing.shareAsync(LOCAL.workFile(project, path).uri, { mimeType, UTI, dialogTitle: baseName(path) });
+    } catch (e) {
+      setBusy(null);
+      warn();
+      Alert.alert(t('ws.editFailed'), friendly(e), [{ text: t('common.ok') }]);
+    }
+  };
+  const editable = (path) => ['word', 'sheet', 'slides', 'text'].includes(kindOf(path));
+  const docActions = (path) =>
+    showActions(c, {
+      title: baseName(path),
+      actions: [
+        { label: t('doc.preview'), onPress: () => openFile(path) },
+        editable(path) && !gone && { label: t('ws.edit'), onPress: () => editFile(path) },
+        { label: t('doc.share'), onPress: () => shareDoc(setBusy, baseName(path), () => LOCAL.readCurrent(project, path)) },
+        { label: t('doc.history'), onPress: () => showHistory(path) },
+      ],
+    });
+
+  const askAnotherPhoto = (n) =>
+    new Promise((resolve) =>
+      Alert.alert(t('upload.anotherTitle'), t('upload.anotherBody', { n, count: n }), [
+        { text: t('upload.anotherNo'), style: 'cancel', onPress: () => resolve(false) },
+        { text: t('upload.anotherYes'), onPress: () => resolve(true) },
+      ])
+    );
+
+  // "+": dosya/fotoğraf proje klasörüne kopyalanır, ardından kayıt noktası alınır
+  const addFiles = async (pick = pickFiles) => {
+    let picked;
+    try {
+      picked = await pick();
+    } catch (e) {
+      warn();
+      Alert.alert(e && e.denied ? t('upload.cameraDeniedTitle') : t('upload.failedTitle'), e && e.message ? e.message : t('local.failed'), [{ text: t('common.ok') }]);
+      return;
+    }
+    if (!picked.length) return;
+    const tooBig = picked.filter((a) => a.size > MAX_UPLOAD);
+    const ok = picked.filter((a) => a.size <= MAX_UPLOAD);
+    tooBig.forEach(discardPicked);
+    if (tooBig.length) {
+      warn();
+      Alert.alert(t('upload.tooBigTitle'), tooBig.map((a) => (a.sizeUnknown ? t('upload.sizeUnknown', { name: a.name }) : t('upload.tooBig', { name: a.name, size: mb(a.size) }))).join('\n\n'), [{ text: t('common.ok') }]);
+    }
+    if (!ok.length) return;
+    setUploading(true);
+    try {
+      const r = await LOCAL.addFiles(project, ok);
+      if (r.done.length) {
+        success();
+        pulse({ icon: 'checkmark.circle.fill', color: '#4ade80', title: r.done.length === 1 ? t('upload.doneOne', { name: r.done[0] }) : t('upload.doneMany', { n: r.done.length }), subtitle: project.name, short: t('upload.doneShort') }, 4000);
+      }
+      if (r.failed.length) {
+        warn();
+        Alert.alert(t('upload.failedTitle'), r.failed.join(', '), [{ text: t('common.ok') }]);
+      }
+    } catch (e) {
+      warn();
+      Alert.alert(t('upload.failedTitle'), friendly(e), [{ text: t('common.ok') }]);
+    } finally {
+      ok.forEach(discardPicked);
+      setUploading(false);
+      reload();
+    }
+  };
+
+  // "Bu anı işaretle": adı sorulur, yıldızlı kayıt
+  const markMoment = () => {
+    const run = async (raw) => {
+      const title = String(raw || '').trim() || t('local.starDefault');
+      setBusy(t('local.starDone'));
+      try {
+        await LOCAL.markMoment(project, title);
+        setBusy(null);
+        success();
+        pulse({ icon: 'star.fill', color: '#ffb938', title: t('local.starDone'), subtitle: title, short: t('local.starDone') }, 3500);
+      } catch (e) {
+        setBusy(null);
+        warn();
+        Alert.alert(t('local.failedTitle'), friendly(e), [{ text: t('common.ok') }]);
+      } finally {
+        reload();
+      }
+    };
+    if (Alert.prompt) Alert.prompt(t('local.star'), t('local.starPrompt'), [{ text: t('common.cancel'), style: 'cancel' }, { text: t('common.done'), onPress: run }], 'plain-text', '', 'default');
+    else run('');
+  };
+
+  // Geri yükleme: onaydan sonra (önce mevcut hal kaydedilir)
+  const restore = (rec, path) =>
+    Alert.alert(t('local.restoreConfirmTitle', { name: baseName(path) }), t('local.restoreConfirm'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('local.restoreOk'),
+        onPress: async () => {
+          setBusy(t('ws.preparing'));
+          try {
+            await LOCAL.restoreVersion(project, rec, path);
+            setBusy(null);
+            success();
+            setRecord(null);
+            pulse({ icon: 'arrow.uturn.backward', color: '#4ade80', title: t('local.restoreDone', { name: baseName(path) }), subtitle: project.name, short: t('local.restoreOk') }, 4000);
+          } catch (e) {
+            setBusy(null);
+            warn();
+            Alert.alert(t('local.failedTitle'), friendly(e), [{ text: t('common.ok') }]);
+          } finally {
+            reload();
+          }
+        },
+      },
+    ]);
+
+  // "Buluta taşı": yalnızca bağlı hedefler (GitHub / Google Drive / iCloud Drive)
+  const moveToCloud = async () => {
+    if (moving) return;
+    const icloudOk = !!(prefs && prefs.icloud) && !!(await IC.containerPath(true));
+    const targets = [
+      ghToken && { key: 'github', label: 'GitHub' },
+      drive && { key: 'drive', label: 'Google Drive' },
+      icloudOk && { key: 'icloud', label: 'iCloud Drive' },
+    ].filter(Boolean);
+    if (!targets.length) return Alert.alert(t('move.noneTitle'), t('move.none'), [{ text: t('common.ok') }]);
+    showActions(c, {
+      title: t('move.title'),
+      actions: targets.map((tg) => ({
+        label: tg.label,
+        onPress: () =>
+          Alert.alert(t('move.confirmTitle', { name: project.name, target: tg.label }), t('move.confirm'), [
+            { text: t('common.cancel'), style: 'cancel' },
+            { text: t('move.confirmOk'), onPress: () => runMove(tg) },
+          ]),
+      })),
+    });
+  };
+  const runMove = async (tg) => {
+    setMoving(true);
+    const island = pulse({ icon: 'icloud.and.arrow.up', color: '#38bdf8', title: project.name, subtitle: t('move.progress', { i: 1, n: 1 }), short: t('move.progressShort', { i: 1, n: 1 }) }, 600000);
+    const progress = (i, n) => {
+      setBusy(t('move.progress', { i: i + 1, n }));
+      island.update({ subtitle: t('move.progress', { i: i + 1, n }), short: t('move.progressShort', { i: i + 1, n }) });
+    };
+    setBusy(t('move.progress', { i: 1, n: 1 }));
+    try {
+      let next = null;
+      let tooBig = [];
+      if (tg.key === 'github') {
+        const r = await LOCAL.moveToGithub(ghToken, project, progress);
+        tooBig = r.tooBig;
+        next = { type: 'gh', project: { ...r.project, index: 0 } };
+      } else if (tg.key === 'drive') {
+        const r = await LOCAL.moveToDrive(drive, project, progress);
+        tooBig = r.tooBig;
+        next = r.keptLocal ? null : { type: 'drive', folder: r.folder };
+      } else {
+        const r = await LOCAL.moveLocalToIcloud([project], (i, n) => progress(i, n));
+        if (r.failed.length) throw Object.assign(new Error(t('move.verifyFailed')), { user: true });
+      }
+      setBusy(null);
+      success();
+      island.finish({ icon: 'checkmark.circle.fill', color: '#4ade80', title: t('move.doneTitle', { name: project.name }), subtitle: tg.label, short: t('move.doneShort') }, 5000);
+      const note = tooBig.length ? `\n\n${t('move.tooBig', { names: tooBig.map(baseName).join(', ') })}` : '';
+      Alert.alert(t('move.doneTitle', { name: project.name }), t('move.done') + note, [{ text: t('common.ok'), onPress: () => onMoved && onMoved(next) }]);
+    } catch (e) {
+      setBusy(null);
+      warn();
+      island.finish({ icon: 'exclamationmark.triangle', color: '#f87171', subtitle: t('move.failedTitle'), short: t('pulse.failedShort') });
+      Alert.alert(t('move.failedTitle'), e && e.user ? e.message : e && e.auth ? t('move.verifyFailed') : friendly(e), [{ text: t('common.ok') }]);
+    } finally {
+      setMoving(false);
+      reload();
+    }
+  };
+
+  let lastDay = '';
+  return (
+    <View style={s.flex}>
+      <ScrollView
+        ref={scrollRef}
+        style={s.flex}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={{ paddingTop: insets.top + 8, paddingBottom: insets.bottom + 30, paddingHorizontal: 18 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            tintColor={c.accent}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await scan();
+              setRefreshing(false);
+            }}
+          />
+        }
+      >
+        <ScreenHeader
+          c={c}
+          onBack={onBack}
+          backLabel={t('nav.projects')}
+          right={
+            files && !gone ? (
+              <AddButton
+                c={c}
+                busy={uploading}
+                options={[
+                  { label: t('upload.files'), onPress: () => addFiles(pickFiles) },
+                  { label: t('upload.takePhoto'), onPress: () => addFiles(() => takePhotos(askAnotherPhoto)) },
+                  { label: t('upload.choosePhotos'), onPress: () => addFiles(pickPhotos) },
+                ]}
+              />
+            ) : null
+          }
+          look={lookOf(project)}
+          eyebrow={isIcloud ? t('local.icloudEyebrow') : t('local.eyebrow')}
+          title={project.name}
+          subtitle={headerSub}
+        />
+
+        {gone ? (
+          <Glass c={c} tint="#f9731633" style={{ padding: 14, marginBottom: 12, flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+            <Icon name="icloud.slash" size={20} color="#f97316" />
+            <Text style={{ color: c.text2, fontSize: 13, lineHeight: 18, flex: 1 }}>{t('icloud.goneBody')}</Text>
+          </Glass>
+        ) : null}
+
+        {!stats ? <ProjectSkeleton c={c} /> : null}
+
+        {stats ? (
+          <>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <StatCard c={c} icon="flame.fill" label={t('stats.streak')} value={t('stats.days', { n: stats.streak, count: stats.streak })} hot onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} icon="pencil.line" label={t('stats.today')} value={`+${num(Math.max(0, stats.today))}`} onPress={() => setStatsOpen(true)} />
+              <StatCard c={c} icon="text.word.spacing" label={t('stats.words')} value={num(stats.total)} onPress={() => setStatsOpen(true)} />
+            </View>
+
+            <Jelly onPress={() => setStatsOpen(true)} scaleTo={0.98} style={{ marginTop: 10 }}>
+              <Glass c={c} interactive style={{ padding: 16 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={{ color: c.text, fontWeight: '700', fontSize: 15, flex: 1 }}>{t('stats.thisWeek')}</Text>
+                  <Text style={{ color: c.text3, fontSize: 12 }}>{t('stats.tapHint')} ›</Text>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 96, gap: 8, marginTop: 12 }}>
+                  {stats.week.map((w, i) => (
+                    <View key={i} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
+                      {i === 6 ? (
+                        <LinearGradient colors={GRAD} style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%` }]} />
+                      ) : (
+                        <View style={[s.bar, { height: `${Math.max(6, (w.words / maxWeek) * 80)}%`, backgroundColor: w.words ? c.accent + '66' : c.border }]} />
+                      )}
+                      <Text style={{ color: c.text3, fontSize: 10.5, marginTop: 5, fontWeight: '600' }}>{w.label}</Text>
+                    </View>
+                  ))}
+                </View>
+              </Glass>
+            </Jelly>
+
+            <Glass c={c} style={{ padding: 14, marginTop: 10 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Icon name={isIcloud ? 'icloud.fill' : Platform.isPad ? 'ipad' : 'iphone'} size={16} color={c.accent} weight="semibold" />
+                <Text style={{ color: c.text, fontWeight: '700', fontSize: 15, flex: 1 }}>{isIcloud ? t('local.cardTitleIcloud') : t('local.cardTitle')}</Text>
+                {scanning ? <ActivityIndicator color={c.accent} size="small" /> : null}
+              </View>
+              <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>
+                {files && files.length ? t('local.cardBody', { n: files.length, count: files.length, ago: ago(history && history.length ? history[0].time : 0) }) : t('local.cardNone')}
+              </Text>
+              <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('local.filesHint', { path: LOCAL.filesPath(project) })}</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                <Jelly onPress={markMoment} disabled={gone || !!busy} scaleTo={0.97} style={s.flex} accessibilityLabel={t('local.star')} testID="star-button">
+                  <View style={[s.actionBtn, s.btnRow, { backgroundColor: '#ffb93826', gap: 6 }]}>
+                    <Icon name="star.fill" size={15} color="#f59e0b" weight="semibold" />
+                    <Text style={{ color: '#d97706', fontWeight: '700', fontSize: 13.5, flexShrink: 1 }} numberOfLines={2}>{t('local.star')}</Text>
+                  </View>
+                </Jelly>
+                {!isIcloud ? (
+                  <Jelly onPress={moveToCloud} disabled={moving || !!busy} scaleTo={0.97} style={s.flex} accessibilityLabel={t('move.action')} testID="move-to-cloud-button">
+                    <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft, gap: 6 }]}>
+                      {moving ? <ActivityIndicator color={c.accent} size="small" /> : <Icon name="icloud.and.arrow.up" size={15} color={c.accent} weight="semibold" />}
+                      <Text style={{ color: c.accent, fontWeight: '700', fontSize: 13.5, flexShrink: 1 }} numberOfLines={2}>{t('move.action')}</Text>
+                    </View>
+                  </Jelly>
+                ) : null}
+              </View>
+            </Glass>
+
+            <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
+              <Glass c={c} style={[s.seg, { marginTop: 14 }]}>
+                {[
+                  ['time', t('tab.time', { n: num(history.length) })],
+                  ['docs', t('tab.docs', { n: num((files || []).length) })],
+                ].map(([k, label]) => (
+                  <Pressable
+                    key={k}
+                    onPress={() => {
+                      tap();
+                      setTab(k);
+                    }}
+                    style={[s.segBtn, tab === k && { backgroundColor: c.dark ? '#ffffff22' : '#ffffffcc' }]}
+                  >
+                    <Text style={{ color: tab === k ? c.text : c.text2, fontWeight: '700', fontSize: 13.5 }}>{label}</Text>
+                  </Pressable>
+                ))}
+              </Glass>
+            </View>
+
+            {tab === 'time' && fileFilter ? (
+              <Glass c={c} tint={c.accent + '22'} style={[s.tlItem, { marginTop: 6, paddingVertical: 10 }]}>
+                <FileBadge name={fileFilter} size={30} />
+                <Text style={{ color: c.text, fontWeight: '700', flex: 1 }} numberOfLines={1}>{t('history.filter', { name: baseName(fileFilter) })}</Text>
+                <Pressable
+                  hitSlop={10}
+                  onPress={() => {
+                    tap();
+                    setFileFilter(null);
+                  }}
+                >
+                  <Text style={{ color: c.accent, fontWeight: '700' }}>{t('history.showAll')}</Text>
+                </Pressable>
+              </Glass>
+            ) : null}
+            {tab === 'time' && !shownHistory.length ? <EmptyState c={c} icon="clock.arrow.circlepath" title={t('empty.noChanges')} body={fileFilter ? t('history.empty') : t('local.timelineEmpty')} /> : null}
+
+            {tab === 'time'
+              ? shownHistory.map((h, idx) => {
+                  const d = dayLabel(h.time);
+                  const header = d !== lastDay ? d : null;
+                  lastDay = d;
+                  const w = fileFilter ? (h.delta || {})[fileFilter] || 0 : Object.values(h.delta || {}).reduce((a, b) => a + b, 0);
+                  return (
+                    <View key={h.oid}>
+                      {header ? <Text style={[s.dayHeader, { color: c.text3 }]}>{header.toUpperCase()}</Text> : null}
+                      <Jelly onPress={() => setRecord(h)} scaleTo={0.98} style={{ marginBottom: 8 }} accessibilityLabel={h.title} testID={idx === 0 ? 'snapshot-row' : undefined}>
+                        <Glass c={c} interactive tint={h.kind === 'star' ? '#ffb93833' : undefined} style={s.tlItem}>
+                          <View style={[s.node, { backgroundColor: h.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
+                            <Icon name={kindIcon(h.kind)} size={14} color={h.kind === 'star' ? '#fff' : c.accent} weight="semibold" />
+                          </View>
+                          <View style={s.flex}>
+                            <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5, lineHeight: 19 }} numberOfLines={2}>{h.title}</Text>
+                            <View style={{ flexDirection: 'row', gap: 8, marginTop: 4, alignItems: 'center' }}>
+                              <Text style={{ color: c.text3, fontSize: 12 }}>{hm(h.time)}</Text>
+                              {w ? (
+                                <View style={[s.chip, { backgroundColor: w > 0 ? c.greenSoft : c.redSoft }]}>
+                                  <Text style={{ color: w > 0 ? c.green : c.red, fontSize: 11, fontWeight: '800' }}>{w > 0 ? '+' : ''}{num(w)}</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          </View>
+                        </Glass>
+                      </Jelly>
+                    </View>
+                  );
+                })
+              : (
+                <>
+                  <Glass c={c} style={[s.searchBox, { marginTop: 8 }]}>
+                    <Icon name="magnifyingglass" size={16} color={c.text3} />
+                    <TextInput
+                      value={query}
+                      onChangeText={setQuery}
+                      placeholder={t('docs.search')}
+                      placeholderTextColor={c.text3}
+                      style={{ flex: 1, color: c.text, fontSize: 15.5, paddingVertical: 0 }}
+                      clearButtonMode="while-editing"
+                      autoCorrect={false}
+                      autoCapitalize="none"
+                      returnKeyType="search"
+                      keyboardAppearance={c.dark ? 'dark' : 'light'}
+                    />
+                  </Glass>
+                  <View style={{ marginTop: 8 }}>
+                    <Segmented
+                      c={c}
+                      value={sort}
+                      onChange={setSort}
+                      options={[
+                        ['name', t('docs.sortName')],
+                        ['changed', t('docs.sortChanged')],
+                        ['size', t('docs.sortSize')],
+                      ]}
+                    />
+                  </View>
+                  {query && !visibleFiles.length ? <EmptyState c={c} icon="magnifyingglass" title={t('empty.noResults')} body={t('docs.noMatch', { q: query.trim() })} /> : null}
+                  {!query && files && !files.length ? <EmptyState c={c} icon="folder" title={t('empty.folder')} body={t('local.cardNone')} /> : null}
+                  {visibleFiles.map((f) => (
+                    <Jelly key={f.path} onPress={() => openFile(f.path)} onLongPress={() => docActions(f.path)} scaleTo={0.98} style={{ marginTop: 8 }}>
+                      <Glass c={c} interactive style={s.tlItem}>
+                        <FileBadge name={f.path} />
+                        <View style={s.flex}>
+                          <Text style={{ color: c.text, fontWeight: '600', fontSize: 14.5 }} numberOfLines={1}>{baseName(f.path)}</Text>
+                          <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }} numberOfLines={1}>
+                            {f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) + ' · ' : ''}
+                            {f.placeholder ? t('local.notDownloadedRow') : words[f.path] != null ? t('words.count', { n: num(words[f.path]), count: words[f.path] }) : `${Math.max(1, Math.round(f.size / 1024))} KB`}
+                            {sort === 'changed' && (lastChanged[f.path] || f.mtime) ? ` · ${ago(lastChanged[f.path] || f.mtime)}` : ''}
+                          </Text>
+                        </View>
+                        {editable(f.path) && !gone ? (
+                          <Pressable onPress={() => editFile(f.path)} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('ws.edit')} testID="edit-file-button" style={[s.editBtn, { backgroundColor: c.accentSoft }]}>
+                            <Icon name="square.and.pencil" size={15} color={c.accent} weight="semibold" />
+                          </Pressable>
+                        ) : null}
+                        <Text style={{ color: c.text3, fontSize: 20 }}>›</Text>
+                      </Glass>
+                    </Jelly>
+                  ))}
+                  {visibleFiles.length ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
+                </>
+              )}
+          </>
+        ) : null}
+      </ScrollView>
+
+      <LocalSnapshotSheet
+        c={c}
+        log={log || []}
+        record={record}
+        readOnly={gone}
+        onClose={() => setRecord(null)}
+        onOpenCopy={openCopy}
+        onOpenDiff={openDiff}
+        onRestore={restore}
+        onShowHistory={showHistory}
+        viewer={viewer}
+        onCloseViewer={() => setViewer(null)}
+        busy={busy}
+      />
+      {!record ? <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} /> : null}
+      {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={null} project={project} history={history} /> : null}
+      <BusyHud c={c} text={record ? null : busy} />
+    </View>
+  );
+}
+
+// Yerel kaydın ayrıntısı: değişen dosyalar → fark, bu sürüm, bu sürüme geri dön
+function LocalSnapshotSheet({ c, log, record, readOnly, onClose, onOpenCopy, onOpenDiff, onRestore, onShowHistory, viewer, onCloseViewer, busy }) {
+  if (!record) return null;
+  const d = new Date(record.time);
+  const idx = log.findIndex((r) => r.id === record.id);
+  const sdelta = record.delta || {};
+  const deleted = record.deleted || [];
+  const rows = [...(record.changed || []).map((path) => ({ path, removed: false })), ...deleted.map((path) => ({ path, removed: true }))];
+  return (
+    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={[s.flex, { backgroundColor: c.bg, padding: 20 }]} testID="snapshot-sheet">
+        <View style={s.grabber} />
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+          <View style={[s.snapIcon, { backgroundColor: record.kind === 'star' ? '#ffb938' : c.accentSoft }]}>
+            <Icon name={kindIcon(record.kind)} size={22} color={record.kind === 'star' ? '#fff' : c.accent} weight="semibold" />
+          </View>
+          <View style={s.flex}>
+            <Text style={{ color: c.text, fontSize: 19, fontWeight: '800' }}>{record.title}</Text>
+            <Text style={{ color: c.text3, marginTop: 4 }}>
+              {d.toLocaleDateString(locale(), { day: 'numeric', month: 'long', year: 'numeric', weekday: 'long' })} · {hm(record.time)}
+            </Text>
+          </View>
+          <Pressable onPress={onClose} hitSlop={12}>
+            <Text style={{ color: c.accent, fontWeight: '700', fontSize: 16 }}>{t('common.close')}</Text>
+          </Pressable>
+        </View>
+
+        <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('snapshot.changed')}</Text>
+        <ScrollView>
+          {rows.map(({ path, removed }) => {
+            const name = path.split('/').pop();
+            const kind = kindOf(path);
+            const hasCopy = !!(record.files && record.files[path]);
+            // Silinen dosya: bu kayıttan önceki son kopyası geri getirilebilir
+            const restoreFrom = hasCopy ? record : removed && idx >= 0 ? previousCopy(log, idx, path) : null;
+            const canDiff = !removed && hasCopy && (kind === 'word' || kind === 'text');
+            const delta = sdelta[path];
+            return (
+              <Glass key={(removed ? 'd:' : 'c:') + path} c={c} style={[s.tlItem, { marginBottom: 12, flexWrap: 'wrap', padding: 16 }]}>
+                <FileBadge name={path} size={40} />
+                <View style={s.flex}>
+                  <Text style={{ color: c.text, fontWeight: '600' }} numberOfLines={1}>{name}</Text>
+                  <Text style={{ color: c.text3, fontSize: 12, marginTop: 2 }}>
+                    {removed ? t('snapshot.removed') : (record.added || []).includes(path) ? t('snapshot.added') : t('snapshot.modified')}
+                    {delta ? ` · ${t('words.count', { n: (delta > 0 ? '+' : '') + num(delta), count: Math.abs(delta) })}` : ''}
+                  </Text>
+                </View>
+                {!removed ? (
+                  <Pressable hitSlop={12} onPress={() => onShowHistory(path)} accessibilityLabel={t('doc.history')}>
+                    <Icon name="clock.arrow.circlepath" size={18} color={c.text3} />
+                  </Pressable>
+                ) : null}
+                {!removed && !hasCopy ? <Text style={{ color: c.text3, fontSize: 12, lineHeight: 16, width: '100%', marginTop: 10 }}>{t('local.noCopy')}</Text> : null}
+                {!removed && hasCopy && !canDiff ? (
+                  <Text style={{ color: c.text3, fontSize: 12, lineHeight: 16, width: '100%', marginTop: 10 }}>
+                    {t(kind === 'pdf' ? 'snapshot.noDiffPdf' : kind === 'image' ? 'snapshot.noDiffImage' : 'snapshot.noDiffOther')}
+                  </Text>
+                ) : null}
+                {hasCopy || restoreFrom ? (
+                  <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 14 }}>
+                    {canDiff ? (
+                      <Jelly style={s.flex} onPress={() => onOpenDiff(record, path)}>
+                        <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.greenSoft }]}>
+                          <Icon name="arrow.left.arrow.right" size={15} color={c.green} weight="semibold" />
+                          <Text style={{ color: c.green, fontWeight: '800', fontSize: 15 }}>{t('snapshot.diff')}</Text>
+                        </View>
+                      </Jelly>
+                    ) : null}
+                    {hasCopy ? (
+                      <Jelly style={s.flex} onPress={() => onOpenCopy(record, path)}>
+                        <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.accentSoft }]}>
+                          <Icon name="doc.text" size={15} color={c.accent} weight="semibold" />
+                          <Text style={{ color: c.accent, fontWeight: '800', fontSize: 15 }}>{t('snapshot.thisVersion')}</Text>
+                        </View>
+                      </Jelly>
+                    ) : null}
+                  </View>
+                ) : null}
+                {restoreFrom && !readOnly ? (
+                  <Jelly style={{ width: '100%', marginTop: 10 }} onPress={() => onRestore(restoreFrom, path)} accessibilityLabel={removed ? t('local.restoreLast') : t('local.restore')} testID="restore-button">
+                    <View style={[s.actionBtn, s.btnRow, { backgroundColor: c.dark ? '#ffffff12' : '#1c1a330d' }]}>
+                      <Icon name="arrow.uturn.backward" size={15} color={c.text} weight="semibold" />
+                      <Text style={{ color: c.text, fontWeight: '800', fontSize: 15 }}>{removed ? t('local.restoreLast') : t('local.restore')}</Text>
+                    </View>
+                  </Jelly>
+                ) : null}
+              </Glass>
+            );
+          })}
+          {!rows.length ? <EmptyState c={c} icon={kindIcon(record.kind)} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
+        </ScrollView>
+      </View>
       <BusyHud c={c} text={busy} />
       <ViewerSheet c={c} target={viewer} onClose={onCloseViewer} />
     </Modal>
