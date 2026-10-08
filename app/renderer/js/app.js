@@ -983,8 +983,8 @@
                 <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}<br>${t('cloud.driveAuto')}</div>
                 <div class="actions"><button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else {
-            const det = dr.detected.filter(d => d.kind === 'gdrive');
-            const other = dr.detected.filter(d => d.kind !== 'gdrive');
+            const det = dr.detected.filter(d => d.kind === 'gdrive' || d.kind === 'icloud');
+            const other = dr.detected.filter(d => d.kind !== 'gdrive' && d.kind !== 'icloud');
             drBody = `<div class="sub">${t('cloud.drivePitch')}</div>
                 <div class="detected">
                     ${dr.accountAvailable ? `<button class="btn primary" data-action="drive-signin">${t('cloud.googleSignin')}</button>` : ''}

@@ -141,6 +141,16 @@ function detectFoldersNow() {
     add(process.env.OneDrive, 'OneDrive', 'onedrive');
     add(process.env.OneDriveConsumer, 'OneDrive', 'onedrive');
     add(process.env.OneDriveCommercial, 'OneDrive (Kurum)', 'onedrive');
+    // iCloud Drive: telefondaki DraftRewind uygulamasının iCloud klasörü (iCloud.com.draftrewind.app).
+    // Telefon projeleri <kapsayıcı>/Documents/DraftRewind/<proje> altına yazar; klasör modu da buraya
+    // "DraftRewind/<proje>" yazdığı için iki taraf aynı klasörü görür. Kapsayıcı, telefonda iCloud
+    // açıldıktan sonra bilgisayara iner; o zamana kadar seçenek görünmez.
+    const icloudRoots = [path.join(home, 'iCloudDrive'), path.join(home, 'Library', 'Mobile Documents')];
+    for (const r of icloudRoots) {
+        const box = path.join(r, 'iCloud~com~draftrewind~app');
+        add(path.join(box, 'Documents'), 'iCloud Drive', 'icloud');
+        if (!found.some(f => f.kind === 'icloud')) add(box, 'iCloud Drive', 'icloud');
+    }
     return found;
 }
 
