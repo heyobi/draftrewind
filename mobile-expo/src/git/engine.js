@@ -699,7 +699,8 @@ export class GitProject {
     });
   }
 
-  async syncStoreNow({ store, deviceId, deviceName = '', noPush = false, onProgress = null } = {}) {
+  // meta: uç dosyasına eklenen proje bilgisi (ör. { github: { owner, repo } }); dönen peers: diğer cihazlarınki
+  async syncStoreNow({ store, deviceId, deviceName = '', noPush = false, onProgress = null, meta = null } = {}) {
     if (!store || !deviceId) throw codedError('ENOSTORE', 'store ve deviceId gerekli');
     const stateFile = joinPath(this.gitdir, 'draftrewind-stores.json');
     let all = {};
@@ -750,7 +751,7 @@ export class GitProject {
       if (!m || m[1] === deviceId) continue;
       try {
         const h = JSON.parse(utf8Decode(await store.read(name)));
-        if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0 });
+        if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null });
       } catch (e) {}
     }
     heads.sort((a, b) => a.time - b.time);
@@ -777,7 +778,8 @@ export class GitProject {
 
     // 3) Yayımla: yalnızca depoda olmayan nesneler tek pakette, sonra kendi uç dosyamız
     let pushed = false;
-    if (local && !noPush && local !== st.published) {
+    const metaKey = JSON.stringify(meta || {});
+    if (local && !noPush && (local !== st.published || metaKey !== (st.meta || '{}'))) {
       const boundary = [...known, ...(st.published ? [st.published] : [])];
       const oids = await this.objectsSince(local, boundary);
       // Küçük paketler: her biri ayrı sıkıştırılır, arada arayüze sıra verilir (telefon donmasın);
@@ -790,13 +792,15 @@ export class GitProject {
         await store.write(`packs/${filename}`, packfile);
         imported.add(`packs/${filename}`);
       }
-      await store.write(myHead, utf8Encode(JSON.stringify({ head: local, time: Date.now(), device: deviceName })));
+      await store.write(myHead, utf8Encode(JSON.stringify({ head: local, time: Date.now(), device: deviceName, ...(meta || {}) })));
       st.published = local;
       pushed = true;
     }
-    all[store.id] = { imported: [...imported], published: st.published };
+    if (pushed) st.meta = metaKey;
+    all[store.id] = { imported: [...imported], published: st.published, meta: st.meta };
     await writeAtomic(this.backend, stateFile, JSON.stringify(all));
-    return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now() };
+    const peers = heads.map((x) => ({ id: x.id, time: x.time, github: x.github }));
+    return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers };
   }
 
   // head'den ulaşılıp sınır kayıtlarından ulaşılamayan tüm nesneler (kayıt, ağaç, blob)

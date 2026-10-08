@@ -14,6 +14,7 @@ import { safeName, uniqueName, readBytes, PHONE_FOLDER } from './files';
 import { t } from './i18n';
 import { mirror } from './git/mirror';
 import { historyStore, driveRemote } from './driveSync';
+import * as GH from './github';
 
 const opened = new Map(); // anahtar → Promise<GitProject>
 
@@ -48,8 +49,10 @@ const T = (key, vars) => {
 
 const author = () => ({ name: Platform.isPad ? 'iPad' : 'iPhone', email: 'telefon@draftrewind.local' });
 
+export const gitKeyOf = (p) => WS.loadState(p).gitKey || repoKey(p);
+
 export function repoFor(p) {
-  const key = WS.loadState(p).gitKey || repoKey(p);
+  const key = gitKeyOf(p);
   let job = opened.get(key);
   if (!job) {
     job = (async () => {
@@ -113,7 +116,7 @@ const inflight = new Map();
 const lastSync = new Map(); // anahtar → zaman (ms)
 const RECENT_MS = 15000;
 export function syncProject(token, p, opts = {}) {
-  const key = repoKey(p);
+  const key = gitKeyOf(p);
   // Az önce eşitlendi (ör. ana ekran → proje ekranı): kendiliğinden tekrar etme
   if (!opts.manual && !inflight.get(key) && Date.now() - (lastSync.get(key) || 0) < RECENT_MS) {
     const st = status(p);
@@ -147,8 +150,38 @@ export function timingsReport() {
   return [...timings].map(([name, r]) => `SÜRE ${name}: ${Object.entries(r).map(([k, v]) => `${k} ${v} ms`).join(', ')}`);
 }
 
+// Tüm bağlantılar sırayla: önce GitHub, sonra Drive (Drive'a GitHub'dan gelenler de yansır).
+// Girişin kendi bağlantısının hatası fırlatılır; diğer bağlantının hatası pullError olarak döner.
 async function doSync(token, p, opts) {
-  if (p.kind === 'drive') return doDriveSync(token, p, opts);
+  const conns = connectionsOf(p);
+  const ghToken = p.kind === 'drive' ? auth.github : token || auth.github;
+  const drive = p.kind === 'drive' ? token || auth.drive : auth.drive;
+  const jobs = [];
+  if (conns.github && ghToken) jobs.push({ self: p.kind !== 'drive', run: () => doGithubSync(ghToken, conns.github, opts) });
+  if (conns.drive && drive) jobs.push({ self: p.kind === 'drive', run: () => doDriveSync(drive, conns.drive, opts) });
+  const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
+  for (const job of jobs) {
+    let r;
+    try {
+      r = await job.run();
+    } catch (e) {
+      if (job.self) throw e;
+      out.pullError = e;
+      continue;
+    }
+    out.pull.updated.push(...r.pull.updated);
+    out.pull.conflicts.push(...r.pull.conflicts);
+    out.pull.moved = out.pull.moved || r.pull.moved;
+    if (r.push) {
+      const prev = out.push || { pushed: [], removed: [], skipped: [], commit: null };
+      out.push = { pushed: [...new Set([...prev.pushed, ...r.push.pushed])], removed: [...new Set([...prev.removed, ...r.push.removed])], skipped: r.push.skipped, commit: r.push.commit };
+    }
+    if (r.pending) out.pending = { n: Math.max(out.pending ? out.pending.n : 0, r.pending.n), skipped: r.pending.skipped };
+  }
+  return out;
+}
+
+async function doGithubSync(token, p, opts) {
   const r = await repoFor(p);
   const st = WS.loadState(p);
   const push = opts.auto !== false;
@@ -329,7 +362,9 @@ async function doDriveSync(drive, p, opts) {
   const r = await repoFor(p);
   const push = opts.auto !== false;
   const store = historyStore(drive, p.driveId);
-  const dev = { store, deviceId: deviceId(), deviceName: author().name };
+  // Uç dosyasında projenin GitHub bağlantısı da yayımlanır: diğer cihazlar aynı depoya bağlanır
+  const linkedGh = connectionsOf(p).github;
+  const dev = { store, deviceId: deviceId(), deviceName: author().name, meta: { github: linkedGh ? { owner: linkedGh.owner, repo: linkedGh.repo } : null } };
   const st = WS.loadState(p);
   const startRemote = st.pushedOid || null;
   const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
@@ -343,6 +378,7 @@ async function doDriveSync(drive, p, opts) {
     await r.snapshot({ kind: 'merge', title: t('ws.driveEdits', { names: names.slice(0, 3).join(', '), n: names.length, count: names.length }) });
   }
   const h2 = push ? await r.syncStore({ ...dev, onProgress: progress }) : { pushed: false, head: await r.head(), ahead: true };
+  adoptPeerGithub(p, [...(h2.peers || []), ...(h1.peers || [])]);
   const pulled = h1.pulled + m.downloaded.length;
   out.pull.updated = Array.from({ length: pulled }, () => '');
   out.pull.conflicts = [...h1.conflicts, ...m.conflicts].map((copy) => ({ path: stripCopy(copy).replace(" (Drive'dan)", ''), copy }));
@@ -364,4 +400,94 @@ async function doDriveSync(drive, p, opts) {
     pendingN: out.pending ? out.pending.n : 0,
   });
   return out;
+}
+
+// ---------------------------------------------------------------- bağlantılar (aşama 3)
+// Bir proje = bu cihazdaki tek git deposu + klasör. Her bulut bağlantısının ayrı bir "girişi" (durum dosyası)
+// vardır; bağlı girişler gitKey ve klasörü paylaşır ve birbirini kaydeder (GitHub girişinde drive, Drive
+// girişinde github). Ana ekran projeyi hangi listeden açarsa açsın aynı proje, aynı geçmiş.
+const auth = { github: null, drive: null };
+export function setAuth(next) {
+  Object.assign(auth, next);
+}
+export const getAuth = () => ({ ...auth });
+
+const ghEntry = (g) => ({ owner: g.owner, repo: g.repo, name: g.name, branch: 'main' });
+const driveEntry = (d) => ({ kind: 'drive', owner: 'drive', repo: d.id, driveId: d.id, name: d.name, branch: 'main' });
+
+// { github: giriş | null, drive: giriş | null }
+export function connectionsOf(p) {
+  const st = WS.loadState(p);
+  if (p.kind === 'drive') return { drive: p, github: st.github ? ghEntry(st.github) : null };
+  return { github: p, drive: st.drive ? driveEntry(st.drive) : null };
+}
+
+async function link(p) {
+  const r = await repoFor(p);
+  const key = r.id;
+  const folder = WS.folderName(p);
+  const st = WS.loadState(p);
+  WS.saveState(p, { ...st, gitKey: key, folder });
+  return { key, folder };
+}
+
+// Drive bağlantısı ekle: Drive'da klasör açılır; ilk eşitlemede tüm geçmiş ve dosyalar yüklenir
+export async function connectDrive(p, drive) {
+  const { key, folder } = await link(p);
+  const f = await drive.createProject(p.name);
+  WS.saveState(driveEntry({ id: f.id, name: f.name }), { head: null, files: {}, engine: true, gitKey: key, folder, github: { owner: p.owner, repo: p.repo, name: p.name } });
+  WS.saveState(p, { ...WS.loadState(p), drive: { id: f.id, name: f.name } });
+  return f;
+}
+
+// GitHub bağlantısı ekle: boş depo açılır; ilk eşitlemede tüm geçmiş gönderilir
+export async function connectGithub(p, token) {
+  const { key, folder } = await link(p);
+  const gh = await GH.createProject(token, p.name, null);
+  WS.saveState(ghEntry(gh), { head: null, files: {}, full: true, engine: true, gitKey: key, folder, drive: { id: p.driveId, name: p.name } });
+  WS.saveState(p, { ...WS.loadState(p), github: { owner: gh.owner, repo: gh.repo, name: gh.name } });
+  return gh;
+}
+
+// Bağlantıyı kes: eşitleme durur, buluttaki kopyaya dokunulmaz. which: 'github' | 'drive'
+export function disconnect(p, which) {
+  const conns = connectionsOf(p);
+  const gone = conns[which];
+  if (!gone) return;
+  const keep = which === 'github' ? conns.drive : conns.github;
+  if (keep) {
+    const st = WS.loadState(keep);
+    delete st[which];
+    WS.saveState(keep, st);
+  }
+  WS.removeState(gone);
+}
+
+// Buluttaki kopyayı sil (bağlantı kesildikten sonra çağrılır). GitHub izni yoksa { settingsUrl } döner.
+export async function deleteRemote(which, entry, { token, drive } = {}) {
+  if (which === 'drive') {
+    await drive.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.driveId)}?fields=id`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trashed: true }),
+    });
+    return { done: true };
+  }
+  const res = await fetch(`https://api.github.com/repos/${entry.owner}/${entry.repo}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+  });
+  if (res.status === 204 || res.status === 404) return { done: true };
+  return { done: false, settingsUrl: `https://github.com/${entry.owner}/${entry.repo}/settings` };
+}
+
+// Başka bir cihaz bu projeyi GitHub'a bağlamışsa (uç dosyasında github) bu cihaz da aynı depoya bağlanır;
+// yalnızca bu cihazda o depo için ayrı bir proje yoksa (iki ayrı geçmiş karışmasın)
+function adoptPeerGithub(p, peers) {
+  if (connectionsOf(p).github) return;
+  const g = peers.map((x) => x && x.github).find((x) => x && x.owner && x.repo);
+  if (!g) return;
+  const entry = ghEntry({ owner: g.owner, repo: g.repo, name: p.name });
+  if (WS.loadState(entry).engine) return;
+  WS.saveState(entry, { head: null, files: {}, full: true, engine: true, gitKey: gitKeyOf(p), folder: WS.folderName(p), drive: { id: p.driveId, name: p.name } });
+  WS.saveState(p, { ...WS.loadState(p), github: { owner: g.owner, repo: g.repo, name: p.name } });
 }

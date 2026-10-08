@@ -220,3 +220,22 @@ test('MASAÜSTÜ ile TELEFON aynı klasör deposu üzerinden: geçmiş ve dosyal
   assert.equal(fs.readFileSync(path.join(pc.dir, 'tez.txt'), 'utf8'), 'PC hali');
   assert.equal(read(tel, 'tez (diğer cihazdan).txt'), 'TEL hali');
 });
+
+test('uç dosyası proje bilgisini taşır (GitHub bağlantısı); yalnızca bilgi değişince de yeniden yazılır', async () => {
+  const { syncStore } = require('../../../app/core/storeSync.js');
+  const store = dirStore(h.tmpDir('drw-store-meta-'));
+  const tel = await device('meta-tel');
+  put(tel, 'a.txt', 'bir');
+  await tel.syncStoreWithSnapshot({ store, deviceId: 'tel' });
+  const pc = await h.openProject({ root: h.tmpDir('drw-st-pcm-'), id: 'ortak', name: 'Tezim' });
+  const d1 = await syncStore(pc, { store, deviceId: 'pc' });
+  assert.equal(d1.peers.find((x) => x.id === 'tel').github, null);
+  // Telefon GitHub'a bağlandı: yeni kayıt olmadan uç dosyası güncellenir
+  const r = await tel.syncStore({ store, deviceId: 'tel', meta: { github: { owner: 'ogrenci', repo: 'draftrewind-tezim' } } });
+  assert.equal(r.pushed, true);
+  const d2 = await syncStore(pc, { store, deviceId: 'pc' });
+  assert.deepEqual(d2.peers.find((x) => x.id === 'tel').github, { owner: 'ogrenci', repo: 'draftrewind-tezim' });
+  // Bilgi aynı kaldıkça yeniden yazılmaz
+  const again = await tel.syncStore({ store, deviceId: 'tel', meta: { github: { owner: 'ogrenci', repo: 'draftrewind-tezim' } } });
+  assert.equal(again.pushed, false);
+});

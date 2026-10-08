@@ -726,6 +726,7 @@ function Root() {
   }, [ghToken]);
 
   const drive = useMemo(() => (google ? new G.Drive(google, setGoogle) : null), [google && google.refresh_token, google && google.access_token]);
+  REPO.setAuth({ github: ghToken, drive });
 
   const loginGithub = async (t) => {
     await GH.saveToken(t);
@@ -2216,6 +2217,8 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
               ) : null}
             </Glass>
 
+            <ConnectionsCard c={c} project={project} onChanged={() => runSync({ manual: true })} onLeave={onBack} />
+
             <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
               <Glass c={c} style={[s.seg, { marginTop: 14 }]}>
                 {[
@@ -2358,6 +2361,146 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={null} project={project} history={history} /> : null}
       <BusyHud c={c} text={busy} />
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bağlantılar: bir proje aynı anda GitHub'a ve Drive'a bağlı olabilir. Açınca tüm geçmiş oraya da yüklenir;
+// kapatırken varsayılan "Bağlantıyı kes" (buluttaki kopyaya dokunmaz), "Oradan da sil" proje adı yazılarak onaylanır.
+// Son bağlantı kapatılamaz (proje her zaman bir yerde yedekli kalsın).
+// ---------------------------------------------------------------------------
+const SERVICE = { github: 'GitHub', drive: 'Google Drive' };
+
+function ConnectionsCard({ c, project, onChanged, onLeave }) {
+  const [conns, setConns] = useState(() => REPO.connectionsOf(project));
+  const [busy, setBusy] = useState(null);
+  const self = project.kind === 'drive' ? 'drive' : 'github';
+  const refresh = () => setConns(REPO.connectionsOf(project));
+
+  const turnOn = (which) => {
+    const a = REPO.getAuth();
+    const service = SERVICE[which];
+    if (!(which === 'github' ? a.github : a.drive)) {
+      warn();
+      return Alert.alert(t('conn.needLoginTitle'), t('conn.needLoginBody', { service }), [{ text: t('common.ok') }]);
+    }
+    Alert.alert(t('conn.addTitle', { service }), t('conn.addBody', { service }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('conn.add'),
+        onPress: async () => {
+          setBusy(which);
+          try {
+            if (which === 'drive') await REPO.connectDrive(project, a.drive);
+            else await REPO.connectGithub(project, a.github);
+            refresh();
+            success();
+            onChanged();
+          } catch (e) {
+            warn();
+            Alert.alert(t('conn.failed'), errText(e), [{ text: t('common.ok') }]);
+          } finally {
+            setBusy(null);
+          }
+        },
+      },
+    ]);
+  };
+
+  const turnOff = (which) => {
+    const service = SERVICE[which];
+    const other = which === 'github' ? conns.drive : conns.github;
+    if (!other) {
+      warn();
+      return Alert.alert(t('conn.lastTitle'), t('conn.lastBody', { service }), [{ text: t('common.ok') }]);
+    }
+    const entry = conns[which];
+    const finish = async (remove) => {
+      setBusy(which);
+      try {
+        const a = REPO.getAuth();
+        REPO.disconnect(project, which);
+        if (remove) {
+          const r = await REPO.deleteRemote(which, entry, { token: a.github, drive: a.drive });
+          if (!r.done && r.settingsUrl) {
+            Alert.alert(t('conn.ghNoPermTitle'), t('conn.ghNoPermBody'), [
+              { text: t('common.ok'), style: 'cancel' },
+              { text: t('conn.openSettings'), onPress: () => Linking.openURL(r.settingsUrl).catch(() => {}) },
+            ]);
+          } else if (which === 'drive') {
+            Alert.alert(t('conn.driveTrashedTitle'), t('conn.driveTrashed'), [{ text: t('common.ok') }]);
+          }
+        }
+        success();
+        if (which === self) onLeave();
+        else {
+          refresh();
+          onChanged();
+        }
+      } catch (e) {
+        warn();
+        Alert.alert(t('conn.failed'), errText(e), [{ text: t('common.ok') }]);
+      } finally {
+        setBusy(null);
+      }
+    };
+    const askDelete = () =>
+      Alert.prompt(
+        t('conn.deleteTitle', { service }),
+        t('conn.deleteBody', { service, name: project.name }),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('conn.deleteConfirm'),
+            style: 'destructive',
+            onPress: (typed) => {
+              if (String(typed || '').trim() === String(project.name).trim()) finish(true);
+              else Alert.alert(t('conn.nameMismatchTitle'), t('conn.nameMismatch'), [{ text: t('common.ok') }]);
+            },
+          },
+        ],
+        'plain-text'
+      );
+    Alert.alert(t('conn.offTitle', { service }), t('conn.offBody', { service }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('conn.disconnect'), onPress: () => finish(false) },
+      { text: t('conn.deleteToo'), style: 'destructive', onPress: askDelete },
+    ]);
+  };
+
+  const row = (which, icon, detail) => {
+    const on = !!conns[which];
+    return (
+      <View key={which} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
+        <View style={[s.accountIcon, { width: 34, height: 34 }]}>
+          <Icon name={icon} size={18} color={on ? c.accent : c.text3} />
+        </View>
+        <View style={s.flex}>
+          <Text style={{ color: c.text, fontWeight: '700', fontSize: 15 }}>{SERVICE[which]}</Text>
+          <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 1 }} numberOfLines={1}>
+            {on ? detail : t('conn.off')}
+          </Text>
+        </View>
+        {busy === which ? (
+          <ActivityIndicator color={c.accent} />
+        ) : (
+          <Switch
+            value={on}
+            onValueChange={(v) => (v ? turnOn(which) : turnOff(which))}
+            trackColor={{ true: c.accent }}
+            accessibilityLabel={SERVICE[which]}
+            testID={`connection-${which}`}
+          />
+        )}
+      </View>
+    );
+  };
+  return (
+    <Glass c={c} style={{ paddingHorizontal: 14, paddingVertical: 8, marginTop: 10 }}>
+      <Text style={[s.dayHeader, { color: c.text3, marginTop: 6, marginBottom: 2 }]}>{t('conn.title')}</Text>
+      {row('github', 'chevron.left.forwardslash.chevron.right', conns.github ? `${conns.github.owner}/${conns.github.repo}` : '')}
+      {row('drive', 'externaldrive.fill', conns.drive ? `DraftRewind › ${conns.drive.name}` : '')}
+    </Glass>
   );
 }
 

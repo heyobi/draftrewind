@@ -15,9 +15,22 @@ import { plainBytes } from './bytes';
 export const ROOT_FOLDER = 'Projeler';
 const root = () => new Directory(Paths.document, ROOT_FOLDER);
 const stateDir = () => new Directory(Paths.document, 'ws-state');
-export const folderName = (p) => safeName(p.folder || p.name);
-export const projectDir = (p) => new Directory(root(), folderName(p));
 const stateFile = (p) => new File(stateDir(), `${safeName(p.owner)}__${safeName(p.repo)}.json`);
+// Klasör adı: nesnede verilmişse o; yoksa durum dosyasında kayıtlı olan (bağlı projelerde GitHub ve Drive
+// girişleri aynı klasörü paylaşır); o da yoksa proje adı
+function storedFolder(p) {
+  if (!p || !p.owner || !p.repo) return null;
+  try {
+    const f = stateFile(p);
+    if (!f.exists) return null;
+    const st = JSON.parse(f.textSync()) || {};
+    return typeof st.folder === 'string' && st.folder ? st.folder : null;
+  } catch (e) {
+    return null;
+  }
+}
+export const folderName = (p) => safeName(p.folder || storedFolder(p) || p.name);
+export const projectDir = (p) => new Directory(root(), folderName(p));
 
 // Dosyalar uygulamasındaki yol (kullanıcıya gösterilen ipucu)
 export const filesPath = (p) => `DraftRewind › ${ROOT_FOLDER} › ${folderName(p)}`;
@@ -39,7 +52,15 @@ export function saveState(p, st) {
   try {
     stateDir().create({ intermediates: true, idempotent: true });
     // Klasör adı da saklanır: bu klasör bir GitHub projesine ait, "hesapsız" yerel proje sayılmasın
-    stateFile(p).write(JSON.stringify({ ...st, folder: folderName(p) }));
+    stateFile(p).write(JSON.stringify({ ...st, folder: st.folder || folderName(p) }));
+  } catch (e) {}
+}
+
+// Girişin durumunu tamamen siler (bağlantı kesilince; klasör ve geçmiş yerinde kalır)
+export function removeState(p) {
+  try {
+    const f = stateFile(p);
+    if (f.exists) f.delete();
   } catch (e) {}
 }
 

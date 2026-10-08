@@ -423,7 +423,17 @@ async function syncDrive(rt, kind = 'auto') {
         const shareHistory = async () => {
             if (!history) return null;
             try {
-                return await storeSync.syncStore(rt.project, { store: history, deviceId: deviceId(), deviceName: os.hostname() });
+                const rec = recordOf(rt.project.id) || {};
+                const meta = { github: rec.github && rec.github.owner ? { owner: rec.github.owner, repo: rec.github.repo } : null };
+                const res = await storeSync.syncStore(rt.project, { store: history, deviceId: deviceId(), deviceName: os.hostname(), meta });
+                // Başka bir cihaz (telefon) projeyi GitHub'a bağlamışsa bu bilgisayar da aynı depoyu kullanır
+                const peerGh = (res.peers || []).map(x => x.github).find(x => x && x.owner && x.repo);
+                const fresh = recordOf(rt.project.id);
+                if (peerGh && fresh && !fresh.github) {
+                    fresh.github = { owner: peerGh.owner, repo: peerGh.repo, url: `https://github.com/${peerGh.owner}/${peerGh.repo}` };
+                    saveProjectRecord(fresh);
+                }
+                return res;
             } catch (e) {
                 console.warn('[DraftRewind] Drive geçmiş eşitleme:', e.message);
                 return null;
