@@ -191,3 +191,24 @@ test('importLocalLog: 3 kayıt → aynı zamanlı 3 git kaydı ve doğru ağaçl
   const res2 = await q.importLocalLog({ records: [{ id: 'z', time: t1, changed: ['yok.txt'], files: { 'yok.txt': 'yok/1.txt' } }], readCopy: async () => null });
   assert.deepEqual(res2.missing, [{ recordId: 'z', path: 'yok.txt' }]);
 });
+
+test('iOS ayrışık (NFD) adları: geçmişe NFC yazılır, okuma/değişiklik/silme diskteki adla çalışır', async () => {
+  const { p, w } = await phone('nfd');
+  const nfdDir = 'Bölüm 2'.normalize('NFD');
+  const nfdFile = 'Özet çalışması.txt'.normalize('NFD');
+  w(`${nfdDir}/${nfdFile}`, 'ilk hali');
+  const s1 = await p.snapshot();
+  assert.deepEqual(s1.changed, ['Bölüm 2/Özet çalışması.txt']); // NFC
+  assert.equal(txt(await p.readAt(s1.oid, 'Bölüm 2/Özet çalışması.txt')), 'ilk hali');
+
+  w(`${nfdDir}/${nfdFile}`, 'ikinci hali daha uzun');
+  const s2 = await p.snapshot();
+  assert.deepEqual(s2.changed, ['Bölüm 2/Özet çalışması.txt']);
+  assert.equal(txt(await p.readAt('working', 'Bölüm 2/Özet çalışması.txt')), 'ikinci hali daha uzun');
+  assert.equal(txt(await p.readAt(s1.oid, 'Bölüm 2/Özet çalışması.txt')), 'ilk hali');
+  assert.equal(await p.snapshot(), null); // ad farkı yüzünden sahte değişiklik yok
+
+  fs.rmSync(path.join(p.dir, nfdDir, nfdFile));
+  const s3 = await p.snapshot();
+  assert.deepEqual(s3.deleted, ['Bölüm 2/Özet çalışması.txt']);
+});

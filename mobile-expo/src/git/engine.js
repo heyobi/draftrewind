@@ -210,15 +210,19 @@ export class GitProject {
   }
 
   // ------------------------------------------------------------ çalışma klasörü
+  // Geçmişteki adlar her zaman NFC'dir (Windows böyle yazar). iOS ise Türkçe harfleri diske ayrışık (NFD)
+  // yazıp öyle listeler; son taramada görülen gerçek disk adı varsa o kullanılır.
   work(rel) {
-    return joinPath(this.dir, ...String(rel).split('/'));
+    const disk = (this.diskNames && this.diskNames.get(rel)) || rel;
+    return joinPath(this.dir, ...String(disk).split('/'));
   }
 
   // İzlenen dosyalar: Map(rel → { size, mtimeMs }); sınırı aşanlar this.skipped'e (geçmişe girmez)
   async scan() {
     const out = new Map();
     const skipped = [];
-    const walk = async (abs, rel) => {
+    const diskNames = new Map();
+    const walk = async (abs, rel, raw) => {
       let names;
       try {
         names = await this.backend.list(abs);
@@ -235,22 +239,26 @@ export class GitProject {
           continue;
         }
         if (!st) continue;
-        const r = rel ? `${rel}/${name}` : name;
+        const r = rel ? `${rel}/${nfc(name)}` : nfc(name);
+        const rr = raw ? `${raw}/${name}` : name;
         if (st.type === 'dir') {
           if (ignoredDir(name)) continue;
-          await walk(full, r);
+          await walk(full, r, rr);
         } else {
           if (ignoredFile(name)) continue;
           if (st.size > this.maxFileBytes) {
             skipped.push({ path: r, reason: 'tooBig', size: st.size });
             continue;
           }
+          if (out.has(r)) continue; // aynı adın NFC ve NFD kopyası (yalnızca NTFS/ext4'te olabilir): ilki
           out.set(r, { size: st.size, mtimeMs: st.mtimeMs });
+          if (rr !== r) diskNames.set(r, rr);
         }
       }
     };
-    await walk(this.dir, '');
+    await walk(this.dir, '', '');
     this.skipped = skipped;
+    this.diskNames = diskNames;
     return { files: out, skipped };
   }
 
