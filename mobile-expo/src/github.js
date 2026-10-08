@@ -380,8 +380,9 @@ export async function createProject(token, name, readme) {
   await send(token, 'PUT', `/repos/${full}/topics`, { names: ['draftrewind', 'acadamiv'] });
   // İlk kayıt: içerik API'si boş depoda da çalışır ve varsayılan dalı oluşturur.
   // Yeni depo birkaç saniye tutarsız olabilir (404/409): kısa aralıkla üç kez denenir.
+  // readme null: depo boş kalır (telefondaki git geçmişi olduğu gibi gönderilecek)
   const message = buildMessage({ title: t('home.newProjectCommit'), changed: ['README.txt'], deleted: [] });
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 0; readme != null; attempt++) {
     try {
       await send(token, 'PUT', `/repos/${full}/contents/README.txt`, { message, content: toBase64(utf8Encode(readme)), branch });
       break;

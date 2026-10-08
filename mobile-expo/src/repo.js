@@ -27,7 +27,7 @@ const T = (key, vars) => {
 const author = () => ({ name: Platform.isPad ? 'iPad' : 'iPhone', email: 'telefon@draftrewind.local' });
 
 export function repoFor(p) {
-  const key = repoKey(p);
+  const key = WS.loadState(p).gitKey || repoKey(p);
   let job = opened.get(key);
   if (!job) {
     job = (async () => {

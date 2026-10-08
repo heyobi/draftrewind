@@ -1,8 +1,9 @@
-// Hesapsız (yalnızca bu cihaz) ve iCloud Drive projeleri: git yok, sunucu yok.
+// Hesapsız (yalnızca bu cihaz) ve iCloud Drive projeleri: sunucu yok.
 //
 // Yerel proje : Belgeler/Projeler/<ad>/ (Dosyalar › DraftRewind › Projeler, çalışma alanlarıyla aynı yer).
-//               Sürüm kopyaları Belgeler/ws-history/<ad>/<kodlanmış yol>/<zaman>.<uzantı> (Dosyalar'da görünmez),
-//               kayıt listesi ws-history/<ad>/log.json, tarama durumu ws-state/local-<ad>.json.
+//               Geçmiş telefonun git motorunda: Library/Application Support/DraftRewind/git/local-<ad>
+//               (GitHub'a taşınınca tüm geçmiş olduğu gibi gönderilir). Eski düzen (ws-history kopyaları +
+//               log.json) ilk açılışta git geçmişine aktarılır; eski kopyalar silinmez.
 // iCloud projesi: <kapsayıcı>/Documents/DraftRewind/<ad>/ ; sürüm kopyaları masaüstünün Google Drive/Klasör
 //               moduyla AYNI düzende: <ad>/_Sürümler/<alt klasör>/<YYYY-AA-GG SS.dd> <dosya> ; işaret dosyası
 //               .draftrewind-proje.json. Kayıt listesi yine bu cihazda (ws-history/iCloud~<ad>/log.json, eşitlenmez).
@@ -10,6 +11,8 @@
 // Veri güvenliği: kopya önce yazılır ve doğrulanır, sonra eskisi silinir; dosyalar geçici ad + taşıma ile
 // atomik yazılır; son 60 sn içinde değişmiş dosyanın üzerine geri yükleme yapılmaz.
 import { Directory, File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
+import { openProject, backendExpo, ensureGitRoot, uriToPath, pathToUri, defaultT } from './git';
 import { MAX_UPLOAD, fileType, safeName, uniqueName } from './files';
 import { t, lang } from './i18n';
 import { countWords, countsWords, classifyChanges, ignoredName, recentlyTouched, buildMessage } from './wsCore';
@@ -326,10 +329,10 @@ function exclusive(p, job) {
   return next;
 }
 
-export const snapshot = (p, opts) => exclusive(p, () => doSnapshot(p, opts));
+export const snapshot = (p, opts) => exclusive(p, () => (usesEngine(p) ? engineSnapshot(p, opts || {}) : doSnapshot(p, opts)));
 
 // "Bu anı işaretle": değişiklik olmasa da yıldızlı kayıt
-export const markMoment = (p, title) => exclusive(p, () => doSnapshot(p, { kind: 'star', title, force: true, coalesce: false }));
+export const markMoment = (p, title) => exclusive(p, () => (usesEngine(p) ? engineSnapshot(p, { kind: 'star', title, force: true }) : doSnapshot(p, { kind: 'star', title, force: true, coalesce: false })));
 
 // Tüm projeleri tarar (ana ekran açılışı / öne gelme). Dönen: yeni ya da güncellenen kayıt sayısı.
 export async function snapshotAll(projects) {
@@ -352,6 +355,12 @@ export async function readCurrent(p, path) {
 
 // Bir kaydın bir dosyasının kopyası (yoksa null)
 export async function readCopy(p, record, path) {
+  if (usesEngine(p)) {
+    const r = await engineFor(p);
+    const u8 = record && record.oid ? await r.readAt(record.oid, path) : null;
+    if (!u8) throw userError('copyMissing', 'local.copyMissing');
+    return toArrayBuffer(u8);
+  }
   const rel = record && record.files ? record.files[path] : null;
   if (!rel) return null;
   const f = copyRef(p, rel);
@@ -363,6 +372,7 @@ export async function readCopy(p, record, path) {
 // ---------------------------------------------------------------- geri yükleme
 // Kopyayı proje klasörüne geri yazar. Önce mevcut hal kaydedilir (geri alma da geri alınabilir).
 export function restoreVersion(p, record, path) {
+  if (usesEngine(p)) return exclusive(p, () => engineRestore(p, record, path));
   return exclusive(p, async () => {
     await assertStore(p);
     const rel = record && record.files ? record.files[path] : null;
@@ -401,13 +411,17 @@ export function addFiles(p, assets) {
         failed.push(a.name);
       }
     }
-    const r = done.length ? await doSnapshot(p) : null;
+    const r = done.length ? await (usesEngine(p) ? engineSnapshot(p, {}) : doSnapshot(p)) : null;
     return { done, failed, record: r && r.record };
   });
 }
 
 // ---------------------------------------------------------------- proje listeleri
 function logInfo(p) {
+  if (usesEngine(p)) {
+    const st = loadState(p);
+    if (st.engineModified) return { modified: st.engineModified, count: st.engineCount || 0 };
+  }
   const log = loadLog(p);
   return { modified: log.length ? log[0].time : 0, count: log.length };
 }
@@ -539,7 +553,9 @@ function listAll(dir, prefix, out) {
 
 async function moveOne(src, root) {
   // Önce son hal kaydedilsin (taşıma sırasında değişiklik kaybolmasın)
-  await doSnapshot(src);
+  const engine = usesEngine(src);
+  if (engine) await engineSnapshot(src, {});
+  else await doSnapshot(src);
   const folder = await uniqueName(src.folder, async (n) => new Directory(root, n).exists);
   const dst = { id: `icloud:${folder}`, name: folder, folder, store: 'icloud', rootUri: root.uri };
   const dstDir = projectDir(dst);
@@ -566,15 +582,22 @@ async function moveOne(src, root) {
       state.files[path] = s;
     }
     // 2) Geçmiş kopyaları → _Sürümler (masaüstü adlarıyla)
-    const log = loadLog(src);
+    const log = engine ? await history(src) : loadLog(src);
+    const repo = engine ? await engineFor(src) : null;
     const newLog = [];
     const used = new Set();
     for (const r of log) {
       const files = {};
       for (const [path, rel] of Object.entries(r.files || {})) {
-        const from = copyRef(src, rel);
-        if (!from.exists) continue;
-        const bytes = await from.bytes();
+        let bytes;
+        if (repo) {
+          bytes = await repo.readAt(r.oid, path);
+          if (!bytes) continue;
+        } else {
+          const from = copyRef(src, rel);
+          if (!from.exists) continue;
+          bytes = await from.bytes();
+        }
         const parts = Core.versionDirParts(path);
         const vdir = new Directory(dstDir, ...parts);
         vdir.create({ intermediates: true, idempotent: true });
@@ -586,7 +609,8 @@ async function moveOne(src, root) {
         files[path] = [...parts, name].join('/');
         used.add(files[path]);
       }
-      newLog.push({ ...r, files });
+      const { oid, ...rest } = r;
+      newLog.push(engine ? { ...rest, id: newId(r.time), files } : { ...r, files });
     }
     // Kopyalarken asıllardan biri değiştiyse asıllar silinmez (yeni hali kaybolmasın)
     for (const path of paths) {
@@ -610,6 +634,7 @@ async function moveOne(src, root) {
   safeDelete(srcDir);
   safeDelete(historyDir(src));
   safeDelete(stateFile(src));
+  if (engine) dropEngine(src);
   return dst;
 }
 
@@ -634,6 +659,7 @@ function cloudCandidates(p) {
 // (ws-state/<sahip>__<depo>.json; sha/mtime'larla, yeniden gönderilmez). Sürüm kopyaları cihazda kalır.
 // onProgress(i, n). Dönen: { project, tooBig }
 export function moveToGithub(token, p, onProgress) {
+  if (usesEngine(p)) return exclusive(p, () => engineMoveToGithub(token, p, onProgress));
   return exclusive(p, async () => {
     await doSnapshot(p).catch(() => null); // son hal yerel geçmişe de girsin
     const { eligible, tooBig } = cloudCandidates(p);
@@ -690,7 +716,7 @@ export function moveToGithub(token, p, onProgress) {
 // Dönen: { folder, tooBig, keptLocal }
 export function moveToDrive(drive, p, onProgress) {
   return exclusive(p, async () => {
-    await doSnapshot(p).catch(() => null);
+    await (usesEngine(p) ? engineSnapshot(p, {}) : doSnapshot(p)).catch(() => null);
     const { eligible, tooBig } = cloudCandidates(p);
     const before = {};
     for (const f of eligible) before[f.path] = { size: f.size, mtime: f.mtime };
@@ -731,4 +757,152 @@ export function moveToDrive(drive, p, onProgress) {
     }
     return { folder, tooBig, keptLocal };
   });
+}
+
+// ---------------------------------------------------------------- git motoru (hesapsız projeler)
+// iCloud projeleri şimdilik kopya düzeninde: _Sürümler başka cihazlardan (masaüstü) de okunuyor.
+export const usesEngine = (p) => p.store === 'local';
+const gitKey = (p) => `local-${safeName(p.folder)}`;
+const gitdirOf = (p) => `${ensureGitRoot()}/${gitKey(p)}`;
+const engines = new Map(); // anahtar → Promise<GitProject>
+const engineItems = new Map(); // anahtar → son okunan geçmiş (motor biçimi; artımlı okuma için)
+
+const ET = (key, vars) => {
+  const s = t(key, vars);
+  return s && s !== key ? s : defaultT(key, vars);
+};
+
+function engineFor(p) {
+  const key = gitKey(p);
+  let job = engines.get(key);
+  if (!job) {
+    job = (async () => {
+      const dir = projectDir(p);
+      dir.create({ intermediates: true, idempotent: true });
+      const r = await openProject({
+        backend: backendExpo(),
+        gitdir: gitdirOf(p),
+        dir: uriToPath(dir.uri),
+        id: key,
+        name: p.name,
+        author: { name: Platform.isPad ? 'iPad' : 'iPhone', email: 'telefon@draftrewind.local' },
+        t: ET,
+      });
+      if (!(await r.head())) await migrateLog(p, r);
+      return r;
+    })();
+    job.catch(() => engines.delete(key));
+    engines.set(key, job);
+  }
+  return job;
+}
+
+function dropEngine(p) {
+  const key = gitKey(p);
+  engines.delete(key);
+  engineItems.delete(key);
+  safeDelete(new Directory(pathToUri(gitdirOf(p))));
+}
+
+// Eski düzenin kayıtları (log.json + ws-history kopyaları) git geçmişine; kopyalar yerinde kalır
+async function migrateLog(p, r) {
+  const log = loadLog(p);
+  if (!log.length) return;
+  try {
+    await r.importLocalLog({
+      records: log,
+      readCopy: async (rec, path) => {
+        const f = copyRef(p, rec.files[path]);
+        return f.exists ? f.bytes() : null;
+      },
+    });
+  } catch (e) {}
+}
+
+// Motor kaydı → ekranın kayıt biçimi (localCore.buildRecord ile aynı alanlar; files: yol → kayıt oid'i)
+function toRecord(h) {
+  const changed = h.changed || [];
+  return {
+    id: h.oid,
+    oid: h.oid,
+    time: h.time,
+    kind: h.kind,
+    title: h.title,
+    note: h.note,
+    changed,
+    added: h.added || [],
+    deleted: h.deleted || [],
+    delta: h.delta || {},
+    words: h.words || null,
+    total: h.total,
+    files: Object.fromEntries(changed.map((x) => [x, h.oid])),
+  };
+}
+
+// Kayıtlar yeniden eskiye (her iki düzen için)
+export async function history(p) {
+  if (!usesEngine(p)) return loadLog(p);
+  const r = await engineFor(p);
+  const key = gitKey(p);
+  const items = await r.history({ limit: 2000, known: engineItems.get(key) || null });
+  engineItems.set(key, items);
+  return items.map(toRecord);
+}
+
+async function engineSnapshot(p, { kind = 'auto', title, force = false } = {}) {
+  const dir = projectDir(p);
+  if (!dir.exists) return { record: null, merged: false, skipped: [] };
+  const r = await engineFor(p);
+  const res = await r.snapshot({ kind, title, force });
+  const skipped = r.skipped || [];
+  if (!res) return { record: null, merged: false, skipped };
+  const st = loadState(p);
+  saveState(p, { ...st, engineModified: Date.now(), engineCount: (st.engineCount || (await r.history({ limit: 2000 })).length - 1) + 1, created: st.created || Date.now() });
+  return { record: toRecord({ ...res, time: Date.now() }), merged: false, skipped };
+}
+
+async function engineRestore(p, record, path) {
+  const r = await engineFor(p);
+  // Eski hal ÖNCE belleğe alınır
+  const bytes = record && record.oid ? await r.readAt(record.oid, path) : null;
+  if (!bytes) throw userError('copyMissing', 'local.copyMissing');
+  const target = workFile(p, path);
+  const local = statFile(target);
+  if (local && recentlyTouched(local)) throw userError('recent', 'local.restoreRecent', { name: path.split('/').pop() });
+  await engineSnapshot(p, { kind: 'auto', title: t('local.beforeRestore') });
+  atomicWrite(target, bytes);
+  const d = new Date(record.time);
+  const label = `${t('day.date', { d: d.getDate(), month: t('months')[d.getMonth()] })} ${String(d.getHours()).padStart(2, '0')}.${String(d.getMinutes()).padStart(2, '0')}`;
+  return engineSnapshot(p, { kind: 'restore', title: t('local.restored', { name: path.split('/').pop(), stamp: label }), force: true });
+}
+
+// GitHub'a taşıma: boş depo → bu cihazdaki git geçmişinin tamamı gönderilir → doğrulanır (uzak uç = yerel uç)
+// → klasör ve git deposu GitHub projesinin olur (ws-state'e gitKey yazılır). 50 MB üstü dosyalar geçmişte
+// yoktur; varsa klasör yine de GitHub projesine geçer, o dosyalar yalnızca bu cihazda kalır.
+async function engineMoveToGithub(token, p, onProgress) {
+  await engineSnapshot(p, {});
+  const { tooBig } = cloudCandidates(p);
+  const r = await engineFor(p);
+  if (onProgress) onProgress(0, 1);
+  const gh = await GH.createProject(token, p.name, null);
+  // Yeni depo birkaç saniye hazır olmayabilir: üç kez denenir
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await r.sync({ remoteUrl: `https://github.com/${gh.owner}/${gh.repo}.git`, token });
+      break;
+    } catch (e) {
+      if (attempt >= 2 || e.code === 'EGHAUTH') throw e;
+      await new Promise((ok) => setTimeout(ok, 1500));
+    }
+  }
+  const head = await r.head();
+  if (!head || (await r.remoteHead()) !== head) throw userError('verify', 'move.verifyFailed');
+  if (onProgress) onProgress(1, 1);
+  const files = await r.treeFiles(head);
+  WS.saveState(gh, { head: null, files: {}, words: null, full: true, engine: true, gitKey: gitKey(p), pushedOid: res.head, lastPush: Date.now(), lastPull: null, count: files.size, pendingN: 0 });
+  engines.delete(gitKey(p));
+  engineItems.delete(gitKey(p));
+  safeDelete(stateFile(p));
+  return { project: gh, tooBig };
 }

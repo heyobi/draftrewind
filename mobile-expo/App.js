@@ -2866,8 +2866,10 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
   const baseName = (path) => path.split('/').pop();
 
   const reload = () => {
-    setLog(LOCAL.loadLog(project));
     setFiles(LOCAL.listFiles(project));
+    return LOCAL.history(project)
+      .then(setLog)
+      .catch(() => setLog((l) => l || []));
   };
 
   // Açılışta, aşağı çekince ve uygulama öne gelince: değişenlerin kopyası alınır, liste yenilenir
