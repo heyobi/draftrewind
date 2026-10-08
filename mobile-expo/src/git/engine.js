@@ -13,7 +13,7 @@ import './polyfill.js';
 import * as git from 'isomorphic-git';
 import { createFs, joinPath, normPath, dirnameOf, writeAtomic, readTextOrNull, appendText } from './fsAdapter.js';
 import { http as defaultHttp, onAuth } from './http.js';
-import { countWords, countsWords, conflictName } from '../wsCore.js';
+import { countWords, countsWords, conflictName, utf8Encode, utf8Decode } from '../wsCore.js';
 import { snapshotTitle, VERSIONS_FOLDER } from '../localCore.js';
 
 export const gitEngineVersion = 1;
@@ -116,6 +116,13 @@ function historyItem(oid, commit) {
     deleted: meta.deleted || [],
     parents: commit.parent,
   };
+}
+
+function packLooksComplete(bytes, fileName) {
+  if (bytes.length < 32 || bytes[0] !== 0x50 || bytes[1] !== 0x41 || bytes[2] !== 0x43 || bytes[3] !== 0x4b) return false;
+  let hex = '';
+  for (let i = bytes.length - 20; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+  return fileName === `pack-${hex}.pack`;
 }
 
 function codedError(code, message, cause) {
@@ -613,32 +620,11 @@ export class GitProject {
     let conflicts = [];
     this.pulledCopies = [];
 
-    if (remoteOid && local && remoteOid !== local) {
-      const remoteAhead = await git.isDescendent(this.g({ oid: remoteOid, ancestor: local, depth: -1 }));
-      const localAhead = !remoteAhead && (await git.isDescendent(this.g({ oid: local, ancestor: remoteOid, depth: -1 })));
-      if (remoteAhead) {
-        pulled = await this.applyRemote(local, remoteOid);
-        await this.setHead(remoteOid);
-        local = remoteOid;
-      } else if (!localAhead && !force) {
-        if (pushedOid && pushedOid === local) {
-          // Yerelde gönderilmemiş kayıt yok; uzak zincir yeniden yazılmış: olduğu gibi benimse
-          pulled = await this.applyRemote(local, remoteOid);
-          await this.setHead(remoteOid);
-          this.treeCache.clear();
-          this.wordsCache = null;
-          local = remoteOid;
-        } else {
-          const res = await this.mergeDiverged(local, remoteOid);
-          pulled = res.pulled;
-          conflicts = res.conflicts;
-          local = res.oid;
-        }
-      }
-    } else if (remoteOid && !local) {
-      pulled = await this.applyRemote(null, remoteOid, baseFiles ? new Map(Object.entries(baseFiles)) : null);
-      await this.setHead(remoteOid);
-      local = remoteOid;
+    if (remoteOid) {
+      const res = await this.integrate(local, remoteOid, { force, pushedOid, baseFiles });
+      local = res.local;
+      pulled = res.pulled;
+      conflicts = res.conflicts;
     }
 
     if (local && local !== remoteOid && !noPush) {
@@ -656,6 +642,210 @@ export class GitProject {
     const pushed = !noPush && !!local && local !== remoteOid;
     const remote = pushed ? local : remoteOid;
     return { pushed, pulled, conflicts, head: local || null, remote: remote || null, ahead: !!local && local !== remote, at: Date.now() };
+  }
+
+  // Uzaktaki bir ucu yerele katar: ileri sarma, yeniden yazılmış zinciri benimseme ya da ayrışmada birleştirme.
+  // Dönen: { local, pulled, conflicts }. Yerel düzenleme hiçbir durumda ezilmez (applyRemote/mergeDiverged).
+  async integrate(local, remoteOid, { force = false, pushedOid = null, baseFiles = null } = {}) {
+    let pulled = 0;
+    let conflicts = [];
+    if (!remoteOid || remoteOid === local) return { local, pulled, conflicts };
+    if (!local) {
+      pulled = await this.applyRemote(null, remoteOid, baseFiles ? new Map(Object.entries(baseFiles)) : null);
+      await this.setHead(remoteOid);
+      return { local: remoteOid, pulled, conflicts };
+    }
+    const remoteAhead = await git.isDescendent(this.g({ oid: remoteOid, ancestor: local, depth: -1 }));
+    const localAhead = !remoteAhead && (await git.isDescendent(this.g({ oid: local, ancestor: remoteOid, depth: -1 })));
+    if (remoteAhead) {
+      pulled = await this.applyRemote(local, remoteOid);
+      await this.setHead(remoteOid);
+      local = remoteOid;
+    } else if (!localAhead && !force) {
+      if (pushedOid && pushedOid === local) {
+        // Yerelde gönderilmemiş kayıt yok; uzak zincir yeniden yazılmış: olduğu gibi benimse
+        pulled = await this.applyRemote(local, remoteOid);
+        await this.setHead(remoteOid);
+        this.treeCache.clear();
+        this.wordsCache = null;
+        local = remoteOid;
+      } else {
+        const res = await this.mergeDiverged(local, remoteOid);
+        pulled = res.pulled;
+        conflicts = res.conflicts;
+        local = res.oid;
+      }
+    }
+    return { local, pulled, conflicts };
+  }
+
+  // ------------------------------------------------------------ paket deposu (Drive / iCloud)
+  // Git'i bilmeyen bir depolama alanında, proje klasörünün içindeki .draftrewind/ altında:
+  //   packs/pack-<sha>.pack : içerik adlı, değişmeyen git paketleri (her cihaz yalnızca yeni nesneleri ekler)
+  //   heads/<cihaz>.json    : { head, time, device } — o cihazın en son yayımladığı kayıt
+  // Hiçbir dosyanın üzerine başka cihaz yazmaz (her cihaz yalnızca kendi heads dosyasını yazar), bu yüzden
+  // eşzamanlı eşitleme çakışmaz. Paketi henüz görünmeyen uç (bulut gecikmesi) bir sonraki tura kalır.
+  // store: { id, list() → [ad], read(ad) → Uint8Array|null, write(ad, bytes) }
+  // Dönen: { pushed, pulled, conflicts, head, ahead, at }
+  syncStore(opts) {
+    return this.exclusive(() => this.syncStoreNow(opts));
+  }
+
+  syncStoreWithSnapshot({ snapshot: snapOpts, ...opts } = {}) {
+    return this.exclusive(async () => {
+      const snap = await this.snapshotNow(snapOpts || {});
+      const res = await this.syncStoreNow(opts);
+      return { ...res, snapshot: snap };
+    });
+  }
+
+  async syncStoreNow({ store, deviceId, deviceName = '', noPush = false } = {}) {
+    if (!store || !deviceId) throw codedError('ENOSTORE', 'store ve deviceId gerekli');
+    const stateFile = joinPath(this.gitdir, 'draftrewind-stores.json');
+    let all = {};
+    try {
+      all = JSON.parse((await readTextOrNull(this.backend, stateFile)) || '{}') || {};
+    } catch (e) {
+      all = {};
+    }
+    const st = { imported: [], published: null, ...(all[store.id] || {}) };
+    const imported = new Set(st.imported);
+    const names = await store.list();
+    const myHead = `heads/${deviceId}.json`;
+    if (!names.includes(myHead)) st.published = null; // depo temizlenmiş/yeni: yeniden yayımla
+
+    // 1) Yeni paketler
+    const packDir = joinPath(this.gitdir, 'objects', 'pack');
+    let k = 0;
+    for (const name of names) {
+      const m = /^packs\/(pack-[0-9a-f]{40}\.pack)$/.exec(name);
+      if (!m || imported.has(name)) continue;
+      const local = joinPath(packDir, m[1]);
+      if (!(await this.backend.stat(joinPath(packDir, m[1].replace(/\.pack$/, '.idx'))))) {
+        let bytes = await store.read(name);
+        // Yarım/bozuk yükleme: paketin adı, son 20 baytındaki özetle aynı olmalı ("PACK" ile başlar)
+        if (!bytes || !packLooksComplete(bytes, m[1])) continue;
+        await writeAtomic(this.backend, local, bytes);
+        bytes = null;
+        try {
+          await git.indexPack({ fs: this.fs, dir: this.gitdir, gitdir: this.gitdir, filepath: `objects/pack/${m[1]}`, cache: {} });
+        } catch (e) {
+          // Yarım yüklenmiş paket: sonra yeniden denenir
+          try {
+            await this.backend.remove(local);
+          } catch (e2) {}
+          continue;
+        }
+      }
+      imported.add(name);
+      if (++k % 3 === 0) await tick();
+    }
+    this.gitCache = {};
+
+    // 2) Diğer cihazların uçları (eskiden yeniye)
+    const heads = [];
+    for (const name of names) {
+      const m = /^heads\/(.+)\.json$/.exec(name);
+      if (!m || m[1] === deviceId) continue;
+      try {
+        const h = JSON.parse(utf8Decode(await store.read(name)));
+        if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0 });
+      } catch (e) {}
+    }
+    heads.sort((a, b) => a.time - b.time);
+    let local = await this.head();
+    let pulled = 0;
+    let conflicts = [];
+    this.pulledCopies = [];
+    const known = [];
+    for (const h of heads) {
+      try {
+        await git.readCommit(this.g({ oid: h.head }));
+      } catch (e) {
+        continue; // paketi henüz yok
+      }
+      known.push(h.head);
+      if (h.head === local) continue;
+      if (local && (await git.isDescendent(this.g({ oid: local, ancestor: h.head, depth: -1 })))) continue;
+      const r = await this.integrate(local, h.head);
+      local = r.local;
+      pulled += r.pulled;
+      conflicts = conflicts.concat(r.conflicts);
+    }
+    conflicts = [...this.pulledCopies, ...conflicts];
+
+    // 3) Yayımla: yalnızca depoda olmayan nesneler tek pakette, sonra kendi uç dosyamız
+    let pushed = false;
+    if (local && !noPush && local !== st.published) {
+      const boundary = [...known, ...(st.published ? [st.published] : [])];
+      const oids = await this.objectsSince(local, boundary);
+      if (oids.length) {
+        const { filename, packfile } = await git.packObjects(this.g({ oids, write: false }));
+        await store.write(`packs/${filename}`, packfile);
+        imported.add(`packs/${filename}`);
+      }
+      await store.write(myHead, utf8Encode(JSON.stringify({ head: local, time: Date.now(), device: deviceName })));
+      st.published = local;
+      pushed = true;
+    }
+    all[store.id] = { imported: [...imported], published: st.published };
+    await writeAtomic(this.backend, stateFile, JSON.stringify(all));
+    return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now() };
+  }
+
+  // head'den ulaşılıp sınır kayıtlarından ulaşılamayan tüm nesneler (kayıt, ağaç, blob)
+  async objectsSince(head, boundary) {
+    const stop = new Set();
+    const stack = [...boundary];
+    while (stack.length) {
+      const oid = stack.pop();
+      if (stop.has(oid)) continue;
+      let c;
+      try {
+        ({ commit: c } = await git.readCommit(this.g({ oid })));
+      } catch (e) {
+        continue;
+      }
+      stop.add(oid);
+      for (const p of c.parent) stack.push(p);
+    }
+    const fresh = [];
+    const seen = new Set();
+    stack.push(head);
+    while (stack.length) {
+      const oid = stack.pop();
+      if (stop.has(oid) || seen.has(oid)) continue;
+      seen.add(oid);
+      const { commit: c } = await git.readCommit(this.g({ oid }));
+      fresh.push({ oid, commit: c });
+      for (const p of c.parent) stack.push(p);
+    }
+    // Depoda zaten olanlar: yeni kayıtların sınırdaki ebeveynlerinin ağaçları
+    const have = new Set();
+    const collect = async (treeOid, into, skip) => {
+      if (into.has(treeOid) || (skip && skip.has(treeOid))) return;
+      into.add(treeOid);
+      const { tree } = await git.readTree(this.g({ oid: treeOid }));
+      for (const e of tree) {
+        if (e.type === 'tree') await collect(e.oid, into, skip);
+        else if (e.type === 'blob' && !(skip && skip.has(e.oid))) into.add(e.oid);
+      }
+    };
+    for (const { commit: c } of fresh) {
+      for (const p of c.parent) {
+        if (!stop.has(p)) continue;
+        const { commit: pc } = await git.readCommit(this.g({ oid: p }));
+        await collect(pc.tree, have, null);
+      }
+    }
+    const out = new Set();
+    let k = 0;
+    for (const { oid, commit: c } of fresh) {
+      out.add(oid);
+      await collect(c.tree, out, have);
+      if (++k % 10 === 0) await tick();
+    }
+    return [...out];
   }
 
   // Klasördeki dosya HEAD halinden farklı mı? (kayıt noktasına girmemiş düzenleme). Okunamıyorsa "farklı".

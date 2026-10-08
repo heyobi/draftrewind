@@ -337,4 +337,4 @@ async function mergeDiverged(project, localOid, remoteOid) {
     return { oid, pulled, conflicts };
 }
 
-module.exports = { startDeviceFlow, waitForToken, refreshIfNeeded, getUser, ensureRepo, sync, api };
+module.exports = { startDeviceFlow, waitForToken, refreshIfNeeded, getUser, ensureRepo, sync, api, applyRemote, mergeDiverged };
