@@ -1,4 +1,4 @@
-// isomorphic-git için pako: tek parça deflate/inflate yerel modülde (arka plan kuyruğu, arayüz donmaz);
+// isomorphic-git için pako: tek parça deflate yerel modülde (arka plan kuyruğu, arayüz donmaz);
 // akış sınıfları (Inflate, Deflate) ve geri kalanı gerçek pako. metro.config.js yalnızca isomorphic-git'in
 // "pako" isteğini buraya yönlendirir. isomorphic-git bu iki işlevi async bir işlevin içinden döndürdüğü
 // için Promise dönmesi sorun değildir.
@@ -46,6 +46,9 @@ export async function nativeZlibStatus() {
 
 const shim = { ...pako };
 shim.deflate = async (buffer) => ((await ready()) ? new Uint8Array(await nativeGit.deflate(toNative(buffer))) : pako.deflate(buffer));
-shim.inflate = async (buffer) => ((await ready()) ? new Uint8Array(await nativeGit.inflate(toNative(buffer))) : pako.inflate(buffer));
+// Açma (inflate) JS'te kalır: isomorphic-git paketteki bir nesneyi açarken paketin o noktadan SONRAKİ
+// tamamını verir ve açıcının akışın bittiği yerde durmasını bekler (pako böyle yapar). Yerel açıcıya bu
+// biçimde veri vermek hem yanlış (akış sonu bilinmez) hem de çok yavaş (her nesnede paketin kalanı kopyalanır).
+shim.inflate = (buffer) => pako.inflate(buffer);
 
 export default shim;
