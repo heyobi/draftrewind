@@ -44,6 +44,7 @@ import { MAX_UPLOAD, fileType, safeName, shareBuffer, pickFiles, takePhotos, pic
 import { isPairLink, decodePairLink } from './src/pair';
 import * as WS from './src/workspace';
 import * as REPO from './src/repo';
+import * as TRASH from './src/trash';
 import * as LOCAL from './src/local';
 import * as IC from './src/icloud';
 import { isSignedIn, previousCopy } from './src/localCore';
@@ -919,6 +920,7 @@ function Root() {
         onGoogle={setGoogle}
         onLogoutGithub={logoutGithub}
         onLogoutGoogle={logoutGoogle}
+        onChanged={() => setSyncTick((n) => n + 1)}
       />
       <BusyHud c={c} text={pairing ? t('pair.connecting') : null} />
     </View>
@@ -1188,11 +1190,47 @@ function Segmented({ c, options, value, onChange }) {
 }
 
 // Ayarlar (profil resmine dokununca): hesaplar + dil + tema
-function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan }) {
+function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan, onChanged }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
   // Senkron motoru öz-testi: geçici klasörlerde çalışır, projelere dokunmaz; rapor paylaşım sayfasıyla gönderilir
   const [engineTest, setEngineTest] = useState(null);
+  // Silinenler (bu cihazdan kaldırılan projeler, 30 gün)
+  const [trash, setTrash] = useState([]);
+  const refreshTrash = () => {
+    try {
+      setTrash(TRASH.listTrash());
+    } catch (e) {
+      setTrash([]);
+    }
+  };
+  useEffect(() => {
+    if (visible) refreshTrash();
+  }, [visible]);
+  const restoreTrash = (item) => {
+    try {
+      const r = REPO.restoreFromTrash(item);
+      success();
+      refreshTrash();
+      if (onChanged) onChanged();
+      Alert.alert(t('trash.restoredTitle'), t('trash.restoredBody', { name: r.name }), [{ text: t('common.ok') }]);
+    } catch (e) {
+      warn();
+      Alert.alert(t('trash.failed'), errText(e), [{ text: t('common.ok') }]);
+    }
+  };
+  const purgeTrash = (item) =>
+    Alert.alert(t('trash.purgeTitle'), t('trash.purgeBody', { name: item.name }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('trash.purge'),
+        style: 'destructive',
+        onPress: () => {
+          TRASH.purge(item.id);
+          refreshTrash();
+        },
+      },
+    ]);
   const runEngineTest = async () => {
     if (engineTest) return;
     setEngineTest(t('settings.engineTestRunning'));
@@ -1355,6 +1393,29 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             </View>
             <Switch value={prefs.autoPush !== false} onValueChange={(autoPush) => onPrefs({ autoPush })} trackColor={{ true: c.accent }} accessibilityLabel={t('settings.autoPush')} testID="auto-push-toggle" />
           </Glass>
+
+          {trash.length ? (
+            <>
+              <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('trash.header')}</Text>
+              {trash.map((item) => (
+                <Glass key={item.id} c={c} style={[s.accountRow, { marginBottom: 8 }]}>
+                  <View style={s.accountIcon}>
+                    <Icon name="trash" size={20} color={c.text3} />
+                  </View>
+                  <View style={s.flex}>
+                    <Text style={{ color: c.text, fontWeight: '700', fontSize: 15.5 }} numberOfLines={1}>{item.name}</Text>
+                    <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{t('trash.daysLeft', { n: item.daysLeft, count: item.daysLeft })}</Text>
+                  </View>
+                  <Pressable onPress={() => restoreTrash(item)} hitSlop={8} accessibilityRole="button" style={{ paddingHorizontal: 8, paddingVertical: 6 }}>
+                    <Text style={{ color: c.accent, fontWeight: '700' }}>{t('trash.restore')}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => purgeTrash(item)} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('trash.purge')} style={{ paddingLeft: 6, paddingVertical: 6 }}>
+                    <Icon name="xmark.bin" size={18} color={c.red} />
+                  </Pressable>
+                </Glass>
+              ))}
+            </>
+          ) : null}
 
           <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.advanced')}</Text>
           <Jelly onPress={runEngineTest} disabled={!!engineTest} scaleTo={0.98} accessibilityLabel={t('settings.engineTest')} testID="engine-test-button">
@@ -2035,6 +2096,29 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
 
   const refreshWs = () => setWs(REPO.status(project));
 
+  // Bu cihazdan kaldır: klasör ve geçmiş Silinenler'e (30 gün); buluttaki kopyalara dokunulmaz
+  const removeHere = () => {
+    const conns = REPO.connectionsOf(project);
+    const cloud = !!(conns.github || conns.drive);
+    Alert.alert(t('trash.removeTitle'), t(cloud ? 'trash.removeCloudBody' : 'trash.removeOnlyBody', { name: project.name }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('trash.remove'),
+        style: 'destructive',
+        onPress: () => {
+          try {
+            REPO.removeFromDevice(project);
+            success();
+            onBack();
+          } catch (e) {
+            warn();
+            Alert.alert(t('trash.failed'), errText(e), [{ text: t('common.ok') }]);
+          }
+        },
+      },
+    ]);
+  };
+
   // Eşitleme: önce bilgisayardan gelenler, sonra bu cihazda değişenler (otomatik gönderim açıksa ya da elle).
   // Aynı anda tek iş; sonuçta geçmiş yenilenir ve kısa bildirim gösterilir.
   const runSync = async ({ manual } = {}) => {
@@ -2456,6 +2540,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
                   {visibleFiles.length ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
                 </>
               )}
+            <RemoveFromDeviceButton c={c} onPress={removeHere} />
           </>
         ) : null}
       </ScrollView>
@@ -2632,6 +2717,15 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
       {row('github', 'chevron.left.forwardslash.chevron.right', conns.github ? `${conns.github.owner}/${conns.github.repo}` : '')}
       {row('drive', 'externaldrive.fill', conns.drive ? `DraftRewind › ${conns.drive.name}` : '')}
     </Glass>
+  );
+}
+
+function RemoveFromDeviceButton({ c, onPress }) {
+  return (
+    <Pressable onPress={onPress} hitSlop={8} accessibilityRole="button" testID="remove-from-device" style={{ alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 34, paddingVertical: 10, paddingHorizontal: 16 }}>
+      <Icon name="trash" size={15} color={c.red} />
+      <Text style={{ color: c.red, fontWeight: '700', fontSize: 14.5 }}>{t('trash.removeAction')}</Text>
+    </Pressable>
   );
 }
 
@@ -3167,6 +3261,26 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
   const isIcloud = project.store === 'icloud';
   const baseName = (path) => path.split('/').pop();
 
+  // Bu cihazdan kaldır (yalnızca bu cihazdaki projede tek kopya budur: 30 gün Silinenler'de bekler)
+  const removeHere = () =>
+    Alert.alert(t('trash.removeTitle'), t('trash.removeOnlyBody', { name: project.name }), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('trash.remove'),
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await LOCAL.removeFromDevice(project);
+            success();
+            onMoved(null);
+          } catch (e) {
+            warn();
+            Alert.alert(t('trash.failed'), friendly(e), [{ text: t('common.ok') }]);
+          }
+        },
+      },
+    ]);
+
   const reload = () => {
     setFiles(LOCAL.listFiles(project));
     return LOCAL.history(project)
@@ -3694,6 +3808,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
                   {visibleFiles.length ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
                 </>
               )}
+            {!isIcloud ? <RemoveFromDeviceButton c={c} onPress={removeHere} /> : null}
           </>
         ) : null}
       </ScrollView>

@@ -16,6 +16,7 @@ import { mirror } from './git/mirror';
 import { historyStore, driveRemote } from './driveSync';
 import * as GH from './github';
 import * as LOCAL from './local';
+import * as TRASH from './trash';
 
 const opened = new Map(); // anahtar → Promise<GitProject>
 
@@ -599,4 +600,29 @@ export async function matchOnDevice(info, candidates) {
     } catch (e) {}
   }
   return null;
+}
+
+// ---------------------------------------------------------------- bu cihazdan kaldırma
+// Klasör ve git geçmişi Silinenler'e (30 gün); bağlantı girişleri silinir → proje "Bulutunda"ya döner.
+// Buluttaki kopyalara dokunulmaz. Geri yüklemede girişler aynen yazılır (bağlantılar geri gelir).
+export function removeFromDevice(p) {
+  const conns = connectionsOf(p);
+  const key = gitKeyOf(p);
+  const entries = [conns.github, conns.drive].filter(Boolean);
+  const states = entries.map((e) => ({ entry: e.driveId ? { kind: 'drive', owner: 'drive', repo: e.driveId, driveId: e.driveId, name: e.name } : { owner: e.owner, repo: e.repo, name: e.name }, state: WS.loadState(e) }));
+  const id = TRASH.moveToTrash({ name: p.name, files: WS.projectDir(p), gitKey: key, meta: { kind: 'cloud', folder: WS.folderName(p), states } });
+  for (const e of entries) {
+    WS.removeState(e);
+    views.delete(repoKey(e));
+  }
+  opened.delete(key);
+  return id;
+}
+
+export function restoreFromTrash(item) {
+  if (item.kind === 'local') return LOCAL.restoreFromTrash(item);
+  const folder = WS.uniqueFolder(item.folder || item.name);
+  const { gitKey } = TRASH.takeOut(item.id, { files: WS.projectDir({ name: folder, folder }) });
+  for (const { entry, state } of item.states || []) WS.saveState(entry, { ...state, folder, gitKey });
+  return { name: item.name };
 }

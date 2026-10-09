@@ -20,6 +20,7 @@ import * as GH from './github';
 import * as IC from './icloud';
 import * as Core from './localCore';
 import * as WS from './workspace';
+import * as TRASH from './trash';
 import { plainBytes } from './bytes';
 
 const { ROOT_FOLDER, claimedFolders } = WS;
@@ -944,4 +945,26 @@ export function attachToDrive(p, folder) {
     safeDelete(stateFile(p));
     return dp;
   });
+}
+
+// Hesapsız projeyi bu cihazdan kaldır: klasör, git geçmişi ve eski kopyalar Silinenler'e (30 gün)
+export function removeFromDevice(p) {
+  return exclusive(p, async () => {
+    const key = usesEngine(p) ? gitKey(p) : null;
+    const id = TRASH.moveToTrash({ name: p.name, files: projectDir(p), history: historyDir(p), gitKey: key, meta: { kind: 'local', folder: p.folder } });
+    safeDelete(stateFile(p));
+    if (key) {
+      engines.delete(key);
+      engineItems.delete(key);
+    }
+    return id;
+  });
+}
+
+export function restoreFromTrash(item) {
+  const folder = WS.uniqueFolder(item.folder || item.name);
+  const p = { id: `local:${folder}`, name: folder, folder, store: 'local' };
+  const { gitKey: key } = TRASH.takeOut(item.id, { files: projectDir(p), history: historyDir(p) });
+  if (key) adoptAsLocal({ folder, name: folder, gitKey: key });
+  return { name: folder };
 }

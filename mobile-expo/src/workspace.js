@@ -488,3 +488,14 @@ export function insideProject(p, uri) {
 }
 
 export const isInboxUri = (uri) => normUri(uri).startsWith(normUri(Paths.document.uri) + '/Inbox/');
+
+// Projeler altında boş bir klasör adı: "Ad", doluysa "Ad (geri yüklendi)", "Ad (geri yüklendi 2)"...
+export function uniqueFolder(name) {
+  const base = safeName(name);
+  if (!new Directory(root(), base).exists) return base;
+  for (let i = 1; i < 100; i++) {
+    const n = `${base} (${t('trash.restoredSuffix')}${i > 1 ? ` ${i}` : ''})`;
+    if (!new Directory(root(), n).exists) return n;
+  }
+  return `${base} ${Date.now()}`;
+}
