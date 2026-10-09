@@ -22,6 +22,8 @@ const ROOT_NAME = 'DraftRewind';
 const VERSIONS = '_Sürümler';
 const MARKER = '.draftrewind-proje.json';
 const HISTORY_DIR = '.draftrewind';
+// "Her yerden sil" kayıtları: DraftRewind kök klasöründe { v, items: [{ id, roots, name, at, device }] }
+const TOMBS = '.draftrewind-silinenler.json';
 const MIME = {
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -282,6 +284,16 @@ class FolderRemote {
         const vDir = path.join(this.dir, VERSIONS, ...rel.split('/').slice(0, -1));
         fs.mkdirSync(vDir, { recursive: true });
         fs.writeFileSync(path.join(vDir, versionName(rel, kind)), buf);
+    }
+
+    // Her yerden silinen projelerin kayıtları (bilgisayardaki Drive klasöründe)
+    async tombstones() {
+        try {
+            const j = JSON.parse(fs.readFileSync(path.join(this.root, ROOT_NAME, TOMBS), 'utf8'));
+            return Array.isArray(j.items) ? j.items : [];
+        } catch (e) {
+            return [];
+        }
     }
 
     // Geçmiş deposu (storeSync): <proje klasörü>/.draftrewind/{packs,heads}. Dosya eşitlemesi bu klasörü
@@ -785,6 +797,20 @@ class ApiRemote {
 
     async version(rel, buf, kind) {
         await this.api.upload({ name: versionName(rel, kind), parentId: await this.versionDir(rel), buf });
+    }
+
+    // Her yerden silinen projelerin kayıtları (Drive'daki DraftRewind kökünde)
+    async tombstones() {
+        try {
+            const root = await this.rootFolder();
+            const found = await this.api.query(`'${root.id}' in parents and trashed=false and name='${TOMBS}'`, 'files(id,createdTime)');
+            if (!found.length) return [];
+            const buf = await this.api.req('GET', `https://www.googleapis.com/drive/v3/files/${found[0].id}?alt=media`, { raw: true });
+            const j = JSON.parse(Buffer.from(buf).toString('utf8'));
+            return Array.isArray(j.items) ? j.items : [];
+        } catch (e) {
+            return [];
+        }
     }
 
     // Geçmiş deposu (storeSync) Drive'da: <proje klasörü>/.draftrewind/{packs,heads}. İki cihaz klasörü

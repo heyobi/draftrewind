@@ -894,3 +894,10 @@ kbd { background: var(--surface-2); border: 1px solid var(--border); border-radi
 .onb-cloud p { color: var(--text-2); margin: 0 0 14px; }
 .onb-cloud .cta { justify-content: flex-start; margin-bottom: 14px; }
 .onb-cloud .btn svg { width: 16px; height: 16px; vertical-align: -3px; }
+
+/* Başka cihazda silinmiş / buluttaki kopyası silinmiş proje */
+.gone-banner { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; margin-bottom: 16px; border-radius: 16px; background: color-mix(in srgb, var(--red, #ef4444) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--red, #ef4444) 35%, transparent); }
+.gone-banner .gb-ic svg { width: 22px; height: 22px; color: var(--red, #ef4444); }
+.gone-banner .gb-txt { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 3px; }
+.gone-banner .gb-txt span { color: var(--text-2); font-size: 13px; }
+.gone-banner .gb-actions { display: flex; gap: 8px; }

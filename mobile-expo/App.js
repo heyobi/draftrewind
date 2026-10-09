@@ -1759,6 +1759,25 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
     }
     onOpen({ type: 'drive', folder: f });
   };
+  const tombChecked = useRef(0);
+  useEffect(() => {
+    if (!drive || driveList === null || ghToken && ghList === null) return;
+    if (Date.now() - tombChecked.current < 5 * 60 * 1000) return;
+    tombChecked.current = Date.now();
+    const candidates = [
+      ...(ghList || []).filter((p) => REPO.onDevice(p)).map((p) => ({ kind: 'gh', project: p })),
+      ...(driveList || []).map((f) => ({ kind: 'drive', project: { kind: 'drive', owner: 'drive', repo: f.id, driveId: f.id, name: f.name } })).filter((x) => REPO.onDevice(x.project)),
+      ...(localList || []).filter((x) => x.store === 'local').map((x) => ({ kind: 'local', project: x })),
+    ];
+    REPO.applyTombstones(drive, candidates)
+      .then((names) => {
+        if (!names.length) return;
+        Alert.alert(t('trash.elsewhereTitle'), t('trash.elsewhereBody', { names: names.join(', ') }), [{ text: t('common.ok') }]);
+        load();
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drive, driveList, ghList, localList]);
   const byTime = (a, b) => (b.time || 0) - (a.time || 0);
   const hereRows = [...ghRows, ...driveRows].filter((r) => r.onDevice).sort(byTime);
   const cloudRows = [...ghRows, ...driveRows].filter((r) => !r.onDevice).sort(byTime);
@@ -2096,12 +2115,60 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
 
   const refreshWs = () => setWs(REPO.status(project));
 
+  // GitHub'daki depo silinmiş (başka cihazdan ya da GitHub'dan): bu cihazda ne yapılacağı sorulur
+  const askRepoGone = () => {
+    const conns = REPO.connectionsOf(project);
+    Alert.alert(t('gone.ghTitle'), t(conns.drive ? 'gone.ghBodyDrive' : 'gone.ghBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      conns.drive
+        ? { text: t('conn.disconnect'), onPress: () => (REPO.disconnect(project, 'github'), project.kind === 'drive' ? null : onBack()) }
+        : { text: t('conn.keepLocal'), onPress: () => (REPO.keepLocalOnly(project), onBack()) },
+      { text: t('trash.removeAction'), style: 'destructive', onPress: () => (REPO.removeFromDevice(project), onBack()) },
+    ]);
+  };
+
   // Bu cihazdan kaldır: klasör ve geçmiş Silinenler'e (30 gün); buluttaki kopyalara dokunulmaz
   const removeHere = () => {
     const conns = REPO.connectionsOf(project);
     const cloud = !!(conns.github || conns.drive);
+    const everywhere = () =>
+      Alert.prompt(
+        t('trash.everywhereTitle'),
+        t('trash.everywhereBody', { name: project.name }),
+        [
+          { text: t('common.cancel'), style: 'cancel' },
+          {
+            text: t('trash.everywhereConfirm'),
+            style: 'destructive',
+            onPress: async (typed) => {
+              if (String(typed || '').trim() !== String(project.name).trim()) return Alert.alert(t('conn.nameMismatchTitle'), t('trash.nameMismatch'), [{ text: t('common.ok') }]);
+              setBusy(t('trash.deleting'));
+              try {
+                const r = await REPO.deleteEverywhere(project);
+                setBusy(null);
+                success();
+                const gh = r.notes.find((x) => x.settingsUrl);
+                const dr = r.notes.find((x) => x.openUrl);
+                if (gh || dr)
+                  Alert.alert(t('trash.partialTitle'), t('trash.partialBody'), [
+                    { text: t('common.ok'), style: 'cancel' },
+                    gh && { text: t('conn.openSettings'), onPress: () => Linking.openURL(gh.settingsUrl).catch(() => {}) },
+                    dr && { text: t('conn.openDrive'), onPress: () => Linking.openURL(dr.openUrl).catch(() => {}) },
+                  ].filter(Boolean));
+                onBack();
+              } catch (e) {
+                setBusy(null);
+                warn();
+                Alert.alert(t('trash.failed'), errText(e), [{ text: t('common.ok') }]);
+              }
+            },
+          },
+        ],
+        'plain-text'
+      );
     Alert.alert(t('trash.removeTitle'), t(cloud ? 'trash.removeCloudBody' : 'trash.removeOnlyBody', { name: project.name }), [
       { text: t('common.cancel'), style: 'cancel' },
+      cloud && { text: t('trash.everywhere'), style: 'destructive', onPress: everywhere },
       {
         text: t('trash.remove'),
         style: 'destructive',
@@ -2116,7 +2183,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
           }
         },
       },
-    ]);
+    ].filter(Boolean));
   };
 
   // Eşitleme: önce bilgisayardan gelenler, sonra bu cihazda değişenler (otomatik gönderim açıksa ya da elle).
@@ -2139,6 +2206,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     } catch (e) {
       warn();
       if (e && e.auth) onAuthError();
+      else if (e && e.repoGone) askRepoGone();
       else if (!(await REPO.ready(project).catch(() => false))) setError(t('ws.firstSyncFailed', { error: errText(e) }));
       else if (manual) Alert.alert(t('ws.pushFailedTitle'), errText(e), [{ text: t('common.ok') }]);
     } finally {

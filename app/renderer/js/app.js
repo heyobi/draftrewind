@@ -549,10 +549,16 @@
         const cloud = ov.cloud;
         const gh = S.app.github.connected;
         const dr = S.app.drive.mode;
+        // Başka cihazda her yerden silinmiş / buluttaki kopyası silinmiş proje: kullanıcıya sorulur
+        const goneKey = cloud && (cloud.deletedElsewhere ? 'gone.elsewhere' : cloud.githubOff && cloud.driveOff ? 'gone.both' : cloud.githubOff ? 'gone.github' : cloud.driveOff ? 'gone.drive' : null);
+        const goneBanner = goneKey
+            ? `<div class="gone-banner"><div class="gb-ic">${ic('trash')}</div><div class="gb-txt"><b>${t(goneKey + '.title')}</b><span>${t(goneKey + '.text')}</span></div>
+                <div class="gb-actions"><button class="btn danger" data-action="gone-remove">${t('gone.remove')}</button><button class="btn" data-action="gone-keep">${t('gone.keep')}</button></div></div>`
+            : '';
         // Yalnızca bu bilgisayarda olan dosyalar (yol dizisi ya da { rel, … } nesneleri)
         const unprotected = (Array.isArray(ov.unprotected) ? ov.unprotected : []).map(u => (typeof u === 'string' ? u : u && u.rel)).filter(Boolean);
 
-        return `<div class="content">
+        return `<div class="content">${goneBanner}
             <div class="greeting"><h2>${greeting()}${firstName ? `, ${esc(firstName)}` : ''}</h2><p>${motivation(st, goal)}</p></div>
 
             ${dismissed().guide ? '' : `<div class="card guide">
@@ -1856,6 +1862,19 @@
             const ok = await confirmModal({ title: t('driveLogout.title'), text: t('driveLogout.text'), ok: t('cloud.disconnect'), danger: true, emoji: 'drive' });
             if (!ok) return;
             await run(() => av.drive.disconnect());
+            refresh();
+        },
+        'gone-remove': async () => {
+            const ok = await confirmModal({ title: t('gone.removeTitle'), text: t('gone.removeText'), ok: t('gone.remove'), danger: true, emoji: 'trash' });
+            if (!ok) return;
+            await run(() => av.projects.remove(S.activeId));
+            S.activeId = null;
+            S.overview = null;
+            refresh();
+        },
+        'gone-keep': async () => {
+            const r = await run(() => av.projects.keep(S.activeId));
+            if (r) toast(t('gone.kept'), 'check', 4500);
             refresh();
         },
         'drive-reupload': async () => {

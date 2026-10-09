@@ -394,6 +394,26 @@ function deviceId() {
     return id;
 }
 
+// "Her yerden sil" kayıtları birkaç dakikada bir okunur; projenin kimliği (kök kayıtlar) eşleşirse eşitleme
+// durur ve projede uyarı çıkar. Bilgisayardaki klasöre (kullanıcının dosyaları) asla kendiliğinden dokunulmaz.
+let tombCache = { at: 0, items: [] };
+async function deletedElsewhere(rt, remote, record) {
+    if (!remote.tombstones) return false;
+    if (Date.now() - tombCache.at > 3 * 60 * 1000) tombCache = { at: Date.now(), items: await remote.tombstones() };
+    if (!tombCache.items.length) return false;
+    const roots = await storeSync.rootsOf(rt.project.gitdir, await rt.project.head());
+    const ignore = new Set(record.ignoreTombs || []);
+    const hit = tombCache.items.find(x => x && !ignore.has(x.id) && Array.isArray(x.roots) && x.roots.some(r => roots.includes(r)));
+    if (!hit) return false;
+    const fresh = recordOf(rt.project.id);
+    if (!fresh) return true;
+    fresh.deletedElsewhere = { id: hit.id, at: hit.at || Date.now(), device: hit.device || '' };
+    saveProjectRecord(fresh);
+    emit('toast', { icon: 'trash', text: T('main.deletedElsewhereToast', { name: fresh.name }) });
+    emit('cloud', { projectId: rt.project.id });
+    return true;
+}
+
 // Drive ile çift yönlü eşitleme (Drive'da yapılan düzenlemeler de bilgisayara gelir)
 function driveRemote() {
     const d = store.get('drive', {});
@@ -408,7 +428,8 @@ async function syncDrive(rt, kind = 'auto') {
     const record = recordOf(rt.project.id);
     if (!remote || !record) return;
     // Drive'daki klasörü silinmiş proje: kullanıcı "Drive'a yeniden yükle" diyene kadar eşitlenmez
-    if (record.driveOff) return;
+    if (record.driveOff || record.deletedElsewhere) return;
+    if (await deletedElsewhere(rt, remote, record)) return;
     rt.driveBusy = true;
     let result = null;
     try {
@@ -506,6 +527,8 @@ async function runSync(rt) {
         emit('cloud', { projectId: rt.project.id });
     }
     if (!token || rt.missing) return;
+    const rec0 = recordOf(rt.project.id);
+    if (rec0 && (rec0.githubOff || rec0.deletedElsewhere)) return;
     if (rt.syncing) return scheduleSync(rt, 10000);
     rt.syncing = true;
     emit('cloud', { projectId: rt.project.id, syncing: true });
@@ -536,10 +559,11 @@ async function runSync(rt) {
     } catch (e) {
         record = recordOf(rt.project.id);
         if (record && e && e.code === 'EGHREPO') {
-            // Depo GitHub'da silinmiş: bir sonrakinde yeniden oluşturulur, tüm geçmiş yeniden gönderilir
+            // Depo GitHub'da silinmiş (bilerek de olabilir): yeniden oluşturulmaz, eşitleme durur, projede sorulur
+            record.githubOff = true;
             record.github = null;
             record.githubOid = undefined;
-            scheduleSync(rt, 8000);
+            emit('toast', { icon: 'github', text: T('main.ghGoneToast', { name: record.name }) });
         }
         if (e && e.code === 'EGHAUTH') {
             store.set('githubNeedsLogin', true);
@@ -814,7 +838,9 @@ function cloudInfo(record, rt) {
         driveUrl: record.driveUrl || null,
         driveAt: record.driveAt || null,
         driveError: record.driveError || null,
-        driveOff: !!record.driveOff
+        driveOff: !!record.driveOff,
+        githubOff: !!record.githubOff,
+        deletedElsewhere: record.deletedElsewhere || null
     };
 }
 
@@ -1076,6 +1102,19 @@ function registerIpc() {
         stopProject(id);
         store.set('projects', projects().filter(p => p.id !== id));
         if (store.get('activeId') === id) store.set('activeId', projects()[0] ? projects()[0].id : null);
+        return true;
+    });
+
+    handle('project:keep', async id => {
+        const r = recordOf(id);
+        if (!r) throw new Error(T('err.projectNotFound'));
+        const ignore = new Set(r.ignoreTombs || []);
+        if (r.deletedElsewhere && r.deletedElsewhere.id) ignore.add(r.deletedElsewhere.id);
+        Object.assign(r, { ignoreTombs: [...ignore], deletedElsewhere: undefined, driveOff: false, githubOff: false, driveError: null, syncError: null, driveFolderId: undefined, driveFolderName: undefined, driveState: undefined, driveUrl: undefined });
+        saveProjectRecord(r);
+        const rt = rtOf(id);
+        syncDrive(rt, 'star').catch(() => {});
+        scheduleSync(rt, 1000);
         return true;
     });
 

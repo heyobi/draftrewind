@@ -948,10 +948,10 @@ export function attachToDrive(p, folder) {
 }
 
 // Hesapsız projeyi bu cihazdan kaldır: klasör, git geçmişi ve eski kopyalar Silinenler'e (30 gün)
-export function removeFromDevice(p) {
+export function removeFromDevice(p, { tomb } = {}) {
   return exclusive(p, async () => {
     const key = usesEngine(p) ? gitKey(p) : null;
-    const id = TRASH.moveToTrash({ name: p.name, files: projectDir(p), history: historyDir(p), gitKey: key, meta: { kind: 'local', folder: p.folder } });
+    const id = TRASH.moveToTrash({ name: p.name, files: projectDir(p), history: historyDir(p), gitKey: key, meta: { kind: 'local', folder: p.folder, tomb: tomb || null } });
     safeDelete(stateFile(p));
     if (key) {
       engines.delete(key);

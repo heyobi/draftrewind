@@ -124,3 +124,33 @@ export function driveRemote(drive, folderId) {
     },
   };
 }
+
+// ---------------------------------------------------------------- "her yerden sil" kayıtları
+// DraftRewind kök klasöründe { v: 1, items: [{ id, roots, name, at, device }] } (masaüstüyle aynı biçim)
+const TOMBS = '.draftrewind-silinenler.json';
+async function rootFolderId(drive) {
+  const q = `mimeType='${FOLDER_MIME}' and trashed=false and 'root' in parents and name='DraftRewind'`;
+  const found = (await drive.query(q, 'files(id,createdTime)')).sort(byCreated);
+  return found.length ? found[0].id : null;
+}
+
+export async function readTombstones(drive) {
+  const root = await rootFolderId(drive);
+  if (!root) return { root: null, fileId: null, items: [] };
+  const f = (await drive.query(`'${root}' in parents and trashed=false and name='${TOMBS}'`, 'files(id,createdTime)')).sort(byCreated)[0];
+  if (!f) return { root, fileId: null, items: [] };
+  try {
+    const j = JSON.parse(new TextDecoder().decode(new Uint8Array(await drive.download(f.id))));
+    return { root, fileId: f.id, items: Array.isArray(j.items) ? j.items : [] };
+  } catch (e) {
+    return { root, fileId: f.id, items: [] };
+  }
+}
+
+export async function addTombstone(drive, item) {
+  const cur = await readTombstones(drive);
+  const root = cur.root || (await drive.createFolder('DraftRewind', null)).id;
+  const items = [...cur.items.filter((x) => x && x.id !== item.id), item].slice(-200);
+  const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, items }));
+  await drive.put({ id: cur.fileId, name: TOMBS, parentId: root, bytes, mimeType: 'application/json' });
+}

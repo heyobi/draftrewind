@@ -13,7 +13,7 @@ import * as WS from './workspace';
 import { safeName, uniqueName, readBytes, PHONE_FOLDER } from './files';
 import { t } from './i18n';
 import { mirror } from './git/mirror';
-import { historyStore, driveRemote } from './driveSync';
+import { historyStore, driveRemote, readTombstones, addTombstone } from './driveSync';
 import * as GH from './github';
 import * as LOCAL from './local';
 import * as TRASH from './trash';
@@ -605,12 +605,12 @@ export async function matchOnDevice(info, candidates) {
 // ---------------------------------------------------------------- bu cihazdan kaldırma
 // Klasör ve git geçmişi Silinenler'e (30 gün); bağlantı girişleri silinir → proje "Bulutunda"ya döner.
 // Buluttaki kopyalara dokunulmaz. Geri yüklemede girişler aynen yazılır (bağlantılar geri gelir).
-export function removeFromDevice(p) {
+export function removeFromDevice(p, { tomb } = {}) {
   const conns = connectionsOf(p);
   const key = gitKeyOf(p);
   const entries = [conns.github, conns.drive].filter(Boolean);
   const states = entries.map((e) => ({ entry: e.driveId ? { kind: 'drive', owner: 'drive', repo: e.driveId, driveId: e.driveId, name: e.name } : { owner: e.owner, repo: e.repo, name: e.name }, state: WS.loadState(e) }));
-  const id = TRASH.moveToTrash({ name: p.name, files: WS.projectDir(p), gitKey: key, meta: { kind: 'cloud', folder: WS.folderName(p), states } });
+  const id = TRASH.moveToTrash({ name: p.name, files: WS.projectDir(p), gitKey: key, meta: { kind: 'cloud', folder: WS.folderName(p), states, tomb: tomb || null } });
   for (const e of entries) {
     WS.removeState(e);
     views.delete(repoKey(e));
@@ -620,9 +620,68 @@ export function removeFromDevice(p) {
 }
 
 export function restoreFromTrash(item) {
+  ignoreTomb(item.tomb);
   if (item.kind === 'local') return LOCAL.restoreFromTrash(item);
   const folder = WS.uniqueFolder(item.folder || item.name);
   const { gitKey } = TRASH.takeOut(item.id, { files: WS.projectDir({ name: folder, folder }) });
   for (const { entry, state } of item.states || []) WS.saveState(entry, { ...state, folder, gitKey });
   return { name: item.name };
+}
+
+// ---------------------------------------------------------------- her yerden sil
+// Buluttaki kopyalar silinir (Drive klasörü çöpe, GitHub deposu silinir), Drive'a "silindi" kaydı bırakılır
+// (diğer cihazlar kendi kopyalarını kaldırsın), sonra bu cihazdaki kopya Silinenler'e (30 gün).
+// Dönen: { notes: [{ settingsUrl } | { openUrl }] } — izin vermeyen bulutlar için kullanıcıya yol
+export async function deleteEverywhere(p) {
+  const conns = connectionsOf(p);
+  const r = await repoFor(p);
+  const roots = await r.roots();
+  const notes = [];
+  if (auth.drive && roots.length) {
+    try {
+      await addTombstone(auth.drive, { id: `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, roots, name: p.name, at: Date.now(), device: author().name });
+    } catch (e) {}
+  }
+  if (conns.drive && auth.drive) {
+    const res = await deleteRemote('drive', conns.drive, { drive: auth.drive });
+    if (!res.done) notes.push(res);
+  }
+  if (conns.github && auth.github) {
+    const res = await deleteRemote('github', conns.github, { token: auth.github });
+    if (!res.done) notes.push(res);
+  }
+  removeFromDevice(p);
+  return { notes };
+}
+
+// Başka cihazda "her yerden silinen" projeler: bu cihazdaki kopyası Silinenler'e (30 gün, geri yüklenebilir).
+// candidates: [{ kind: 'gh' | 'drive' | 'local', project }]. Geri yüklenen projenin kaydı bir daha uygulanmaz.
+// Dönen: kaldırılan proje adları
+export async function applyTombstones(drive, candidates) {
+  const { items } = await readTombstones(drive);
+  if (!items.length) return [];
+  const flags = WS.loadFlags();
+  const ignore = new Set(flags.ignoredTombs || []);
+  const fresh = items.filter((x) => x && x.id && !ignore.has(x.id) && Array.isArray(x.roots) && x.roots.length);
+  if (!fresh.length) return [];
+  const removed = [];
+  for (const c of candidates) {
+    try {
+      const r = c.kind === 'local' ? await LOCAL.engineOf(c.project) : await repoFor(c.project);
+      const roots = await r.roots();
+      const hit = fresh.find((x) => x.roots.some((y) => roots.includes(y)));
+      if (!hit) continue;
+      if (c.kind === 'local') await LOCAL.removeFromDevice(c.project, { tomb: hit.id });
+      else removeFromDevice(c.project, { tomb: hit.id });
+      removed.push(c.project.name);
+    } catch (e) {}
+  }
+  return removed;
+}
+
+// Silinenler'den geri yüklenen projenin "silindi" kaydı bu cihazda artık uygulanmaz
+export function ignoreTomb(id) {
+  if (!id) return;
+  const flags = WS.loadFlags();
+  WS.saveFlags({ ...flags, ignoredTombs: [...new Set([...(flags.ignoredTombs || []), id])].slice(-200) });
 }
