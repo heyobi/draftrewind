@@ -134,7 +134,9 @@ function codedError(code, message, cause) {
 
 // ---------------------------------------------------------------- proje
 export class GitProject {
-  constructor({ backend, gitdir, dir, id, name, author, t, maxFileBytes }) {
+  // prepareRead(absPath) → boolean: okumadan önce (ör. iCloud'dan indir); false ise dosyanın eski hali korunur
+  constructor({ backend, gitdir, dir, id, name, author, t, maxFileBytes, prepareRead }) {
+    this.prepareRead = prepareRead || null;
     this.backend = backend;
     this.fs = createFs(backend);
     this.gitdir = normPath(gitdir);
@@ -275,6 +277,13 @@ export class GitProject {
           if (ignoredDir(name)) continue;
           await walk(full, r, rr);
         } else {
+          // iCloud'da henüz bu cihaza inmemiş dosya: ".Ad.uzantı.icloud" yer tutucusu. Silinmiş SAYILMAZ:
+          // geçmişteki hali korunur (atlananlar gibi)
+          const ph = /^.(.+).icloud$/.exec(name);
+          if (ph) {
+            skipped.push({ path: rel ? `${rel}/${nfc(ph[1])}` : nfc(ph[1]), reason: 'notDownloaded' });
+            continue;
+          }
           if (ignoredFile(name)) continue;
           if (st.size > this.maxFileBytes) {
             skipped.push({ path: r, reason: 'tooBig', size: st.size });
@@ -435,6 +444,19 @@ export class GitProject {
         tree.set(rel, c.oid);
         nextCache[rel] = c;
         continue;
+      }
+      if (this.prepareRead) {
+        let ready = false;
+        try {
+          ready = await this.prepareRead(this.work(rel));
+        } catch (e) {
+          ready = false;
+        }
+        if (!ready) {
+          // İndirilemedi: bu kayıtta eski hali kalsın, sonra tekrar denenir
+          if (headOid) tree.set(rel, headOid);
+          continue;
+        }
       }
       let bytes;
       try {
@@ -1123,8 +1145,8 @@ export async function importLocalLog(project, { records, readCopy }) {
 }
 
 // Projeyi açar (yoksa git init, dal 'main'); bozuk ref günlükten onarılır.
-export async function openProject({ backend, gitdir, dir, id, name, author, t, maxFileBytes }) {
-  const p = new GitProject({ backend, gitdir, dir, id, name, author, t, maxFileBytes });
+export async function openProject({ backend, gitdir, dir, id, name, author, t, maxFileBytes, prepareRead }) {
+  const p = new GitProject({ backend, gitdir, dir, id, name, author, t, maxFileBytes, prepareRead });
   await p.open();
   return p;
 }

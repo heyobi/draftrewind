@@ -3378,7 +3378,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
 
   // Bu cihazdan kaldır (yalnızca bu cihazdaki projede tek kopya budur: 30 gün Silinenler'de bekler)
   const removeHere = () =>
-    Alert.alert(t('trash.removeTitle'), t('trash.removeOnlyBody', { name: project.name }), [
+    Alert.alert(t('trash.removeTitle'), t(isIcloud ? 'trash.removeIcloudBody' : 'trash.removeOnlyBody', { name: project.name }), [
       { text: t('common.cancel'), style: 'cancel' },
       {
         text: t('trash.remove'),
@@ -3923,7 +3923,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
                   {visibleFiles.length ? <Text style={{ color: c.text3, fontSize: 12, textAlign: 'center', marginTop: 16 }}>{t('docs.longPressHint')}</Text> : null}
                 </>
               )}
-            {!isIcloud ? <RemoveFromDeviceButton c={c} onPress={removeHere} /> : null}
+            {!gone ? <RemoveFromDeviceButton c={c} onPress={removeHere} /> : null}
           </>
         ) : null}
       </ScrollView>

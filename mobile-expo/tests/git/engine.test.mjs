@@ -232,3 +232,28 @@ test('history(known): yalnızca yeni kayıtlar okunur, sonuç tam okumayla aynı
   const fake = [{ ...known[0], oid: 'f'.repeat(40) }, ...known.slice(1)];
   assert.deepEqual((await p.history({ limit: 100, known: fake })).map((x) => x.oid), full.map((x) => x.oid));
 });
+
+test('iCloud yer tutucusu (.Ad.icloud) silinmiş sayılmaz; okunamayan dosyanın eski hali korunur', async () => {
+  const root = h.tmpDir('drw-icl-');
+  let allow = true;
+  const p = await openProject({ backend: backendNode(), gitdir: path.join(root, 'git'), dir: path.join(root, 'Tez'), id: 'i', name: 'Tez', prepareRead: async () => allow });
+  const w = (rel, data) => h.write(path.join(p.dir, ...rel.split('/')), data);
+  w('tez.docx', 'ilk');
+  w('Bölüm/not.txt', 'not');
+  await p.snapshot();
+  // tez.docx bu cihazdan "kaldırıldı" (iCloud yalnızca yer tutucu bıraktı)
+  fs.rmSync(path.join(p.dir, 'tez.docx'));
+  w('.tez.docx.icloud', 'yer tutucu');
+  w('Bölüm/not.txt', 'not değişti');
+  const s = await p.snapshot();
+  assert.deepEqual(s.deleted, []);
+  assert.deepEqual(s.changed, ['Bölüm/not.txt']);
+  assert.equal(txt(await p.readAt(s.oid, 'tez.docx')), 'ilk');
+  // İndirilemeyen (prepareRead false) dosya: değişmiş görünse de eski hali kalır, kayıt alınmaz
+  allow = false;
+  w('Bölüm/not.txt', 'yine değişti');
+  assert.equal(await p.snapshot(), null);
+  allow = true;
+  const s2 = await p.snapshot();
+  assert.deepEqual(s2.changed, ['Bölüm/not.txt']);
+});

@@ -12,7 +12,7 @@
 // atomik yazılır; son 60 sn içinde değişmiş dosyanın üzerine geri yükleme yapılmaz.
 import { Directory, File, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
-import { openProject, backendExpo, ensureGitRoot, uriToPath, pathToUri, defaultT } from './git';
+import { openProject, backendExpo, ensureGitRoot, uriToPath, defaultT } from './git';
 import { MAX_UPLOAD, fileType, safeName, uniqueName } from './files';
 import { t, lang } from './i18n';
 import { countWords, countsWords, classifyChanges, ignoredName, recentlyTouched, buildMessage } from './wsCore';
@@ -555,6 +555,7 @@ function listAll(dir, prefix, out) {
 async function moveOne(src, root) {
   // Önce son hal kaydedilsin (taşıma sırasında değişiklik kaybolmasın)
   const engine = usesEngine(src);
+  const srcKey = engine ? gitKey(src) : null;
   if (engine) await engineSnapshot(src, {});
   else await doSnapshot(src);
   const folder = await uniqueName(src.folder, async (n) => new Directory(root, n).exists);
@@ -635,7 +636,12 @@ async function moveOne(src, root) {
   safeDelete(srcDir);
   safeDelete(historyDir(src));
   safeDelete(stateFile(src));
-  if (engine) dropEngine(src);
+  if (engine) {
+    // Aynı git deposu iCloud projesinin olur; geçmiş ilk açılışta .draftrewind'e yayımlanır
+    saveState(dst, { ...loadState(dst), gitKey: srcKey });
+    engines.delete(srcKey);
+    engineItems.delete(srcKey);
+  }
   return dst;
 }
 
@@ -763,8 +769,65 @@ export function moveToDrive(drive, p, onProgress) {
 
 // ---------------------------------------------------------------- git motoru (hesapsız projeler)
 // iCloud projeleri şimdilik kopya düzeninde: _Sürümler başka cihazlardan (masaüstü) de okunuyor.
-export const usesEngine = (p) => p.store === 'local';
-const gitKey = (p) => loadState(p).gitKey || `local-${safeName(p.folder)}`;
+export const usesEngine = (p) => p.store === 'local' || p.store === 'icloud';
+const gitKey = (p) => loadState(p).gitKey || `${p.store === 'icloud' ? 'icloud' : 'local'}-${safeName(p.folder)}`;
+
+// Bu cihazın kalıcı kimliği (repo.js'teki deviceId ile aynı bayrak)
+function localDeviceId() {
+  const flags = WS.loadFlags();
+  if (flags.deviceId) return flags.deviceId;
+  const id = `tel-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  WS.saveFlags({ ...flags, deviceId: id });
+  return id;
+}
+const localDeviceName = () => (Platform.isPad ? 'iPad' : 'iPhone');
+
+// iCloud projesinin geçmiş deposu: <proje klasörü>/.draftrewind/{packs,heads} (masaüstündeki klasör moduyla
+// aynı düzen). iCloud henüz indirmediyse ".ad.icloud" yer tutucusu görünür: adı düzeltilir, okurken indirilir.
+function icloudStore(p) {
+  const base = new Directory(projectDir(p), '.draftrewind');
+  const real = (n) => {
+    const m = /^\.(.+)\.icloud$/.exec(n);
+    return m ? m[1] : n;
+  };
+  return {
+    id: 'icloud',
+    async list() {
+      const out = new Set();
+      for (const sub of ['packs', 'heads']) {
+        const d = new Directory(base, sub);
+        if (!d.exists) continue;
+        for (const it of d.list()) {
+          if (it instanceof Directory || !it.name || it.name.endsWith('.tmp')) continue;
+          out.add(`${sub}/${real(it.name)}`);
+        }
+      }
+      return [...out];
+    },
+    async read(name) {
+      const [sub, n] = name.split('/');
+      const f = new File(new Directory(base, sub), n);
+      if (!(await IC.ensureDownloaded(f, 15000))) return null;
+      return f.exists ? f.bytes() : null;
+    },
+    async write(name, bytes) {
+      const [sub, n] = name.split('/');
+      const d = new Directory(base, sub);
+      d.create({ intermediates: true, idempotent: true });
+      atomicWrite(new File(d, n), bytes);
+    },
+  };
+}
+
+// iCloud: diğer Apple cihazların kayıtları alınır, bu cihazınkiler yayımlanır (hata eşitlemeyi durdurmaz)
+async function shareIcloudHistory(p, r, opts = {}) {
+  if (p.store !== 'icloud') return null;
+  try {
+    return await r.syncStore({ store: icloudStore(p), deviceId: localDeviceId(), deviceName: localDeviceName(), ...opts });
+  } catch (e) {
+    return null;
+  }
+}
 const gitdirOf = (p) => `${ensureGitRoot()}/${gitKey(p)}`;
 const engines = new Map(); // anahtar → Promise<GitProject>
 const engineItems = new Map(); // anahtar → son okunan geçmiş (motor biçimi; artımlı okuma için)
@@ -789,7 +852,14 @@ function engineFor(p) {
         name: p.name,
         author: { name: Platform.isPad ? 'iPad' : 'iPhone', email: 'telefon@draftrewind.local' },
         t: ET,
+        prepareRead: p.store === 'icloud' ? (abs) => IC.ensureDownloaded(new File(IC.pathToUri(abs)), 8000) : null,
       });
+      if (!(await r.head()) && p.store === 'icloud') {
+        // Başka bir Apple cihaz bu projenin geçmişini zaten oluşturduysa aynı geçmişe katıl (iki ayrı geçmiş olmasın)
+        try {
+          if ((await icloudStore(p).list()).some((n) => n.startsWith('heads/'))) await shareIcloudHistory(p, r, { noPush: true });
+        } catch (e) {}
+      }
       if (!(await r.head())) await migrateLog(p, r);
       return r;
     })();
@@ -797,13 +867,6 @@ function engineFor(p) {
     engines.set(key, job);
   }
   return job;
-}
-
-function dropEngine(p) {
-  const key = gitKey(p);
-  engines.delete(key);
-  engineItems.delete(key);
-  safeDelete(new Directory(pathToUri(gitdirOf(p))));
 }
 
 // Eski düzenin kayıtları (log.json + ws-history kopyaları) git geçmişine; kopyalar yerinde kalır
@@ -852,11 +915,13 @@ export async function history(p) {
 }
 
 async function engineSnapshot(p, { kind = 'auto', title, force = false } = {}) {
+  await assertStore(p);
   const dir = projectDir(p);
   if (!dir.exists) return { record: null, merged: false, skipped: [] };
   const r = await engineFor(p);
   const res = await r.snapshot({ kind, title, force });
-  const skipped = r.skipped || [];
+  await shareIcloudHistory(p, r);
+  const skipped = (r.skipped || []).filter((x) => x.reason !== 'notDownloaded');
   if (!res) return { record: null, merged: false, skipped };
   const st = loadState(p);
   saveState(p, { ...st, engineModified: Date.now(), engineCount: (st.engineCount || (await r.history({ limit: 2000 })).length - 1) + 1, created: st.created || Date.now() });
