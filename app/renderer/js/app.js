@@ -168,16 +168,26 @@
         if (back._onClose) back._onClose();
         back.remove();
     }
-    function confirmModal({ title, text, ok = t('common.ok'), danger = false, emoji = 'help' }) {
+    // typeToConfirm: verilirse kullanıcı bu metni (ör. proje adı) yazmadan onay düğmesi açılmaz
+    function confirmModal({ title, text, ok = t('common.ok'), danger = false, emoji = 'help', typeToConfirm = null }) {
         return new Promise(resolve => {
             let answered = false;
             const m = openModal(
                 `<div class="modal-ic${danger ? ' danger' : ''}">${ic(emoji)}</div><h2>${esc(title)}</h2><p class="sub">${text}</p>
+                ${typeToConfirm ? `<input class="input" id="confirm-type" placeholder="${esc(typeToConfirm)}" spellcheck="false" autocomplete="off">` : ''}
                 <div class="foot"><button class="btn ghost" data-x="no">${t('common.cancel')}</button><button class="btn ${danger ? 'danger' : 'primary'}" data-x="yes">${esc(ok)}</button></div>`,
                 { onClose: () => !answered && resolve(false) }
             );
             m.querySelector('[data-x=no]').onclick = () => closeModal();
-            m.querySelector('[data-x=yes]').onclick = () => {
+            const yes = m.querySelector('[data-x=yes]');
+            if (typeToConfirm) {
+                const inp = m.querySelector('#confirm-type');
+                yes.disabled = true;
+                inp.oninput = () => (yes.disabled = inp.value.trim() !== String(typeToConfirm).trim());
+                setTimeout(() => inp.focus(), 50);
+            }
+            yes.onclick = () => {
+                if (yes.disabled) return;
                 answered = true;
                 closeModal();
                 resolve(true);
@@ -596,6 +606,7 @@
                     <div><h3>${t('safe.title')}</h3><div class="sub">${t('safe.sub')}</div></div>
                     <div class="safe-row"><span class="ic">${ic('laptop')}</span><div><div class="t">${t('safe.thisPc')}</div><div class="s">${t('safe.lastSave', { ago: ago(ov.lastSave) })}</div></div><span class="state on">${t('safe.active')}</span></div>
                     <div class="safe-row"><span class="ic">${ic('github')}</span><div><div class="t">${t('safe.github')}</div><div class="s">${gh ? (cloud.syncError ? esc(cloud.syncError) : cloud.lastSync ? t('safe.lastPush', { ago: ago(cloud.lastSync) }) : t('safe.firstPush')) : t('safe.notConnected')}</div></div><span class="state ${gh ? (cloud.syncError ? 'err' : 'on') : 'off'}">${gh ? (cloud.syncError ? 'history' : '✓') : '—'}</span></div>
+                    ${(ov.devices || []).map(d => `<div class="safe-row"><span class="ic">${ic(d.phone ? 'phone' : 'laptop')}</span><div><div class="t">${esc(d.name)}</div><div class="s">${t('safe.deviceSeen', { ago: ago(d.time) })}</div></div><span class="state on">✓</span></div>`).join('')}
                     <div class="safe-row"><span class="ic">${ic('drive')}</span><div><div class="t">Google Drive</div><div class="s">${dr ? (cloud.driveError ? esc(cloud.driveError) : cloud.driveAt ? t('safe.lastCopy', { ago: ago(cloud.driveAt) }) : t('safe.waiting')) : t('safe.notConnected')}</div></div><span class="state ${dr ? (cloud.driveError ? 'err' : 'on') : 'off'}">${dr ? (cloud.driveError ? 'history' : '✓') : '—'}</span></div>
                     ${unprotected.length ? `<div class="safe-warn" title="${esc(unprotected.join('\n'))}">${tn('bk.onlyHere', unprotected.length)}</div>` : ''}
                 </div>
@@ -1350,6 +1361,7 @@
             ${S.app.platform === 'win32' ? `<div class="setting-row"><div><div class="t">${t('settings.update')}</div><div class="s">${t('settings.updateHint', { version: esc(S.app.version) })}</div></div><button class="btn sm" id="upd-check">${t('settings.updateBtn')}</button></div>` : ''}
             <div class="setting-row"><div><div class="t">${t('settings.relink')}</div><div class="s">${t('settings.relinkHint')}</div></div><button class="btn sm" id="relink">${t('settings.relinkBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.remove')}</div><div class="s">${t('settings.removeHint')}</div></div><button class="btn sm danger" id="remove">${t('settings.removeBtn')}</button></div>
+            <div class="setting-row"><div><div class="t">${t('settings.deleteEverywhere')}</div><div class="s">${t('settings.deleteEverywhereHint')}</div></div><button class="btn sm danger" id="delete-everywhere">${t('settings.deleteEverywhereBtn')}</button></div>
             <div class="foot"><span style="margin-right:auto;color:var(--text-3);font-size:12px;align-self:center">DraftRewind ${esc(S.app.version)}</span><button class="btn primary" id="done">${t('common.ok')}</button></div>`);
         // Dil / tema: anında uygula, arayüzü yeni dilde yeniden çiz ve ayarları yeniden aç
         const bindSeg = (id, key) =>
@@ -1408,6 +1420,22 @@
             await run(() => av.projects.remove(S.activeId));
             S.activeId = null;
             S.overview = null;
+            refresh();
+        };
+        m.querySelector('#delete-everywhere').onclick = async () => {
+            const name = (S.overview && S.overview.name) || '';
+            closeModal();
+            const ok = await confirmModal({ title: t('everywhere.title'), text: t('everywhere.text', { name }), ok: t('settings.deleteEverywhereBtn'), danger: true, emoji: 'trash', typeToConfirm: name });
+            if (!ok) return;
+            const r = await run(() => av.projects.deleteEverywhere(S.activeId));
+            if (!r) return;
+            S.activeId = null;
+            S.overview = null;
+            const gh = r.notes.find(x => x.settingsUrl);
+            const dr = r.notes.find(x => x.openUrl);
+            toast(t('everywhere.done', { name }), 'trash', 5000);
+            if (gh) toast(t('everywhere.ghManual'), 'github', 8000), av.openExternal(gh.settingsUrl);
+            if (dr) toast(t('everywhere.driveManual'), 'drive', 8000), av.openExternal(dr.openUrl);
             refresh();
         };
         m.querySelector('#done').onclick = () => { closeModal(); refresh(); };

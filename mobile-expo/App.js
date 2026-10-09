@@ -2486,6 +2486,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
             </Glass>
 
             <ConnectionsCard c={c} project={project} onChanged={() => runSync({ manual: true })} onLeave={onBack} />
+            <DevicesCard c={c} devices={REPO.devicesOf(project, history)} />
 
             <View onLayout={(e) => (tabsY.current = e.nativeEvent.layout.y)}>
               <Glass c={c} style={[s.seg, { marginTop: 14 }]}>
@@ -2784,6 +2785,29 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
       <Text style={[s.dayHeader, { color: c.text3, marginTop: 6, marginBottom: 2 }]}>{t('conn.title')}</Text>
       {row('github', 'chevron.left.forwardslash.chevron.right', conns.github ? `${conns.github.owner}/${conns.github.repo}` : '')}
       {row('drive', 'externaldrive.fill', conns.drive ? `DraftRewind › ${conns.drive.name}` : '')}
+    </Glass>
+  );
+}
+
+// Projeyi kullanan cihazlar (son eşitleme zamanıyla). Yalnızca bu cihaz varsa gösterilmez.
+function DevicesCard({ c, devices }) {
+  if (!devices || devices.length < 2) return null;
+  return (
+    <Glass c={c} style={{ paddingHorizontal: 14, paddingVertical: 8, marginTop: 10 }}>
+      <Text style={[s.dayHeader, { color: c.text3, marginTop: 6, marginBottom: 2 }]}>{t('devices.title')}</Text>
+      {devices.map((d) => (
+        <View key={d.name} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 7 }}>
+          <View style={[s.accountIcon, { width: 30, height: 30 }]}>
+            <Icon name={d.phone ? (d.name === 'iPad' ? 'ipad' : 'iphone') : 'laptopcomputer'} size={18} color={d.self ? c.accent : c.text2} />
+          </View>
+          <Text style={{ color: c.text, fontWeight: '600', fontSize: 15, flex: 1 }} numberOfLines={1}>
+            {d.name}
+            {d.self ? <Text style={{ color: c.text3, fontWeight: '500' }}>{` · ${t('devices.this')}`}</Text> : null}
+          </Text>
+          <Text style={{ color: c.text3, fontSize: 12.5 }}>{d.self ? t('devices.now') : ago(d.time)}</Text>
+        </View>
+      ))}
+      <Text style={{ color: c.text3, fontSize: 11.5, lineHeight: 15, marginTop: 4, marginBottom: 6 }}>{t('devices.hint')}</Text>
     </Glass>
   );
 }

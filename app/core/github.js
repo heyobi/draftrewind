@@ -32,7 +32,7 @@ async function startDeviceFlow() {
     const res = await fetch('https://github.com/login/device/code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ client_id: config.GITHUB_CLIENT_ID, scope: 'repo read:user' })
+        body: JSON.stringify({ client_id: config.GITHUB_CLIENT_ID, scope: 'repo read:user delete_repo' })
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error_description || data.error);

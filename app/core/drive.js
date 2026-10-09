@@ -286,6 +286,21 @@ class FolderRemote {
         fs.writeFileSync(path.join(vDir, versionName(rel, kind)), buf);
     }
 
+    async addTombstone(item) {
+        const file = path.join(this.root, ROOT_NAME, TOMBS);
+        const items = [...(await this.tombstones()).filter(x => x && x.id !== item.id), item].slice(-200);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, JSON.stringify({ v: 1, items }));
+    }
+
+    // Projenin Drive klasörünü Geri Dönüşüm Kutusu'na gönder
+    async trashFolder(record) {
+        if (!record.driveFolderName) return { done: true };
+        const dir = path.join(this.root, ROOT_NAME, record.driveFolderName);
+        if (fs.existsSync(dir)) await require('electron').shell.trashItem(dir);
+        return { done: true };
+    }
+
     // Her yerden silinen projelerin kayıtları (bilgisayardaki Drive klasöründe)
     async tombstones() {
         try {
@@ -797,6 +812,27 @@ class ApiRemote {
 
     async version(rel, buf, kind) {
         await this.api.upload({ name: versionName(rel, kind), parentId: await this.versionDir(rel), buf });
+    }
+
+    async addTombstone(item) {
+        const root = await this.rootFolder();
+        const found = await this.api.query(`'${root.id}' in parents and trashed=false and name='${TOMBS}'`, 'files(id,createdTime)');
+        const items = [...(await this.tombstones()).filter(x => x && x.id !== item.id), item].slice(-200);
+        await this.api.upload({ id: found[0] && found[0].id, name: TOMBS, parentId: root.id, buf: Buffer.from(JSON.stringify({ v: 1, items })) });
+    }
+
+    // Projenin Drive klasörünü çöpe at (yalnızca bu uygulamanın erişebildiği klasör; olmazsa Drive'da açılır)
+    async trashFolder(record) {
+        if (!record.driveFolderId) return { done: true };
+        try {
+            await this.api.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(record.driveFolderId)}?fields=id`, {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trashed: true })
+            });
+            return { done: true };
+        } catch (e) {
+            return { done: false, openUrl: `https://drive.google.com/drive/folders/${record.driveFolderId}` };
+        }
     }
 
     // Her yerden silinen projelerin kayıtları (Drive'daki DraftRewind kökünde)

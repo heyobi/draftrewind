@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('av', {
         create: name => call('project:create', name),
         remove: id => call('project:remove', id),
         keep: id => call('project:keep', id),
+        deleteEverywhere: id => call('project:deleteEverywhere', id),
         update: (id, patch) => call('project:update', id, patch),
         relink: id => call('project:relink', id),
         setActive: id => call('project:setActive', id),

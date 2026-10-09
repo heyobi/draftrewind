@@ -392,7 +392,8 @@ async function doDriveSync(drive, p, opts) {
     await r.snapshot({ kind: 'merge', title: t('ws.driveEdits', { names: names.slice(0, 3).join(', '), n: names.length, count: names.length }) });
   }
   const h2 = push ? await r.syncStore({ ...dev, onProgress: progress }) : { pushed: false, head: await r.head(), ahead: true };
-  adoptPeerGithub(p, [...(h2.peers || []), ...(h1.peers || [])]);
+  const peers = [...(h2.peers || []), ...(h1.peers || [])];
+  adoptPeerGithub(p, peers);
   const pulled = h1.pulled + m.downloaded.length;
   out.pull.updated = Array.from({ length: pulled }, () => '');
   out.pull.conflicts = [...h1.conflicts, ...m.conflicts].map((copy) => ({ path: stripCopy(copy).replace(" (Drive'dan)", ''), copy }));
@@ -407,6 +408,7 @@ async function doDriveSync(drive, p, opts) {
     ...WS.loadState(p),
     engine: true,
     mirror: mstate,
+    devices: dedupePeers(peers),
     pushedOid: push ? h2.head : startRemote,
     lastPush: out.push ? Date.now() : st.lastPush,
     lastPull: pulled ? Date.now() : st.lastPull,
@@ -684,4 +686,30 @@ export function ignoreTomb(id) {
   if (!id) return;
   const flags = WS.loadFlags();
   WS.saveFlags({ ...flags, ignoredTombs: [...new Set([...(flags.ignoredTombs || []), id])].slice(-200) });
+}
+
+// ---------------------------------------------------------------- cihazlar
+const dedupePeers = (peers) => {
+  const m = new Map();
+  for (const x of peers || []) if (x && x.id && (!m.has(x.id) || m.get(x.id).time < x.time)) m.set(x.id, { id: x.id, device: x.device || '', time: x.time || 0 });
+  return [...m.values()];
+};
+const PHONE_NAMES = new Set(['iPhone', 'iPad']);
+
+// Projeyi kullanan cihazlar: [{ name, time, self, phone }] (bu cihaz başta, sonra en son eşitleyen)
+// Drive'lı projede uç dosyalarındaki cihaz adları; yalnızca GitHub'lı projede kayıtlardaki telefon/iPad yazarları.
+export function devicesOf(p, history) {
+  const conns = connectionsOf(p);
+  const out = new Map();
+  const add = (name, time, extra = {}) => {
+    if (!name) return;
+    const prev = out.get(name);
+    if (!prev || prev.time < time) out.set(name, { name, time, phone: PHONE_NAMES.has(name), ...(prev && prev.self ? { self: true } : {}), ...extra });
+  };
+  const me = author().name;
+  add(me, Date.now(), { self: true });
+  const peers = conns.drive ? WS.loadState(conns.drive).devices || [] : [];
+  for (const x of peers) if (x.id !== deviceId()) add(x.device || t('devices.unknown'), x.time);
+  if (!peers.length) for (const h of (history || []).slice(0, 300)) if (PHONE_NAMES.has(h.author) && h.author !== me) add(h.author, h.time);
+  return [...out.values()].sort((a, b) => (b.self ? 1 : 0) - (a.self ? 1 : 0) || b.time - a.time).slice(0, 8);
 }

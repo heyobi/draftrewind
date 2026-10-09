@@ -151,7 +151,7 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
             if (!m || m[1] === deviceId) continue;
             try {
                 const h = JSON.parse(Buffer.from(await store.read(name)).toString('utf8'));
-                if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null, roots: Array.isArray(h.roots) ? h.roots : [] });
+                if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, device: typeof h.device === 'string' ? h.device : '', github: h.github || null, roots: Array.isArray(h.roots) ? h.roots : [] });
             } catch (e) {}
         }
         heads.sort((a, b) => a.time - b.time);
@@ -190,7 +190,7 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
         const tmp = `${stateFile}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(all));
         fs.renameSync(tmp, stateFile);
-        const peers = heads.map(x => ({ id: x.id, time: x.time, head: x.head, github: x.github, roots: x.roots }));
+        const peers = heads.map(x => ({ id: x.id, time: x.time, device: x.device, head: x.head, github: x.github, roots: x.roots }));
         return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers };
     });
 }

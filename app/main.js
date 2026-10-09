@@ -455,6 +455,10 @@ async function syncDrive(rt, kind = 'auto') {
                 // Başka bir cihaz (telefon) projeyi GitHub'a bağlamışsa bu bilgisayar da aynı depoyu kullanır
                 const peerGh = (res.peers || []).map(x => x.github).find(x => x && x.owner && x.repo);
                 const fresh = recordOf(rt.project.id);
+                if (fresh && Array.isArray(res.peers)) {
+                    fresh.devices = res.peers.map(x => ({ id: x.id, device: x.device || '', time: x.time || 0 }));
+                    saveProjectRecord(fresh);
+                }
                 if (peerGh && fresh && !fresh.github) {
                     fresh.github = { owner: peerGh.owner, repo: peerGh.repo, url: `https://github.com/${peerGh.owner}/${peerGh.repo}` };
                     saveProjectRecord(fresh);
@@ -825,8 +829,24 @@ async function overview(id) {
         skippedLarge: rt.project.skippedLarge,
         unprotected,
         error: rt.lastError,
-        cloud: cloudInfo(record, rt)
+        cloud: cloudInfo(record, rt),
+        devices: devicesOf(record, history)
     };
+}
+
+// Projeyi kullanan diğer cihazlar: Drive'daki uç dosyalarından (cihaz adı + son eşitleme); Drive yoksa
+// kayıtlardaki telefon / iPad yazarlarından. Bu bilgisayar listede yok (kartta zaten "Bu bilgisayar" var).
+function devicesOf(record, history) {
+    const out = new Map();
+    const add = (name, time, phone) => {
+        if (!name) return;
+        const prev = out.get(name);
+        if (!prev || prev.time < time) out.set(name, { name, time, phone });
+    };
+    const peers = record.devices || [];
+    for (const x of peers) if (x.id !== store.get('deviceId')) add(x.device || T('devices.unknown'), x.time || 0, /^(iPhone|iPad)$/.test(x.device || ''));
+    if (!peers.length) for (const h of (history || []).slice(0, 300)) if (/^(iPhone|iPad)$/.test(h.author || '')) add(h.author, h.time, true);
+    return [...out.values()].sort((a, b) => b.time - a.time).slice(0, 6);
 }
 
 function cloudInfo(record, rt) {
@@ -1103,6 +1123,44 @@ function registerIpc() {
         store.set('projects', projects().filter(p => p.id !== id));
         if (store.get('activeId') === id) store.set('activeId', projects()[0] ? projects()[0].id : null);
         return true;
+    });
+
+    // Her yerden sil: bulut kopyaları silinir, diğer cihazlar için "silindi" kaydı bırakılır, proje klasörü
+    // Geri Dönüşüm Kutusu'na gider ve proje listeden çıkar. İzin vermeyen bulut için açılacak adres döner.
+    handle('project:deleteEverywhere', async id => {
+        const r = recordOf(id);
+        const rt = runtimes.get(id);
+        if (!r || !rt) throw new Error(T('err.projectNotFound'));
+        const notes = [];
+        const roots = await storeSync.rootsOf(rt.project.gitdir, await rt.project.head());
+        const remote = driveRemote();
+        if (remote) {
+            try {
+                if (roots.length) await remote.addTombstone({ id: `t-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`, roots, name: r.name, at: Date.now(), device: os.hostname() });
+            } catch (e) {}
+            try {
+                const res = await remote.trashFolder(r);
+                if (!res.done && res.openUrl) notes.push({ openUrl: res.openUrl });
+            } catch (e) {}
+        }
+        if (r.github && r.github.owner) {
+            try {
+                const token = await freshGithubToken();
+                const res = await github.api(token, 'DELETE', `/repos/${r.github.owner}/${r.github.repo}`);
+                if (!(res.ok || res.status === 404)) notes.push({ settingsUrl: `https://github.com/${r.github.owner}/${r.github.repo}/settings` });
+            } catch (e) {
+                notes.push({ settingsUrl: `https://github.com/${r.github.owner}/${r.github.repo}/settings` });
+            }
+        }
+        stopProject(id);
+        store.set('projects', projects().filter(p => p.id !== id));
+        if (store.get('activeId') === id) store.set('activeId', projects()[0] ? projects()[0].id : null);
+        try {
+            if (fs.existsSync(r.dir)) await shell.trashItem(r.dir);
+        } catch (e) {
+            notes.push({ folder: r.dir });
+        }
+        return { notes };
     });
 
     handle('project:keep', async id => {
