@@ -853,6 +853,9 @@ function absOf(rt, rel) {
 
 // Tüm disk, kullanıcı klasörü ve Belgeler/Masaüstü/İndirilenler gibi kök klasörler proje olamaz
 function checkFolderChoice(dir) {
+    let isDir = false;
+    try { isDir = fs.statSync(dir).isDirectory(); } catch (e) {}
+    if (!isDir) throw new Error(T('err.notFolder'));
     const abs = path.resolve(dir).toLowerCase();
     const special = [os.homedir(), app.getPath('documents'), app.getPath('desktop'), app.getPath('downloads'), process.env.OneDrive, process.env.OneDriveConsumer]
         .filter(Boolean)

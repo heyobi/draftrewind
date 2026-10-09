@@ -223,6 +223,27 @@
         if (!S.activeId || !S.app.projects.some(p => p.id === S.activeId)) S.activeId = S.app.activeId;
     }
 
+    // Bulutta olup bu bilgisayarda olmayan projeler (telefonda / başka bilgisayarda oluşturulanlar).
+    // Açılışta, pencere öne gelince ve birkaç dakikada bir; aynı anda tek istek.
+    let cloudLoading = null;
+    let cloudCheckedAt = 0;
+    function loadCloudFound(force = false) {
+        if (cloudLoading) return cloudLoading;
+        if (!force && Date.now() - cloudCheckedAt < 60000) return Promise.resolve();
+        cloudLoading = (async () => {
+            try {
+                const list = (await av.projects.discoverCloud()) || [];
+                S.cloudFound = list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+            } catch (e) {}
+            cloudCheckedAt = Date.now();
+            cloudLoading = null;
+            render();
+        })();
+        return cloudLoading;
+    }
+    window.addEventListener('focus', () => loadCloudFound());
+    setInterval(() => loadCloudFound(), 5 * 60000);
+
     async function loadOverview() {
         if (!S.activeId) {
             S.overview = null;
@@ -291,6 +312,7 @@
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(async () => {
             await loadApp();
+            loadCloudFound();
             await Promise.all([loadOverview(), loadJourney()]);
             if (history) await loadHistory();
             // "Şu anki değişiklikler" seçiliyken kayıt noktası alındıysa: yeni kaydı göster; açıksa listeyi tazele
@@ -347,6 +369,7 @@
 
     function renderRail() {
         const rail = $('#rail');
+        const cloud = S.cloudFound || [];
         if (!S.app.projects.length) {
             rail.innerHTML = '';
             rail.style.display = 'none';
@@ -367,6 +390,14 @@
                 )
                 .join('')}
             <button class="proj-btn add-btn" data-action="add-project" title="${esc(t('rail.addProject'))}"><span class="emoji">+</span><span>${t('rail.addProject')}</span></button>
+            ${cloud.length ? `<div class="rail-head" style="margin-top:14px"><h6>${t('rail.inCloud')}</h6></div>${cloud
+                .map(
+                    (it, i) => `<button class="proj-btn cloud-item" data-action="adopt-cloud" data-i="${i}" title="${esc(t('rail.getHere', { name: it.name }))}">
+                        <span class="emoji"><span class="ptile cloud">${ic('cloudUp')}</span></span>
+                        <span style="min-width:0"><div class="pname">${esc(it.name)}</div><div class="psub">${esc(SRC_LABEL[it.source] || it.source)} · ${t('rail.notHere')}</div></span>
+                    </button>`
+                )
+                .join('')}` : ''}
             <div class="rail-spacer"></div>
             <div class="rail-cloud" data-action="goto-tab" data-tab="cloud" title="${esc(t('tabs.cloud'))}">
                 <div class="row">${ic('github')}<span class="lbl">GitHub</span> ${gh.connected ? `<span class="ok">${t('rail.connected')}</span>` : `<span class="off">${t('rail.notConnected')}</span>`}</div>
@@ -435,7 +466,26 @@
                 <button class="btn big" data-action="create-new">${t('onb.createNew')}</button>
             </div>
             <p style="color:var(--text-3);font-size:12.5px;margin-top:18px">${t('onb.footnote')}</p>
+            ${renderOnboardingCloud()}
         </div></div>`;
+    }
+
+    // Yeni kurulum: telefonda ya da başka bilgisayarda başlattığın projeler buradan iner
+    function renderOnboardingCloud() {
+        const gh = S.app.github && S.app.github.connected;
+        const dr = S.app.drive && S.app.drive.mode;
+        const cloud = S.cloudFound || [];
+        return `<div class="onb-cloud">
+            <h3>${t('onb.cloudTitle')}</h3>
+            <p>${t('onb.cloudLead')}</p>
+            <div class="cta">
+                ${gh ? '' : `<button class="btn" data-action="github-login">${ic('github')} ${t('onb.connectGithub')}</button>`}
+                ${dr ? '' : `<button class="btn" data-action="goto-tab" data-tab="cloud">${ic('drive')} ${t('onb.connectDrive')}</button>`}
+            </div>
+            ${cloud.length ? `<div class="cloud-found">${cloud
+                .map((it, i) => `<div class="cf-row"><div class="cf-main"><b>${esc(it.name)}</b><span>${esc(SRC_LABEL[it.source] || it.source)} · ${ago(it.updatedAt)}</span></div><button class="btn sm primary" data-action="adopt-cloud" data-i="${i}">${t('cloudFound.get')}</button></div>`)
+                .join('')}</div>` : gh || dr ? `<p class="muted">${t('onb.cloudNone')}</p>` : ''}
+        </div>`;
     }
 
     function renderMissing() {
@@ -1454,7 +1504,10 @@
     // Dışarıdan dosya/klasör bırakma → projeye kopyala
     let dragDepth = 0;
     const hasFiles = e => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+    // Hiç proje yokken bırakılan klasör yeni proje olur
+    const dropCreates = () => !!(S.app && !S.app.projects.length && !$('#modal-root .modal-back'));
     const canDrop = () => {
+        if (dropCreates()) return true;
         const p = S.app && S.app.projects.find(x => x.id === S.activeId);
         return !!(p && !p.missing && !$('#modal-root .modal-back'));
     };
@@ -1470,7 +1523,9 @@
             el.id = 'drop-overlay';
             document.body.appendChild(el);
         }
-        el.innerHTML = `<div class="drop-card"><div class="drop-emoji">${projectTile(p)}</div><h2>${esc(t('fx.dropTitle', { name: p.name }))}</h2><p>${t('fx.dropSub')}</p></div>`;
+        el.innerHTML = dropCreates() || !p
+            ? `<div class="drop-card"><div class="drop-emoji">${ic('folder')}</div><h2>${esc(t('fx.dropNewTitle'))}</h2><p>${t('fx.dropNewSub')}</p></div>`
+            : `<div class="drop-card"><div class="drop-emoji">${projectTile(p)}</div><h2>${esc(t('fx.dropTitle', { name: p.name }))}</h2><p>${t('fx.dropSub')}</p></div>`;
         requestAnimationFrame(() => el.classList.add('on'));
     }
     window.addEventListener('dragenter', e => {
@@ -1503,6 +1558,21 @@
             .map(f => av.files.pathOf(f))
             .filter(Boolean);
         if (!paths.length) return;
+        if (dropCreates()) {
+            // Bırakılan her klasör ayrı proje olur
+            let last = null;
+            for (const dir of paths) {
+                const id = await run(() => av.projects.addDir(dir));
+                if (id) last = id;
+            }
+            if (last) {
+                S.activeId = last;
+                S.tab = 'home';
+                toast(t('fx.dropNewDone'), 'check', 4500);
+                refresh();
+            }
+            return;
+        }
         const r = await run(() => av.files.importPaths(S.activeId, paths));
         if (r) addedToast(r);
     });
@@ -1612,6 +1682,27 @@
 
 
     const actions = {
+        'adopt-cloud': async (d, el) => {
+            const it = (S.cloudFound || [])[Number(d.i)];
+            if (!it) return;
+            if (el) {
+                el.disabled = true;
+                el.classList.add('busy');
+            }
+            toast(t('cloudFound.getting'), 'cloudUp', 4000);
+            const r = await run(() => av.projects.adoptCloud(it));
+            if (el) {
+                el.disabled = false;
+                el.classList.remove('busy');
+            }
+            if (!r) return;
+            S.cloudFound = (S.cloudFound || []).filter(x => x.key !== it.key);
+            S.activeId = r.id;
+            S.tab = 'home';
+            toast(t('cloudFound.done', { name: r.name }), 'check', 5000);
+            refresh();
+            loadCloudFound(true);
+        },
         'select-project': async d => {
             S.activeId = d.id;
             S.overview = null;
@@ -1883,5 +1974,6 @@
         await loadApp();
         await Promise.all([loadOverview(), loadJourney()]);
         render();
+        loadCloudFound(true);
     })();
 })();
