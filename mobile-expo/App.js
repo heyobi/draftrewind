@@ -2242,12 +2242,33 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
   runSyncRef.current = runSync;
 
   // Açılışta ve uygulama öne geldiğinde (Word'den dönünce) eşitle
+  // Büyük GitHub projesi ilk kez iniyorsa önce sorulur (tüm geçmiş iner; Wi-Fi önerilir)
+  const confirmedBig = useRef(false);
   useEffect(() => {
-    runSyncRef.current();
+    let alive = true;
+    const first = async () => {
+      const big = project.kind !== 'drive' && (project.size || 0) > 150 * 1024;
+      if (big && !confirmedBig.current && !(await REPO.ready(project).catch(() => true))) {
+        const ok = await new Promise((resolve) =>
+          Alert.alert(t('ws.bigTitle'), t('ws.bigBody', { mb: Math.round(project.size / 1024) }), [
+            { text: t('common.cancel'), style: 'cancel', onPress: () => resolve(false) },
+            { text: t('ws.bigOk'), onPress: () => resolve(true) },
+          ])
+        );
+        if (!alive) return;
+        if (!ok) return onBack();
+        confirmedBig.current = true;
+      }
+      runSyncRef.current();
+    };
+    first();
     const sub = AppState.addEventListener('change', (st) => {
-      if (st === 'active') runSyncRef.current();
+      if (st === 'active' && (confirmedBig.current || !(project.kind !== 'drive' && (project.size || 0) > 150 * 1024))) runSyncRef.current();
     });
-    return () => sub.remove();
+    return () => {
+      alive = false;
+      sub.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.repo]);
 

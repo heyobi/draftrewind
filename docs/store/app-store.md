@@ -18,48 +18,44 @@ EN: Never lose a draft again. Every version of your thesis, one tap away — and
 TR: Bir daha taslak kaybetme. Tezinin her sürümü bir dokunuş uzakta; danışmanına gönderebileceğin değişiklik raporuyla.
 
 ## Description (EN)
-DraftRewind keeps every version of your thesis, homework or paper, automatically. The free Windows app watches your folder; this iPhone app puts that whole history in your pocket.
+DraftRewind keeps every version of your thesis, homework or paper, automatically, and lets you rewind to any of them. It works on its own on your iPhone, and together with the free Windows app if you have a computer.
 
-WHAT YOU CAN DO ON YOUR PHONE
-• Browse every save point of every project, with readable titles such as “Methods: 1 paragraph added (+120 words)”.
-• See exactly what changed, word by word, in colour.
-• Open and share any old version — WhatsApp, Mail, AirDrop, Files.
-• Add photos and files to your thesis from your phone: whiteboards, lab notes, scanned pages land next to your chapters and sync to your computer.
-• Send a “what changed since last time” PDF report to your advisor in one tap.
-• Get warned when your computer has not backed up for a few days.
-• Optional on-device summaries with Apple Intelligence — your text never leaves the phone.
+WHAT YOU CAN DO
+• Every save becomes a save point with a readable title, such as "Methods: 1 paragraph added (+120 words)".
+• See exactly what changed, word by word, in colour; open, share or restore any old version.
+• Edit in Word or Pages; edit text and code files right in the app.
+• Add photos and files from your phone: whiteboards, lab notes, scanned pages.
+• Send a "what changed" PDF report to your advisor in one tap.
+• Writing streak, words today and a weekly chart keep you going.
+• Optional on-device summaries with Apple Intelligence: your text never leaves the phone.
+
+YOUR CHOICE OF STORAGE
+Keep a project only on this device, or connect it to iCloud Drive, Google Drive, GitHub, or several at once. Every device keeps the full history and they stay in sync: start on your phone on Monday, continue on your computer on Tuesday. If you lose a device, your project comes back with its history from the cloud. Deleted projects wait 30 days before they are gone for good.
 
 PRIVATE BY DESIGN
-There is no DraftRewind server. Your files live on your computer and in a private repository in your own GitHub account. The app reads from there, directly. No analytics, no tracking, no account with us.
+There is no DraftRewind server. Your files live on your device and in your own accounts. No analytics, no tracking, no account with us.
 
-GETTING STARTED
-1. Install the free Windows app from draftrewind.com and pick your thesis folder.
-2. Connect GitHub on the computer (one click).
-3. Sign in here with the same GitHub account, or scan the QR code shown on your computer.
-
-Requires the free DraftRewind desktop app (Windows) and a free GitHub account. One-time purchase, no subscription.
+One-time purchase, no subscription. The Windows app is free at draftrewind.com.
 
 ## Description (TR)
-DraftRewind; tezinin, ödevinin ya da makalenin her sürümünü kendiliğinden saklar. Ücretsiz Windows uygulaması klasörünü izler; bu iPhone uygulaması o geçmişin tamamını cebine koyar.
+DraftRewind; tezinin, ödevinin ya da makalenin her sürümünü kendiliğinden saklar ve istediğin ana geri sarmanı sağlar. iPhone'da tek başına çalışır; bilgisayarın varsa ücretsiz Windows uygulamasıyla birlikte de.
 
-TELEFONDA NELER YAPABİLİRSİN
-• Her projenin her kayıt noktasına bak; başlıklar okunur: “Yöntem: 1 paragraf eklendi (+120 kelime)”.
-• Neyin değiştiğini kelime kelime, renkli gör.
-• Eski sürümü aç ve paylaş: WhatsApp, Mail, AirDrop, Dosyalar.
-• Telefondan tezine fotoğraf ve dosya ekle: tahta, laboratuvar notu, taranmış sayfa bölümlerinin yanına iner, bilgisayarına gelir.
-• Danışmanına tek dokunuşla “geçen seferden beri neler değişti” PDF raporu gönder.
-• Bilgisayarın birkaç gündür yedek almadıysa uyarı al.
+NELER YAPABİLİRSİN
+• Her kayıt, okunur başlıklı bir kayıt noktası olur: "Yöntem: 1 paragraf eklendi (+120 kelime)".
+• Neyin değiştiğini kelime kelime, renkli gör; eski sürümü aç, paylaş ya da geri getir.
+• Word ya da Pages ile düzenle; metin ve kod dosyalarını uygulamanın içinde düzenle.
+• Telefondan fotoğraf ve dosya ekle: tahta, laboratuvar notu, taranmış sayfa.
+• Danışmanına tek dokunuşla "neler değişti" PDF raporu gönder.
+• Yazma serisi, bugünkü kelimeler ve haftalık grafik motive eder.
 • İsteğe bağlı Apple Intelligence özetleri; metnin telefondan çıkmaz.
 
+DEPOLAMAYI SEN SEÇ
+Projeyi yalnızca bu cihazda tut ya da iCloud Drive'a, Google Drive'a, GitHub'a veya birkaçına birden bağla. Her cihaz tüm geçmişi taşır ve hepsi eşit kalır: pazartesi telefonda başla, salı bilgisayarda devam et. Bir cihazı kaybedersen projen geçmişiyle buluttan geri gelir. Silinen projeler kalıcı olarak silinmeden önce 30 gün bekler.
+
 TASARIMI GEREĞİ GİZLİ
-DraftRewind sunucusu yoktur. Dosyaların bilgisayarında ve kendi GitHub hesabındaki özel bir depoda durur; uygulama doğrudan oradan okur. Analitik yok, takip yok, bizde hesap yok.
+DraftRewind'in sunucusu yoktur. Dosyaların cihazında ve kendi hesaplarında durur. Analitik yok, takip yok, bizde hesap yok.
 
-BAŞLAMAK İÇİN
-1. draftrewind.com'dan ücretsiz Windows uygulamasını kur, tez klasörünü seç.
-2. Bilgisayarda GitHub'ı bağla (tek tık).
-3. Burada aynı GitHub hesabıyla giriş yap ya da bilgisayardaki QR kodu okut.
-
-Ücretsiz DraftRewind masaüstü uygulaması (Windows) ve ücretsiz bir GitHub hesabı gerektirir. Tek seferlik ödeme, abonelik yok.
+Tek seferlik ödeme, abonelik yok. Windows uygulaması draftrewind.com'da ücretsiz.
 
 ## Screenshots (6.7" and 6.5", 5 each, portrait)
 1. Home with two projects and the "new saves" card — caption: "Every version, in your pocket"
@@ -70,19 +66,21 @@ BAŞLAMAK İÇİN
 Take them on a real iPhone (Settings → English for the EN set, Turkish for the TR set), light mode, status bar with full battery.
 
 ## App Review notes (paste into "Notes")
-DraftRewind is a companion viewer for the user's own GitHub repositories created by our free desktop app; it does not create accounts. Sign in uses GitHub's device flow because the app needs access to that specific third-party service (guideline 4.8 exemption, same as Git clients).
+DraftRewind keeps the version history of the user's own documents. No account with us is needed: on the first screen tap "Continue without an account" to try everything on the device (create a project, add a file with "+", edit it, open a save point to see the coloured diff, Settings › Advanced › Sync engine test).
 
-Demo account (has two sample projects with history):
+Optional connections use the user's own storage: iCloud Drive (app container), Google Drive (drive.file scope, only folders the app creates), GitHub (private repository). Google and GitHub sign-in exist only to reach that third-party storage, so Sign in with Apple is not required (guideline 4.8 exception). There is no server of ours.
+
+Demo GitHub account (two sample projects with history):
   GitHub username: <TEST_LOGIN>
   Password: <TEST_PASSWORD>
   If a 2FA prompt appears, use the TOTP secret: <TOTP_SECRET>
-Steps: open the app → "Continue with GitHub" → enter the code shown on github.com/login/device → projects appear. Tap a project, then a snapshot, to see the diff. "+" adds photos (camera permission) — optional.
+Steps: "Continue with GitHub" → enter the code shown on github.com/login/device → projects appear.
 Live Activities and Apple Intelligence features are optional and degrade gracefully on devices without them.
 
 ## Before submitting — checklist
 - [ ] Apple Developer Program active; Paid Apps agreement signed (bank + tax)
-- [ ] `ITSAppUsesNonExemptEncryption = false` in app.json (ask Claude to add)
-- [ ] Privacy policy live at draftrewind.com/privacy.html
+- [x] `ITSAppUsesNonExemptEncryption = false` in app.json
+- [ ] Privacy policy live at draftrewind.com/privacy.html (ready: `docs/site/privacy.html`; set the contact address)
 - [ ] Test GitHub account with sample projects; credentials in review notes
 - [ ] 10 screenshots (5 EN + 5 TR) uploaded
 - [ ] Apply to the App Store Small Business Program (15% commission)
