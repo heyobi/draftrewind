@@ -87,6 +87,9 @@ const tr = {
   'snapshot.noDiffImage': 'Görseller metin olarak karşılaştırılmaz; her sürüm ayrı saklanır ve önizlenebilir.',
   'snapshot.noDiffOther': 'Bu dosya türü metin olarak karşılaştırılmaz; her sürüm ayrı saklanır.',
   'snapshot.noFiles': 'Dosya değişikliği yok — bu an işaretlenmiş.',
+  'snapshot.loadFailedTitle': 'Bu kayıt şu an okunamadı',
+  'snapshot.loadFailed': 'Kayıt geçmişte duruyor; ayrıntısı açılamadı. Uygulamayı güncel tutup tekrar dene.',
+  'snapshot.retry': 'Tekrar dene',
 
   'drive.versions': 'Sürümler',
   'drive.versionsSub': 'Tarihli kopyalar, en yenisi üstte',
@@ -592,6 +595,9 @@ const en = {
   'snapshot.noDiffImage': "Images aren't compared as text; each version is kept and can be previewed.",
   'snapshot.noDiffOther': "This file type isn't compared as text; each version is kept.",
   'snapshot.noFiles': 'No file changes. This moment was just marked.',
+  'snapshot.loadFailedTitle': "This save couldn't be read right now",
+  'snapshot.loadFailed': "The save is in your history; its details couldn't be opened. Keep the app up to date and try again.",
+  'snapshot.retry': 'Try again',
 
   'drive.versions': 'Versions',
   'drive.versionsSub': 'Dated copies, newest first',

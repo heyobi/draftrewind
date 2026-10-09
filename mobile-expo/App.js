@@ -2805,10 +2805,13 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
   const aiStatus = useAiStatus();
   const worker = useDiffWorker();
   const reportReq = useRef(0);
+  const [loadError, setLoadError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!snapshot) return;
     setFiles(null);
     setParent(null);
+    setLoadError(null);
     reportReq.current++;
     setBusy(null);
     REPO.commitFiles(project, snapshot.oid)
@@ -2816,8 +2819,9 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
         setFiles(r.files);
         setParent(r.parent);
       })
-      .catch(() => setFiles([]));
-  }, [snapshot]);
+      // Okunamadı: "değişiklik yok" demek yanıltıcı olur; hata ve yeniden deneme gösterilir
+      .catch((e) => setLoadError(errText(e) || t('snapshot.loadFailed')));
+  }, [snapshot, attempt]);
   if (!snapshot) return null;
   const d = new Date(snapshot.time);
   // "Neler değişti?": en çok değişen karşılaştırılabilir (Word/metin) dosyanın farkı açılır ve özetlenir
@@ -2988,7 +2992,16 @@ function SnapshotSheet({ c, token, project, snapshot, onClose, onOpenFile, onOpe
               </Card>
             );
           })}
-          {files && files.length === 0 ? <EmptyState c={c} icon={kindIcon(snapshot.kind)} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
+          {loadError ? (
+            <EmptyState
+              c={c}
+              icon="exclamationmark.triangle"
+              title={t('snapshot.loadFailedTitle')}
+              body={t('snapshot.loadFailed')}
+              action={{ title: t('snapshot.retry'), icon: 'arrow.clockwise', onPress: () => setAttempt((n) => n + 1) }}
+            />
+          ) : null}
+          {!loadError && files && files.length === 0 ? <EmptyState c={c} icon={kindIcon(snapshot.kind)} title={t('empty.noChanges')} body={t('snapshot.noFiles')} /> : null}
         </ScrollView>
       </View>
       {worker.element}
