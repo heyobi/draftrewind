@@ -1362,6 +1362,7 @@
             <div class="setting-row"><div><div class="t">${t('settings.relink')}</div><div class="s">${t('settings.relinkHint')}</div></div><button class="btn sm" id="relink">${t('settings.relinkBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.remove')}</div><div class="s">${t('settings.removeHint')}</div></div><button class="btn sm danger" id="remove">${t('settings.removeBtn')}</button></div>
             <div class="setting-row"><div><div class="t">${t('settings.deleteEverywhere')}</div><div class="s">${t('settings.deleteEverywhereHint')}</div></div><button class="btn sm danger" id="delete-everywhere">${t('settings.deleteEverywhereBtn')}</button></div>
+            <div class="setting-row"><div><div class="t">${t('settings.report')}</div><div class="s">${t('settings.reportHint')}</div></div><button class="btn sm" id="report-problem">${t('settings.reportBtn')}</button></div>
             <div class="foot"><span style="margin-right:auto;color:var(--text-3);font-size:12px;align-self:center">DraftRewind ${esc(S.app.version)}</span><button class="btn primary" id="done">${t('common.ok')}</button></div>`);
         // Dil / tema: anında uygula, arayüzü yeni dilde yeniden çiz ve ayarları yeniden aç
         const bindSeg = (id, key) =>
@@ -1393,6 +1394,7 @@
             btn.disabled = false;
             if (!r) return;
             if (r.skipped === 'unpushed') toast(t('settings.thinUnpushed'), 'cloud', 5000);
+            else if (r.skipped === 'shared') toast(t('settings.thinShared'), 'cloud', 6000);
             else if (r.skipped === 'busy') toast(t('settings.thinBusy'), 'history', 4000);
             else toast(r.removed ? t('settings.thinDone', { n: r.removed }) : t('settings.thinNothing'), 'check', 5000);
             const el = m.querySelector('#hist-size');
@@ -1421,6 +1423,16 @@
             S.activeId = null;
             S.overview = null;
             refresh();
+        };
+        m.querySelector('#report-problem').onclick = async () => {
+            const text = await run(() => av.report());
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+                toast(t('settings.reportCopied'), 'check', 6000);
+            } catch (e) {
+                toast(t('settings.reportFailed'), 'error', 5000);
+            }
         };
         m.querySelector('#delete-everywhere').onclick = async () => {
             const name = (S.overview && S.overview.name) || '';
@@ -2022,6 +2034,10 @@
                 break;
         }
     });
+
+    // Arayüz hataları da sorun raporuna girer
+    window.addEventListener('error', e => { try { av.rendererError(String(e.message || e.error), String((e.error && e.error.stack) || '')); } catch (err) {} });
+    window.addEventListener('unhandledrejection', e => { try { av.rendererError(String((e.reason && e.reason.message) || e.reason), String((e.reason && e.reason.stack) || '')); } catch (err) {} });
 
     (async () => {
         await loadApp();

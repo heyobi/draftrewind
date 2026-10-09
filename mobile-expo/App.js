@@ -45,6 +45,8 @@ import { isPairLink, decodePairLink } from './src/pair';
 import * as WS from './src/workspace';
 import * as REPO from './src/repo';
 import * as TRASH from './src/trash';
+import { recordError, buildReport } from './src/diag';
+import appJson from './app.json';
 import * as LOCAL from './src/local';
 import * as IC from './src/icloud';
 import { isSignedIn, previousCopy } from './src/localCore';
@@ -1427,6 +1429,26 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
               </View>
             </Glass>
           </Jelly>
+          <Jelly
+            onPress={() => {
+              const report = buildReport({ version: `${appJson.expo.version} (${appJson.expo.ios && appJson.expo.ios.buildNumber})`, extra: REPO.timingsReport() });
+              Share.share({ message: report }).catch(() => {});
+            }}
+            scaleTo={0.98}
+            style={{ marginTop: 8 }}
+            accessibilityLabel={t('settings.report')}
+            testID="report-problem-button"
+          >
+            <Glass c={c} interactive style={s.accountRow}>
+              <View style={s.accountIcon}>
+                <Icon name="exclamationmark.bubble" size={22} color={c.text2} />
+              </View>
+              <View style={s.flex}>
+                <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{t('settings.report')}</Text>
+                <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }} numberOfLines={2}>{t('settings.reportSub')}</Text>
+              </View>
+            </Glass>
+          </Jelly>
           <View style={{ height: 30 }} />
         </ScrollView>
       </View>
@@ -2204,6 +2226,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       refreshWs();
       await load();
     } catch (e) {
+      recordError(e, 'sync');
       warn();
       if (e && e.auth) onAuthError();
       else if (e && e.repoGone) askRepoGone();

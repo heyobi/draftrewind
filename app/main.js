@@ -394,6 +394,38 @@ function deviceId() {
     return id;
 }
 
+// ---------------------------------------------------------------- sorun bildirme
+// Son hatalar bu bilgisayarda küçük bir dosyada (hiçbir yere kendiliğinden gitmez); jetonlar ayıklanır
+const errorsFile = () => path.join(app.getPath('userData'), 'errors.json');
+function recordError(err, where = 'error') {
+    try {
+        const clean = s => String(s || '').replace(/(gh[opusr]_[A-Za-z0-9]{20,}|ya29\.[A-Za-z0-9._-]{20,}|Bearer\s+\S+)/g, '[gizli]');
+        let list = [];
+        try { list = JSON.parse(fs.readFileSync(errorsFile(), 'utf8')) || []; } catch (e) {}
+        list.unshift({ at: Date.now(), where, msg: clean(err && err.message ? err.message : err).slice(0, 500), stack: clean(err && err.stack).split('\n').slice(0, 6).join('\n') });
+        fs.writeFileSync(errorsFile(), JSON.stringify(list.slice(0, 40)));
+    } catch (e) {}
+}
+process.on('uncaughtExceptionMonitor', e => recordError(e, 'main'));
+process.on('unhandledRejection', e => recordError(e, 'promise'));
+
+function problemReport() {
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(errorsFile(), 'utf8')) || []; } catch (e) {}
+    const lines = [
+        `DraftRewind sorun raporu · ${new Date().toISOString()}`,
+        `Sürüm: ${app.getVersion()} · ${process.platform} ${os.release()} · Electron ${process.versions.electron}`,
+        `Projeler: ${projects().length} · GitHub: ${githubToken() ? 'bağlı' : 'yok'} · Drive: ${store.get('drive', {}).mode || 'yok'}`,
+        ''
+    ];
+    if (!list.length) lines.push('Kayıtlı hata yok.');
+    for (const x of list.slice(0, 20)) {
+        lines.push(`[${new Date(x.at).toISOString()}] ${x.where}: ${x.msg}`);
+        if (x.stack) lines.push(x.stack.split('\n').map(l => '    ' + l).join('\n'));
+    }
+    return lines.join('\n');
+}
+
 // "Her yerden sil" kayıtları birkaç dakikada bir okunur; projenin kimliği (kök kayıtlar) eşleşirse eşitleme
 // durur ve projede uyarı çıkar. Bilgisayardaki klasöre (kullanıcının dosyaları) asla kendiliğinden dokunulmaz.
 let tombCache = { at: 0, items: [] };
@@ -479,6 +511,7 @@ async function syncDrive(rt, kind = 'auto') {
         saveProjectRecord(fresh);
         refreshDriveChangesToken();
     } catch (e) {
+        if (!e || e.code !== 'EDRIVEGONE') recordError(e, 'drive');
         const fresh = recordOf(rt.project.id);
         if (fresh && e && e.code === 'EDRIVEGONE') {
             Object.assign(fresh, { driveOff: true, driveError: T('main.driveGone'), driveFolderId: undefined, driveFolderName: undefined, driveState: undefined, driveUrl: undefined });
@@ -561,6 +594,7 @@ async function runSync(rt) {
             emit('toast', { icon: 'merge', text: T('main.ghConflicts', { n: r.conflicts.length }) });
         }
     } catch (e) {
+        recordError(e, 'github');
         record = recordOf(rt.project.id);
         if (record && e && e.code === 'EGHREPO') {
             // Depo GitHub'da silinmiş (bilerek de olabilir): yeniden oluşturulmaz, eşitleme durur, projede sorulur
@@ -926,6 +960,9 @@ async function thinProject(rt, force = false) {
     if (!record || rt.missing || rt.syncing || rt.driveBusy) return { removed: 0, skipped: 'busy' };
     const head = await rt.project.head();
     if (record.github && record.githubOid !== head) return { removed: 0, skipped: 'unpushed' };
+    // Geçmişi Drive üzerinden başka cihazlarla paylaşan projede seyreltme yapılmaz: diğer cihazlar eski
+    // kayıtları birleştirmeyle geri getirir ve Drive'daki paketlerde zaten dururlar (yer kazancı olmaz)
+    if ((record.devices && record.devices.length) || record.driveFolderId || record.driveFolderName) return { removed: 0, skipped: 'shared' };
     if (!force) {
         const size = retention.historySize(rt.project);
         if (size.bytes < config.THIN_MIN_BYTES) return { removed: 0, skipped: 'small' };
@@ -1079,6 +1116,8 @@ async function addProjectFromDir(dir, name) {
 
 function registerIpc() {
     handle('app:state', () => appState());
+    handle('app:report', () => problemReport());
+    handle('app:rendererError', (msg, stack) => recordError({ message: msg, stack }, 'arayüz'));
 
     handle('project:add', async () => {
         const r = await dialog.showOpenDialog(mainWindow, {

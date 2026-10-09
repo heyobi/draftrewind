@@ -8,6 +8,8 @@ const call = (channel, ...args) =>
 
 contextBridge.exposeInMainWorld('av', {
     state: () => call('app:state'),
+    report: () => call('app:report'),
+    rendererError: (msg, stack) => call('app:rendererError', msg, stack),
     onEvent: cb => ipcRenderer.on('av:event', (_e, payload) => cb(payload)),
 
     projects: {
