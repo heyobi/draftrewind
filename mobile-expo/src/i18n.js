@@ -426,6 +426,10 @@ const tr = {
   // Hesapsız (yalnızca bu cihaz) ve iCloud Drive
   'login.local': 'Hesapsız devam et (yalnızca bu cihaz)',
   'login.icloud': 'iCloud ile devam et',
+  'home.cloudHeader': 'BULUTUNDA',
+  'home.cloudHint': 'Bu cihazda değiller; dokununca tüm geçmişleriyle iner.',
+  'home.tapToDownload': 'Dokun, bu cihaza insin',
+  'home.onlyHere': 'Yalnızca bu cihazda',
   'home.localHeader': 'BU CİHAZDA',
   'home.icloudHeader': 'ICLOUD DRIVE',
   'home.alsoIcloud': "iCloud'da da var",
@@ -945,6 +949,10 @@ const en = {
   // No account (this device only) and iCloud Drive
   'login.local': 'Continue without an account (this device only)',
   'login.icloud': 'Continue with iCloud',
+  'home.cloudHeader': 'IN YOUR CLOUD',
+  'home.cloudHint': 'Not on this device yet; tap to download one with its full history.',
+  'home.tapToDownload': 'Tap to download',
+  'home.onlyHere': 'Only on this device',
   'home.localHeader': 'ON THIS DEVICE',
   'home.icloudHeader': 'ICLOUD DRIVE',
   'home.alsoIcloud': 'also on iCloud',

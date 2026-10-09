@@ -1605,11 +1605,42 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
   const icloudNames = new Set(wantIcloud ? icloudInfo.projects.map((p) => norm(p.name)) : []);
   const icloudOnly = wantIcloud ? icloudInfo.projects.filter((p) => !ghNames.has(norm(p.name))) : [];
   const locals = localList || [];
-  const empty = !loading && !(ghList && ghList.length) && !driveOnly.length && !icloudOnly.length && !locals.length;
+  // Projeler nerede: bu cihaza inmiş olanlar ("Bu cihazda") ve yalnızca bulutta olanlar ("Bulutunda").
+  // Birbirine bağlı GitHub ve Drive girişleri tek satır; satırda bağlantı etiketleri.
+  const linkedDriveIds = new Set();
+  const ghRows = (ghList || []).map((p, i) => {
+    const conns = REPO.connectionsOf(p);
+    if (conns.drive) linkedDriveIds.add(conns.drive.driveId);
+    return {
+      key: `gh:${p.owner}/${p.repo}`,
+      name: p.name,
+      github: true,
+      drive: !!conns.drive || driveNames.has(norm(p.name)),
+      icloud: icloudNames.has(norm(p.name)),
+      onDevice: REPO.onDevice(p),
+      time: p.pushedAt,
+      look: projectLook(i),
+      open: () => onOpen({ type: 'gh', project: { ...p, index: i } }),
+    };
+  });
+  const ghKeys = new Set((ghList || []).map((p) => `${p.owner}/${p.repo}`));
+  const driveRows = driveOnly
+    .filter((f) => !linkedDriveIds.has(f.id))
+    .map((f) => {
+      const dp = { kind: 'drive', owner: 'drive', repo: f.id, driveId: f.id, name: f.name };
+      const conns = REPO.connectionsOf(dp);
+      if (conns.github && ghKeys.has(`${conns.github.owner}/${conns.github.repo}`)) return null;
+      return { key: `drive:${f.id}`, name: f.name, github: !!conns.github, drive: true, icloud: false, onDevice: REPO.onDevice(dp), time: f.modified, look: DRIVE_LOOK, open: () => onOpen({ type: 'drive', folder: f }) };
+    })
+    .filter(Boolean);
+  const byTime = (a, b) => (b.time || 0) - (a.time || 0);
+  const hereRows = [...ghRows, ...driveRows].filter((r) => r.onDevice).sort(byTime);
+  const cloudRows = [...ghRows, ...driveRows].filter((r) => !r.onDevice).sort(byTime);
+  const empty = !loading && !hereRows.length && !cloudRows.length && !icloudOnly.length && !locals.length;
   const canCreate = !!(ghToken && ghList) || !!(!ghToken && drive && driveList) || (!ghToken && localMode);
-  const firstHeader = ghList && ghList.length ? 'gh' : !ghToken && driveOnly.length ? 'drive' : icloudOnly.length ? 'icloud' : locals.length ? 'local' : null;
+  const firstHeader = hereRows.length || locals.length ? 'here' : cloudRows.length ? 'cloud' : icloudOnly.length ? 'icloud' : null;
   const headerShown = canCreate ? firstHeader : null;
-  const HEADERS = { gh: t('home.githubHeader'), drive: 'GOOGLE DRIVE', icloud: t('home.icloudHeader'), local: t('home.localHeader') };
+  const HEADERS = { here: t('home.localHeader'), cloud: t('home.cloudHeader'), icloud: t('home.icloudHeader') };
   const showMove = wantIcloud && icloudInfo.available && locals.length > 0 && !(prefs && prefs.icloudMoveDismissed);
   const showLocalHint = !!(prefs && prefs.localOnly && !prefs.icloud && !prefs.localHintDismissed);
 
@@ -1727,39 +1758,22 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
           </Jelly>
         </View>
       ) : null}
-      {(ghList || []).map((p, i) => (
-        <Jelly key={p.repo} onPress={() => onOpen({ type: 'gh', project: { ...p, index: i } })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={p.name} testID="project-row">
-          <Glass c={c} interactive style={s.projRow}>
-            <LinearGradient colors={projectLook(i).colors} style={s.projTile}>
-              <Icon name={projectLook(i).icon} size={24} color="#fff" />
-            </LinearGradient>
-            <View style={s.flex}>
-              <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
-              <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
-                {t('home.lastBackup', { ago: ago(p.pushedAt) })}
-                {driveNames.has(norm(p.name)) ? ` · ${t('home.alsoDrive')}` : ''}
-                {icloudNames.has(norm(p.name)) ? ` · ${t('home.alsoIcloud')}` : ''}
-              </Text>
-            </View>
-            <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
-          </Glass>
-        </Jelly>
+      {hereRows.length || locals.length ? (headerShown !== 'here' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.localHeader')}</Text> : null) : null}
+      {hereRows.map((r) => (
+        <HomeProjectRow key={r.key} c={c} r={r} />
+      ))}
+      {locals.map((p) => (
+        <LocalProjectRow key={p.id} c={c} p={p} testID="local-project-row" onPress={() => onOpen({ type: 'local', project: p })} />
       ))}
 
-      {driveOnly.length && headerShown !== 'drive' ? <Text style={[s.dayHeader, { color: c.text3 }]}>GOOGLE DRIVE</Text> : null}
-      {driveOnly.map((f) => (
-        <Jelly key={f.id} onPress={() => onOpen({ type: 'drive', folder: f })} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={f.name} testID="project-row">
-          <Glass c={c} interactive style={s.projRow}>
-            <LinearGradient colors={DRIVE_LOOK.colors} style={s.projTile}>
-              <Icon name={DRIVE_LOOK.icon} size={24} color="#fff" />
-            </LinearGradient>
-            <View style={s.flex}>
-              <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{f.name}</Text>
-              <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }}>{t('home.updated', { ago: ago(f.modified) })}</Text>
-            </View>
-            <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
-          </Glass>
-        </Jelly>
+      {cloudRows.length ? (
+        <>
+          {headerShown !== 'cloud' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.cloudHeader')}</Text> : null}
+          <Text style={{ color: c.text3, fontSize: 12.5, lineHeight: 17, marginBottom: 8, marginHorizontal: 4, marginTop: headerShown === 'cloud' ? 4 : 0 }}>{t('home.cloudHint')}</Text>
+        </>
+      ) : null}
+      {cloudRows.map((r) => (
+        <HomeProjectRow key={r.key} c={c} r={r} cloud />
       ))}
 
       {icloudOnly.length && headerShown !== 'icloud' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.icloudHeader')}</Text> : null}
@@ -1768,10 +1782,6 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
         <LocalProjectRow key={p.id} c={c} p={p} disabled={!!p.unavailable} testID="icloud-project-row" onPress={() => onOpen({ type: 'local', project: p })} />
       ))}
 
-      {locals.length && headerShown !== 'local' ? <Text style={[s.dayHeader, { color: c.text3 }]}>{t('home.localHeader')}</Text> : null}
-      {locals.map((p) => (
-        <LocalProjectRow key={p.id} c={c} p={p} testID="local-project-row" onPress={() => onOpen({ type: 'local', project: p })} />
-      ))}
 
       {empty && localMode && !ghToken && !drive ? (
         <EmptyState c={c} icon="folder.badge.plus" title={t('home.localEmptyTitle')} body={t('home.localEmptyBody')} action={{ title: t('home.newProject'), icon: 'plus', onPress: newProject }} />
@@ -1781,6 +1791,40 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
     </ScrollView>
     <BusyHud c={c} text={moving} />
     </View>
+  );
+}
+
+// Ana ekran proje satırı: bağlantı etiketleri; bulutta olan (bu cihaza inmemiş) proje soluk ve "dokun, insin"
+function ConnBadge({ c, icon, text }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: c.accentSoft, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999 }}>
+      <Icon name={icon} size={10} color={c.accent} weight="semibold" />
+      <Text style={{ color: c.accent, fontSize: 11.5, fontWeight: '700' }}>{text}</Text>
+    </View>
+  );
+}
+
+function HomeProjectRow({ c, r, cloud }) {
+  return (
+    <Jelly onPress={r.open} scaleTo={0.97} style={{ marginBottom: 10 }} accessibilityLabel={r.name} testID={cloud ? 'cloud-project-row' : 'project-row'}>
+      <Glass c={c} interactive style={s.projRow}>
+        <LinearGradient colors={r.look.colors} style={[s.projTile, cloud && { opacity: 0.5 }]}>
+          <Icon name={cloud ? 'icloud.and.arrow.down' : r.look.icon} size={24} color="#fff" />
+        </LinearGradient>
+        <View style={s.flex}>
+          <Text style={{ color: cloud ? c.text2 : c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{r.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+            {r.github ? <ConnBadge c={c} icon="chevron.left.forwardslash.chevron.right" text="GitHub" /> : null}
+            {r.drive ? <ConnBadge c={c} icon="externaldrive.fill" text="Drive" /> : null}
+            {r.icloud ? <ConnBadge c={c} icon="icloud.fill" text="iCloud" /> : null}
+            <Text style={{ color: c.text3, fontSize: 12.5 }} numberOfLines={1}>
+              {cloud ? t('home.tapToDownload') : r.time ? t('home.lastBackup', { ago: ago(r.time) }) : ''}
+            </Text>
+          </View>
+        </View>
+        <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
+      </Glass>
+    </Jelly>
   );
 }
 
@@ -1795,9 +1839,12 @@ function LocalProjectRow({ c, p, onPress, disabled, testID }) {
         </LinearGradient>
         <View style={s.flex}>
           <Text style={{ color: c.text, fontSize: 17, fontWeight: '700' }} numberOfLines={1}>{p.name}</Text>
-          <Text style={{ color: c.text3, fontSize: 13, marginTop: 2 }} numberOfLines={1}>
-            {disabled ? t('icloud.goneTitle') : p.modified ? t('project.lastSave', { ago: ago(p.modified) }) : LOCAL.filesPath(p)}
-          </Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+            {p.store === 'icloud' ? <ConnBadge c={c} icon="icloud.fill" text="iCloud" /> : <ConnBadge c={c} icon="iphone" text={t('home.onlyHere')} />}
+            <Text style={{ color: c.text3, fontSize: 12.5 }} numberOfLines={1}>
+              {disabled ? t('icloud.goneTitle') : p.modified ? t('project.lastSave', { ago: ago(p.modified) }) : ''}
+            </Text>
+          </View>
         </View>
         <Text style={{ color: c.text3, fontSize: 22 }}>›</Text>
       </Glass>

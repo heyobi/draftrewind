@@ -66,6 +66,13 @@ export function repoFor(p) {
   return job;
 }
 
+// Ana ekran: proje bu cihaza inmiş mi? (bağlantısı kesilmiş giriş sayılmaz)
+export function onDevice(p) {
+  const st = WS.loadState(p);
+  if (st.detached) return false;
+  return !!(st.engine || st.full || Object.keys(st.files || {}).length) && WS.projectDir(p).exists;
+}
+
 // Bu cihazda bu projenin bir kopyası var mı (git deposu ya da eski çalışma alanı)?
 export function hasLocal(p) {
   const st = WS.loadState(p);
