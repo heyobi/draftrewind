@@ -534,10 +534,16 @@ const markRemoved = (entry) => removed.add(entry.driveId ? `drive:${entry.driveI
 // Buluttaki kopyayı sil (bağlantı kesildikten sonra çağrılır). GitHub izni yoksa { settingsUrl } döner.
 export async function deleteRemote(which, entry, { token, drive } = {}) {
   if (which === 'drive') {
-    await drive.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.driveId)}?fields=id`, {
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ trashed: true }),
-    });
+    try {
+      await drive.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.driveId)}?fields=id`, {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trashed: true }),
+      });
+    } catch (e) {
+      // 403/404: klasörü bu uygulama oluşturmamış (ör. bilgisayardaki Google Drive klasörü) → Drive'da açılır
+      if (e && (e.status === 403 || e.status === 404)) return { done: false, openUrl: `https://drive.google.com/drive/folders/${entry.driveId}` };
+      throw e;
+    }
     markRemoved(entry);
     return { done: true };
   }

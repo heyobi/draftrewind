@@ -1650,9 +1650,37 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
         if (m) {
           setMoving(null);
           if (m.kind === 'gh') {
-            if (!REPO.connectionsOf(m.project).drive) await REPO.connectDrive(m.project, drive, f);
-            Alert.alert(t('home.sameTitle'), t('home.sameLinked', { name: m.project.name }), [{ text: t('common.ok') }]);
-            return onOpen({ type: 'gh', project: m.project });
+            if (!REPO.connectionsOf(m.project).drive) {
+              await REPO.connectDrive(m.project, drive, f);
+              Alert.alert(t('home.sameTitle'), t('home.sameLinked', { name: m.project.name }), [{ text: t('common.ok') }]);
+              return onOpen({ type: 'gh', project: m.project });
+            }
+            // Projenin zaten kendi Drive klasörü var: bu klasör aynı projenin eski bir kopyası
+            return Alert.alert(t('home.staleCopyTitle'), t('home.staleCopyBody', { name: m.project.name, folder: f.name }), [
+              { text: t('common.cancel'), style: 'cancel' },
+              { text: t('home.openProject'), onPress: () => onOpen({ type: 'gh', project: m.project }) },
+              {
+                text: t('home.deleteStale'),
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    const r = await REPO.deleteRemote('drive', { driveId: f.id }, { drive });
+                    if (r.done) {
+                      success();
+                      setDriveList((l) => (l || []).filter((x) => x.id !== f.id));
+                    } else if (r.openUrl) {
+                      Alert.alert(t('conn.driveNoPermTitle'), t('home.staleNoPerm'), [
+                        { text: t('common.ok'), style: 'cancel' },
+                        { text: t('conn.openDrive'), onPress: () => Linking.openURL(r.openUrl).catch(() => {}) },
+                      ]);
+                    }
+                  } catch (e) {
+                    warn();
+                    Alert.alert(t('conn.failed'), errText(e), [{ text: t('common.ok') }]);
+                  }
+                },
+              },
+            ]);
           }
           if (m.kind === 'local') {
             await LOCAL.attachToDrive(m.project, f);
@@ -2523,6 +2551,11 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
             Alert.alert(t('conn.ghNoPermTitle'), t('conn.ghNoPermBody'), [
               { text: t('common.ok'), style: 'cancel' },
               { text: t('conn.openSettings'), onPress: () => Linking.openURL(r.settingsUrl).catch(() => {}) },
+            ]);
+          } else if (!r.done && r.openUrl) {
+            Alert.alert(t('conn.driveNoPermTitle'), t('conn.driveNoPermBody'), [
+              { text: t('common.ok'), style: 'cancel' },
+              { text: t('conn.openDrive'), onPress: () => Linking.openURL(r.openUrl).catch(() => {}) },
             ]);
           } else if (which === 'drive') {
             Alert.alert(t('conn.driveTrashedTitle'), t('conn.driveTrashed'), [{ text: t('common.ok') }]);
