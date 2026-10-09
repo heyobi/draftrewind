@@ -480,7 +480,7 @@
             <p>${t('onb.cloudLead')}</p>
             <div class="cta">
                 ${gh ? '' : `<button class="btn" data-action="github-login">${ic('github')} ${t('onb.connectGithub')}</button>`}
-                ${dr ? '' : `<button class="btn" data-action="goto-tab" data-tab="cloud">${ic('drive')} ${t('onb.connectDrive')}</button>`}
+                ${dr ? '' : `<button class="btn" data-action="drive-signin">${ic('drive')} ${t('onb.connectDrive')}</button>`}
             </div>
             ${cloud.length ? `<div class="cloud-found">${cloud
                 .map((it, i) => `<div class="cf-row"><div class="cf-main"><b>${esc(it.name)}</b><span>${esc(SRC_LABEL[it.source] || it.source)} · ${ago(it.updatedAt)}</span></div><button class="btn sm primary" data-action="adopt-cloud" data-i="${i}">${t('cloudFound.get')}</button></div>`)
