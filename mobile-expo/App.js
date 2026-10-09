@@ -2791,7 +2791,7 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
 
 // Projeyi kullanan cihazlar (son eşitleme zamanıyla). Yalnızca bu cihaz varsa gösterilmez.
 function DevicesCard({ c, devices }) {
-  if (!devices || devices.length < 2) return null;
+  if (!devices || !devices.length) return null;
   return (
     <Glass c={c} style={{ paddingHorizontal: 14, paddingVertical: 8, marginTop: 10 }}>
       <Text style={[s.dayHeader, { color: c.text3, marginTop: 6, marginBottom: 2 }]}>{t('devices.title')}</Text>

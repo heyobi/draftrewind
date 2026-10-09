@@ -710,6 +710,17 @@ export function devicesOf(p, history) {
   add(me, Date.now(), { self: true });
   const peers = conns.drive ? WS.loadState(conns.drive).devices || [] : [];
   for (const x of peers) if (x.id !== deviceId()) add(x.device || t('devices.unknown'), x.time);
-  if (!peers.length) for (const h of (history || []).slice(0, 300)) if (PHONE_NAMES.has(h.author) && h.author !== me) add(h.author, h.time);
+  // Kayıtlardan: telefon/iPad yazarları; bilgisayarın kayıtlarında yazar kişi adıdır → "Bilgisayar (ad)".
+  // Drive'dan bir bilgisayar zaten geldiyse kayıtlardaki bilgisayar satırı eklenmez (aynı bilgisayar).
+  const pcFromDrive = peers.some((x) => x.id !== deviceId() && !PHONE_NAMES.has(x.device || ''));
+  for (const h of (history || []).slice(0, 300)) {
+    const a = h.author || '';
+    if (!a || a === 'DraftRewind' || h.kind === 'merge') continue;
+    if (PHONE_NAMES.has(a)) {
+      if (a !== me && !peers.length) add(a, h.time);
+    } else if (!pcFromDrive) {
+      add(t('devices.computerOf', { name: a }), h.time, { phone: false });
+    }
+  }
   return [...out.values()].sort((a, b) => (b.self ? 1 : 0) - (a.self ? 1 : 0) || b.time - a.time).slice(0, 8);
 }
