@@ -11,6 +11,10 @@ const git = require('isomorphic-git');
 const { applyRemote, mergeDiverged } = require('./github');
 
 const BRANCH = 'main';
+// Birleştirme: depoda bu kadar paket birikince; yalnızca en az bu kadar süredir görülen paketler silinir
+// (çevrimdışı bir cihazın henüz almadığı paket erken silinmesin; zaten yeni pakette onun ucu da vardır)
+const COMPACT_AT = 40;
+const COMPACT_MIN_AGE_MS = 14 * 86400000;
 
 function packLooksComplete(data, fileName) {
     if (!data) return false;
@@ -108,7 +112,7 @@ async function rootsOf(gitdir, head) {
 
 // Dönen: { pushed, pulled, conflicts, head, ahead, at }
 // meta: uç dosyasına eklenen proje bilgisi (ör. { github: { owner, repo } }); dönen peers: diğer cihazlarınki
-function syncStore(project, { store, deviceId, deviceName = '', noPush = false, meta = null }) {
+function syncStore(project, { store, deviceId, deviceName = '', noPush = false, meta = null, now = Date.now() }) {
     if (!store || !deviceId) throw new Error('store ve deviceId gerekli');
     return project.exclusive(async () => {
         const gitdir = project.gitdir;
@@ -117,6 +121,7 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
         try { all = JSON.parse(fs.readFileSync(stateFile, 'utf8')) || {}; } catch (e) { all = {}; }
         const st = { imported: [], published: null, ...(all[store.id] || {}) };
         const imported = new Set(st.imported);
+        const seenAt = { ...(st.seenAt || {}) }; // paket adı → bu cihazın onu ilk gördüğü an
         const names = await store.list();
         const myHead = `heads/${deviceId}.json`;
         if (!names.includes(myHead)) st.published = null;
@@ -142,6 +147,7 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
                 }
             }
             imported.add(name);
+            if (!seenAt[name]) seenAt[name] = now;
         }
 
         // 2) Diğer cihazların uçları (eskiden yeniye)
@@ -180,18 +186,41 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
                 const { filename, packfile } = await git.packObjects({ fs, gitdir, oids, write: false });
                 await store.write(`packs/${filename}`, Buffer.from(packfile));
                 imported.add(`packs/${filename}`);
+                if (!seenAt[`packs/${filename}`]) seenAt[`packs/${filename}`] = now;
             }
             await store.write(myHead, Buffer.from(JSON.stringify({ head: local, time: Date.now(), device: deviceName, ...(meta || {}) })));
             st.published = local;
             pushed = true;
         }
         if (pushed) st.meta = metaKey;
-        all[store.id] = { imported: [...imported], published: st.published, meta: st.meta };
+        // Birleştirme: bilinen bütün uçlara giden her nesne tek pakete; sonra eski paketler silinir
+        let compacted = 0;
+        const packNames = names.filter(n => /^packs\/pack-[0-9a-f]{40}\.pack$/.test(n));
+        if (store.remove && local && packNames.length > COMPACT_AT) {
+            const old = packNames.filter(n => imported.has(n) && seenAt[n] && now - seenAt[n] >= COMPACT_MIN_AGE_MS);
+            if (old.length >= COMPACT_AT / 2) {
+                const all2 = new Set();
+                for (const h of [...known, local]) for (const oid of await objectsSince(gitdir, h, [])) all2.add(oid);
+                const { filename, packfile } = await git.packObjects({ fs, gitdir, oids: [...all2], write: false });
+                const big = `packs/${filename}`;
+                await store.write(big, Buffer.from(packfile));
+                imported.add(big);
+                seenAt[big] = now;
+                for (const n of old) {
+                    if (n === big) continue;
+                    try {
+                        await store.remove(n);
+                        compacted++;
+                    } catch (e) {}
+                }
+            }
+        }
+        all[store.id] = { imported: [...imported], published: st.published, meta: st.meta, seenAt };
         const tmp = `${stateFile}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(all));
         fs.renameSync(tmp, stateFile);
         const peers = heads.map(x => ({ id: x.id, time: x.time, device: x.device, head: x.head, github: x.github, roots: x.roots }));
-        return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers };
+        return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers, compacted };
     });
 }
 

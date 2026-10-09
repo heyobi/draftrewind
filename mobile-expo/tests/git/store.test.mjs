@@ -257,3 +257,33 @@ test('proje kimliği (kök kayıtlar): telefon ve masaüstü aynı sonucu bulur,
   assert.deepEqual(d.peers.find((x) => x.id === 'tel').roots, roots);
   assert.deepEqual(await rootsOf(pc.gitdir, await pc.head()), roots);
 });
+
+test('masaüstü paket birleştirme: çok paket birikince tek pakete iner, eskiler silinir, telefon yine eşitlenir', async () => {
+  const { syncStore } = require('../../../app/core/storeSync.js');
+  const root = h.tmpDir('drw-store-compact-');
+  const store = dirStore(root);
+  store.remove = async (name) => fs.rmSync(path.join(root, ...name.split('/')));
+  const tel = await device('cmp-tel');
+  const pc = await h.openProject({ root: h.tmpDir('drw-st-pcc-'), id: 'ortak', name: 'Tezim' });
+  const day = 86400000;
+  let t0 = Date.UTC(2026, 0, 1);
+  for (let i = 0; i < 45; i++) {
+    put(tel, 'tez.txt', `sürüm ${i}`);
+    await tel.syncStoreWithSnapshot({ store, deviceId: 'tel' });
+    await syncStore(pc, { store, deviceId: 'pc', now: t0 });
+  }
+  const before = (await store.list()).filter((n) => n.startsWith('packs/')).length;
+  assert.ok(before > 40);
+  // 15 gün sonra masaüstü eşitlenince birleştirir
+  const r = await syncStore(pc, { store, deviceId: 'pc', now: t0 + 15 * day });
+  assert.ok(r.compacted >= 20);
+  const after = (await store.list()).filter((n) => n.startsWith('packs/')).length;
+  assert.ok(after < before);
+  // Hiç eşitlenmemiş yeni bir cihaz tüm geçmişi tek paketten alır
+  const yeni = await device('cmp-yeni');
+  const y = await yeni.syncStoreWithSnapshot({ store, deviceId: 'yeni' });
+  assert.equal(await yeni.head(), await tel.head());
+  assert.equal(read(yeni, 'tez.txt'), 'sürüm 44');
+  assert.equal((await yeni.history({ limit: 100 })).length, (await tel.history({ limit: 100 })).length);
+  assert.ok(y.pulled >= 1);
+});

@@ -329,6 +329,9 @@ class FolderRemote {
             async read(name) {
                 try { return fs.readFileSync(path.join(base, ...name.split('/'))); } catch (e) { return null; }
             },
+            async remove(name) {
+                fs.unlinkSync(path.join(base, ...name.split('/')));
+            },
             async write(name, buf) {
                 const dst = path.join(base, ...name.split('/'));
                 fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -890,6 +893,15 @@ class ApiRemote {
                 const id = files.get(name);
                 if (!id) return null;
                 return api.req('GET', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { raw: true });
+            },
+            async remove(name) {
+                const id = files.get(name);
+                if (!id) return;
+                await api.req('PATCH', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id`, {
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ trashed: true })
+                });
+                files.delete(name);
             },
             async write(name, buf) {
                 const t = await ensure();
