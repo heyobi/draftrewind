@@ -2,7 +2,7 @@
   "expo": {
     "name": "DraftRewind",
     "slug": "acadamiv-mobile",
-    "version": "1.0.6",
+    "version": "1.0.7",
     "owner": "heyobi",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -80,7 +80,7 @@
         ],
         "CFBundleAllowMixedLocalizations": true
       },
-      "buildNumber": "7",
+      "buildNumber": "8",
       "privacyManifests": {
         "NSPrivacyTracking": false,
         "NSPrivacyTrackingDomains": [],
