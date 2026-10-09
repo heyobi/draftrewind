@@ -1537,7 +1537,8 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
     if (ghToken)
       jobs.push(
         GH.listProjects(ghToken)
-          .then(async (raw) => {
+          .then(async (all) => {
+            const raw = all.filter((p) => !REPO.isRemoved(p));
             const list = withFresh(raw);
             setGhList(list);
             ghListRef.current = list;
@@ -1561,7 +1562,7 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
       jobs.push(
         drive
           .projects()
-          .then(setDriveList)
+          .then((l) => setDriveList(l.filter((f) => !REPO.isRemoved({ driveId: f.id }))))
           .catch((e) => {
             if (e.auth) onAuthErrorGoogle();
             setError(e.message);
@@ -2410,16 +2411,15 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
   const turnOff = (which) => {
     const service = SERVICE[which];
     const other = which === 'github' ? conns.drive : conns.github;
-    if (!other) {
-      warn();
-      return Alert.alert(t('conn.lastTitle'), t('conn.lastBody', { service }), [{ text: t('common.ok') }]);
-    }
+    const last = !other;
     const entry = conns[which];
     const finish = async (remove) => {
       setBusy(which);
       try {
         const a = REPO.getAuth();
-        REPO.disconnect(project, which);
+        // Son bağlantı: proje bu cihazda, geçmişiyle hesapsız proje olarak kalır
+        if (last) REPO.keepLocalOnly(project);
+        else REPO.disconnect(project, which);
         if (remove) {
           const r = await REPO.deleteRemote(which, entry, { token: a.github, drive: a.drive });
           if (!r.done && r.settingsUrl) {
@@ -2432,7 +2432,8 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
           }
         }
         success();
-        if (which === self) onLeave();
+        if (last) Alert.alert(t('conn.localOnlyTitle'), t('conn.localOnlyBody'), [{ text: t('common.ok') }]);
+        if (last || which === self) onLeave();
         else {
           refresh();
           onChanged();
@@ -2461,9 +2462,9 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
         ],
         'plain-text'
       );
-    Alert.alert(t('conn.offTitle', { service }), t('conn.offBody', { service }), [
+    Alert.alert(t('conn.offTitle', { service }), t(last ? 'conn.offLastBody' : 'conn.offBody', { service }), [
       { text: t('common.cancel'), style: 'cancel' },
-      { text: t('conn.disconnect'), onPress: () => finish(false) },
+      { text: t(last ? 'conn.keepLocal' : 'conn.disconnect'), onPress: () => finish(false) },
       { text: t('conn.deleteToo'), style: 'destructive', onPress: askDelete },
     ]);
   };

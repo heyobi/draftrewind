@@ -15,6 +15,7 @@ import { t } from './i18n';
 import { mirror } from './git/mirror';
 import { historyStore, driveRemote } from './driveSync';
 import * as GH from './github';
+import * as LOCAL from './local';
 
 const opened = new Map(); // anahtar → Promise<GitProject>
 
@@ -216,6 +217,11 @@ async function doGithubSync(token, p, opts) {
     out.pull.moved = pulled > 0 || (await r.remoteHead()) !== startRemote || before !== res.head;
   } catch (e) {
     if (e && e.code === 'EGHAUTH') throw authError(e);
+    if (e && e.code === 'EGHREPO') {
+      const err = new Error(t('err.ghRepoGone'));
+      err.repoGone = true;
+      throw err;
+    }
     throw e;
   }
   out.pull.updated = Array.from({ length: pulled }, () => '');
@@ -460,8 +466,31 @@ export function disconnect(p, which) {
     delete st[which];
     WS.saveState(keep, st);
   }
-  WS.removeState(gone);
+  detach(gone, which);
 }
+
+// Kesilen giriş: ana ekrandan yeniden açılırsa bu projeye değil, ayrı bir klasöre ve ayrı bir kopyaya iner
+function detach(entry, which) {
+  const folder = `${WS.folderName(entry)} (${which === 'github' ? 'GitHub' : 'Drive'})`;
+  // Ayrı klasör ve ayrı geçmiş deposu: bu projenin deposuyla asla karışmaz
+  WS.saveState(entry, { head: null, files: {}, detached: true, folder, gitKey: `${repoKey(entry)}-${Date.now().toString(36)}` });
+}
+
+// Son bağlantı da kapandı: proje bu cihazda, geçmişiyle birlikte hesapsız proje olarak sürer
+export function keepLocalOnly(p) {
+  const conns = connectionsOf(p);
+  const key = gitKeyOf(p);
+  const folder = WS.folderName(p);
+  if (conns.github) detach(conns.github, 'github');
+  if (conns.drive) detach(conns.drive, 'drive');
+  LOCAL.adoptAsLocal({ folder, name: p.name, gitKey: key });
+  opened.delete(key);
+}
+
+// Bu oturumda silinen bulut projeleri: GitHub/Drive listesi birkaç saniye geç güncellenir, o sürede gizlenir
+const removed = new Set();
+export const isRemoved = (entry) => removed.has(entry.driveId ? `drive:${entry.driveId}` : `gh:${entry.owner}/${entry.repo}`);
+const markRemoved = (entry) => removed.add(entry.driveId ? `drive:${entry.driveId}` : `gh:${entry.owner}/${entry.repo}`);
 
 // Buluttaki kopyayı sil (bağlantı kesildikten sonra çağrılır). GitHub izni yoksa { settingsUrl } döner.
 export async function deleteRemote(which, entry, { token, drive } = {}) {
@@ -470,13 +499,17 @@ export async function deleteRemote(which, entry, { token, drive } = {}) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trashed: true }),
     });
+    markRemoved(entry);
     return { done: true };
   }
   const res = await fetch(`https://api.github.com/repos/${entry.owner}/${entry.repo}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
   });
-  if (res.status === 204 || res.status === 404) return { done: true };
+  if (res.status === 204 || res.status === 404) {
+    markRemoved(entry);
+    return { done: true };
+  }
   return { done: false, settingsUrl: `https://github.com/${entry.owner}/${entry.repo}/settings` };
 }
 

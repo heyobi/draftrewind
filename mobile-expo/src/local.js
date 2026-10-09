@@ -763,7 +763,7 @@ export function moveToDrive(drive, p, onProgress) {
 // ---------------------------------------------------------------- git motoru (hesapsız projeler)
 // iCloud projeleri şimdilik kopya düzeninde: _Sürümler başka cihazlardan (masaüstü) de okunuyor.
 export const usesEngine = (p) => p.store === 'local';
-const gitKey = (p) => `local-${safeName(p.folder)}`;
+const gitKey = (p) => loadState(p).gitKey || `local-${safeName(p.folder)}`;
 const gitdirOf = (p) => `${ensureGitRoot()}/${gitKey(p)}`;
 const engines = new Map(); // anahtar → Promise<GitProject>
 const engineItems = new Map(); // anahtar → son okunan geçmiş (motor biçimi; artımlı okuma için)
@@ -921,4 +921,11 @@ async function engineMoveToDrive(drive, p) {
   engineItems.delete(gitKey(p));
   safeDelete(stateFile(p));
   return { folder, tooBig, keptLocal: false };
+}
+
+// Bulut bağlantısı kalmayan proje: klasör ve git geçmişi yerinde kalır, hesapsız proje olarak listelenir
+export function adoptAsLocal({ folder, name, gitKey: key }) {
+  const p = { id: `local:${folder}`, name: name || folder, folder, store: 'local' };
+  saveState(p, { ...EMPTY(), gitKey: key, created: Date.now(), engineModified: Date.now(), engineCount: 0 });
+  return p;
 }
