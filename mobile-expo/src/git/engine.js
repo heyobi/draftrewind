@@ -751,7 +751,7 @@ export class GitProject {
       if (!m || m[1] === deviceId) continue;
       try {
         const h = JSON.parse(utf8Decode(await store.read(name)));
-        if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null });
+        if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null, roots: Array.isArray(h.roots) ? h.roots : [] });
       } catch (e) {}
     }
     heads.sort((a, b) => a.time - b.time);
@@ -799,7 +799,7 @@ export class GitProject {
     if (pushed) st.meta = metaKey;
     all[store.id] = { imported: [...imported], published: st.published, meta: st.meta };
     await writeAtomic(this.backend, stateFile, JSON.stringify(all));
-    const peers = heads.map((x) => ({ id: x.id, time: x.time, github: x.github }));
+    const peers = heads.map((x) => ({ id: x.id, time: x.time, head: x.head, github: x.github, roots: x.roots }));
     return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers };
   }
 
@@ -905,6 +905,41 @@ export class GitProject {
     const { commit } = await git.readCommit(this.g({ oid }));
     const rows = await this.changes(oid);
     return { parent: commit.parent[0] || null, files: rows.map((r) => ({ path: r.rel, status: r.change === 'deleted' ? 'removed' : r.change })) };
+  }
+
+  // Projenin kimliği: geçmişin kök kayıtları (ebeveyni olmayanlar). Ad, klasör ya da bulut değişse de aynı
+  // projenin bütün kopyaları (telefon, bilgisayar, GitHub, Drive) bunları paylaşır. Uç değişmedikçe önbellekten.
+  async roots() {
+    const head = await this.head();
+    if (!head) return [];
+    const file = joinPath(this.gitdir, 'draftrewind-roots.json');
+    try {
+      const c = JSON.parse((await readTextOrNull(this.backend, file)) || 'null');
+      if (c && c.head === head && Array.isArray(c.roots)) return c.roots;
+    } catch (e) {}
+    const roots = new Set();
+    const seen = new Set();
+    const stack = [head];
+    let k = 0;
+    while (stack.length) {
+      const oid = stack.pop();
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      let c;
+      try {
+        ({ commit: c } = await git.readCommit(this.g({ oid })));
+      } catch (e) {
+        continue;
+      }
+      if (!c.parent.length) roots.add(oid);
+      for (const p of c.parent) stack.push(p);
+      if (++k % 50 === 0) await tick();
+    }
+    const list = [...roots].sort();
+    try {
+      await writeAtomic(this.backend, file, JSON.stringify({ head, roots: list }));
+    } catch (e) {}
+    return list;
   }
 
   // Bu kayıt bu cihazdaki geçmişte var mı?

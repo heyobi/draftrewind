@@ -377,7 +377,7 @@ async function doDriveSync(drive, p, opts) {
   const store = historyStore(drive, p.driveId);
   // Uç dosyasında projenin GitHub bağlantısı da yayımlanır: diğer cihazlar aynı depoya bağlanır
   const linkedGh = connectionsOf(p).github;
-  const dev = { store, deviceId: deviceId(), deviceName: author().name, meta: { github: linkedGh ? { owner: linkedGh.owner, repo: linkedGh.repo } : null } };
+  const dev = { store, deviceId: deviceId(), deviceName: author().name, meta: { github: linkedGh ? { owner: linkedGh.owner, repo: linkedGh.repo } : null, roots: await r.roots() } };
   const st = WS.loadState(p);
   const startRemote = st.pushedOid || null;
   const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
@@ -445,10 +445,10 @@ async function link(p) {
 }
 
 // Drive bağlantısı ekle: Drive'da klasör açılır; ilk eşitlemede tüm geçmiş ve dosyalar yüklenir
-export async function connectDrive(p, drive) {
+export async function connectDrive(p, drive, given = null) {
   const { key, folder } = await link(p);
-  // Önce Drive'da bu projenin klasörü var mı bak (ör. bilgisayar zaten eşitliyor): yoksa yeni klasör
-  const f = (await findDriveFolder(p, drive)) || (await drive.createProject(p.name));
+  // Verilen klasör; yoksa Drive'da bu projenin klasörü (ör. bilgisayar zaten eşitliyor); o da yoksa yeni klasör
+  const f = given || (await findDriveFolder(p, drive)) || (await drive.createProject(p.name));
   WS.saveState(driveEntry({ id: f.id, name: f.name }), { head: null, files: {}, engine: true, gitKey: key, folder, github: { owner: p.owner, repo: p.repo, name: p.name } });
   WS.saveState(p, { ...WS.loadState(p), drive: { id: f.id, name: f.name } });
   return f;
@@ -562,4 +562,35 @@ function adoptPeerGithub(p, peers) {
   if (WS.loadState(entry).engine) return;
   WS.saveState(entry, { head: null, files: {}, full: true, engine: true, gitKey: gitKeyOf(p), folder: WS.folderName(p), drive: { id: p.driveId, name: p.name } });
   WS.saveState(p, { ...WS.loadState(p), github: { owner: g.owner, repo: g.repo, name: p.name } });
+}
+
+// ---------------------------------------------------------------- aynı projeyi tanıma
+// Drive klasöründeki projenin kimliği: uç dosyalarındaki kök kayıtlar, uçlar ve GitHub bağlantısı (yalnızca okunur)
+export async function peekDriveFolder(drive, folderId) {
+  const store = historyStore(drive, folderId);
+  const out = { roots: new Set(), heads: [], github: null };
+  for (const n of (await store.list()).filter((x) => x.startsWith('heads/'))) {
+    try {
+      const h = JSON.parse(new TextDecoder().decode(await store.read(n)));
+      if (h && Array.isArray(h.roots)) h.roots.forEach((x) => out.roots.add(x));
+      if (h && /^[0-9a-f]{40}$/.test(h.head)) out.heads.push(h.head);
+      if (h && h.github && h.github.owner && !out.github) out.github = h.github;
+    } catch (e) {}
+  }
+  return out;
+}
+
+// Bu cihazdaki projelerden hangisi o klasörün projesi? candidates: [{ kind: 'gh' | 'drive' | 'local', project }]
+// Kimlik: aynı GitHub deposu, ortak kök kayıt ya da klasörün uçlarından biri bu cihazın geçmişinde.
+export async function matchOnDevice(info, candidates) {
+  for (const c of candidates) {
+    try {
+      if (info.github && c.kind === 'gh' && info.github.owner === c.project.owner && info.github.repo === c.project.repo) return c;
+      const r = c.kind === 'local' ? await LOCAL.engineOf(c.project) : await repoFor(c.project);
+      const roots = await r.roots();
+      if (roots.some((x) => info.roots.has(x))) return c;
+      for (const head of info.heads) if (await r.hasCommit(head)) return c;
+    } catch (e) {}
+  }
+  return null;
 }

@@ -88,6 +88,24 @@ async function objectsSince(gitdir, head, boundary) {
     return [...out];
 }
 
+// Projenin kimliği: geçmişin kök kayıtları (telefon motorundaki roots() ile aynı)
+async function rootsOf(gitdir, head) {
+    if (!head) return [];
+    const roots = new Set();
+    const seen = new Set();
+    const stack = [head];
+    while (stack.length) {
+        const oid = stack.pop();
+        if (seen.has(oid)) continue;
+        seen.add(oid);
+        let c;
+        try { c = (await git.readCommit({ fs, gitdir, oid })).commit; } catch (e) { continue; }
+        if (!c.parent.length) roots.add(oid);
+        for (const p of c.parent) stack.push(p);
+    }
+    return [...roots].sort();
+}
+
 // Dönen: { pushed, pulled, conflicts, head, ahead, at }
 // meta: uç dosyasına eklenen proje bilgisi (ör. { github: { owner, repo } }); dönen peers: diğer cihazlarınki
 function syncStore(project, { store, deviceId, deviceName = '', noPush = false, meta = null }) {
@@ -133,7 +151,7 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
             if (!m || m[1] === deviceId) continue;
             try {
                 const h = JSON.parse(Buffer.from(await store.read(name)).toString('utf8'));
-                if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null });
+                if (h && /^[0-9a-f]{40}$/.test(h.head)) heads.push({ id: m[1], head: h.head, time: h.time || 0, github: h.github || null, roots: Array.isArray(h.roots) ? h.roots : [] });
             } catch (e) {}
         }
         heads.sort((a, b) => a.time - b.time);
@@ -172,9 +190,9 @@ function syncStore(project, { store, deviceId, deviceName = '', noPush = false, 
         const tmp = `${stateFile}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(all));
         fs.renameSync(tmp, stateFile);
-        const peers = heads.map(x => ({ id: x.id, time: x.time, github: x.github }));
+        const peers = heads.map(x => ({ id: x.id, time: x.time, head: x.head, github: x.github, roots: x.roots }));
         return { pushed, pulled, conflicts, head: local || null, ahead: !!local && local !== st.published, at: Date.now(), peers };
     });
 }
 
-module.exports = { syncStore, objectsSince, packLooksComplete, integrate, BRANCH };
+module.exports = { syncStore, objectsSince, packLooksComplete, integrate, rootsOf, BRANCH };

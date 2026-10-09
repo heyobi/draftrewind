@@ -239,3 +239,21 @@ test('uç dosyası proje bilgisini taşır (GitHub bağlantısı); yalnızca bil
   const again = await tel.syncStore({ store, deviceId: 'tel', meta: { github: { owner: 'ogrenci', repo: 'draftrewind-tezim' } } });
   assert.equal(again.pushed, false);
 });
+
+test('proje kimliği (kök kayıtlar): telefon ve masaüstü aynı sonucu bulur, uç dosyasında taşınır', async () => {
+  const { syncStore, rootsOf } = require('../../../app/core/storeSync.js');
+  const store = dirStore(h.tmpDir('drw-store-root-'));
+  const tel = await device('root-tel');
+  put(tel, 'a.txt', 'bir');
+  await tel.snapshot();
+  put(tel, 'a.txt', 'iki');
+  await tel.snapshot();
+  const roots = await tel.roots();
+  assert.equal(roots.length, 1);
+  assert.deepEqual(await tel.roots(), roots); // önbellek
+  await tel.syncStore({ store, deviceId: 'tel', meta: { roots } });
+  const pc = await h.openProject({ root: h.tmpDir('drw-st-pcr-'), id: 'ortak', name: 'Tezim' });
+  const d = await syncStore(pc, { store, deviceId: 'pc' });
+  assert.deepEqual(d.peers.find((x) => x.id === 'tel').roots, roots);
+  assert.deepEqual(await rootsOf(pc.gitdir, await pc.head()), roots);
+});

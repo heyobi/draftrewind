@@ -424,7 +424,10 @@ async function syncDrive(rt, kind = 'auto') {
             if (!history) return null;
             try {
                 const rec = recordOf(rt.project.id) || {};
-                const meta = { github: rec.github && rec.github.owner ? { owner: rec.github.owner, repo: rec.github.repo } : null };
+                const meta = {
+                    github: rec.github && rec.github.owner ? { owner: rec.github.owner, repo: rec.github.repo } : null,
+                    roots: await storeSync.rootsOf(rt.project.gitdir, await rt.project.head())
+                };
                 const res = await storeSync.syncStore(rt.project, { store: history, deviceId: deviceId(), deviceName: os.hostname(), meta });
                 // Başka bir cihaz (telefon) projeyi GitHub'a bağlamışsa bu bilgisayar da aynı depoyu kullanır
                 const peerGh = (res.peers || []).map(x => x.github).find(x => x && x.owner && x.repo);

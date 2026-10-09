@@ -929,3 +929,19 @@ export function adoptAsLocal({ folder, name, gitKey: key }) {
   saveState(p, { ...EMPTY(), gitKey: key, created: Date.now(), engineModified: Date.now(), engineCount: 0 });
   return p;
 }
+
+// Bu projenin git motoru (aynı projeyi tanımak için kök kayıtlar)
+export const engineOf = (p) => engineFor(p);
+
+// Var olan bir Drive klasörüne bağla (aynı proje Drive'da zaten var): klasör ve geçmiş Drive projesinin olur
+export function attachToDrive(p, folder) {
+  return exclusive(p, async () => {
+    await engineSnapshot(p, {});
+    const dp = { kind: 'drive', owner: 'drive', repo: folder.id, driveId: folder.id, name: folder.name, folder: p.folder };
+    WS.saveState(dp, { head: null, files: {}, full: true, engine: true, gitKey: gitKey(p) });
+    engines.delete(gitKey(p));
+    engineItems.delete(gitKey(p));
+    safeDelete(stateFile(p));
+    return dp;
+  });
+}

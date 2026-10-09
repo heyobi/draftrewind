@@ -1630,9 +1630,46 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
       const dp = { kind: 'drive', owner: 'drive', repo: f.id, driveId: f.id, name: f.name };
       const conns = REPO.connectionsOf(dp);
       if (conns.github && ghKeys.has(`${conns.github.owner}/${conns.github.repo}`)) return null;
-      return { key: `drive:${f.id}`, name: f.name, github: !!conns.github, drive: true, icloud: false, onDevice: REPO.onDevice(dp), time: f.modified, look: DRIVE_LOOK, open: () => onOpen({ type: 'drive', folder: f }) };
+      const here = REPO.onDevice(dp);
+      return { key: `drive:${f.id}`, name: f.name, github: !!conns.github, drive: true, icloud: false, onDevice: here, time: f.modified, look: DRIVE_LOOK, folder: f, dp, open: () => (here ? onOpen({ type: 'drive', folder: f }) : openCloudDrive(f)) };
     })
     .filter(Boolean);
+  // Bulutta olan Drive projesi: bu cihazda aynı proje (başka adla, başka bağlantıyla) varsa ona bağlanır,
+  // yoksa indirilir. Kimlik: geçmişin kök kayıtları (ad değişse de aynı kalır).
+  const openCloudDrive = async (f) => {
+    setMoving(t('home.checking'));
+    try {
+      const info = await REPO.peekDriveFolder(drive, f.id);
+      if (info.roots.size || info.heads.length || info.github) {
+        const candidates = [
+          ...(ghList || []).map((p, i) => ({ kind: 'gh', project: { ...p, index: i } })).filter((x) => REPO.onDevice(x.project)),
+          ...driveOnly.map((x) => ({ kind: 'drive', project: { kind: 'drive', owner: 'drive', repo: x.id, driveId: x.id, name: x.name }, folder: x })).filter((x) => x.folder.id !== f.id && REPO.onDevice(x.project)),
+          ...locals.filter((x) => x.store === 'local').map((x) => ({ kind: 'local', project: x })),
+        ];
+        const m = await REPO.matchOnDevice(info, candidates);
+        if (m) {
+          setMoving(null);
+          if (m.kind === 'gh') {
+            if (!REPO.connectionsOf(m.project).drive) await REPO.connectDrive(m.project, drive, f);
+            Alert.alert(t('home.sameTitle'), t('home.sameLinked', { name: m.project.name }), [{ text: t('common.ok') }]);
+            return onOpen({ type: 'gh', project: m.project });
+          }
+          if (m.kind === 'local') {
+            await LOCAL.attachToDrive(m.project, f);
+            Alert.alert(t('home.sameTitle'), t('home.sameLinked', { name: m.project.name }), [{ text: t('common.ok') }]);
+            return onOpen({ type: 'drive', folder: f });
+          }
+          Alert.alert(t('home.sameTitle'), t('home.sameOpened', { name: m.project.name }), [{ text: t('common.ok') }]);
+          return onOpen({ type: 'drive', folder: m.folder });
+        }
+      }
+    } catch (e) {
+      // Bakılamadı (ağ): her zamanki gibi indirilir; aynı proje sonra yine tanınabilir
+    } finally {
+      setMoving(null);
+    }
+    onOpen({ type: 'drive', folder: f });
+  };
   const byTime = (a, b) => (b.time || 0) - (a.time || 0);
   const hereRows = [...ghRows, ...driveRows].filter((r) => r.onDevice).sort(byTime);
   const cloudRows = [...ghRows, ...driveRows].filter((r) => !r.onDevice).sort(byTime);
@@ -1933,6 +1970,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
   const [refreshing, setRefreshing] = useState(false);
   const [snapshot, setSnapshot] = useState(null);
   const [viewer, setViewer] = useState(null);
+  const [textEdit, setTextEdit] = useState(null); // uygulama içi metin düzenleyici
   const [statsOpen, setStatsOpen] = useState(false);
   const [fileFilter, setFileFilter] = useState(null);
   const [query, setQuery] = useState('');
@@ -2016,6 +2054,8 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
   // "Düzenle (Word/Pages ile)": dosya çalışma alanına iner (yoksa), sistemin "Şununla aç" sayfası açılır.
   // Word/Pages belgeyi klasörümüzden yerinde açar; kaydedince runSync gönderir.
   const editFile = async (f) => {
+    // Düz metin / kod: uygulamanın içinde düzenlenir (Word'e gitmeye gerek yok)
+    if (kindOf(f.path) === 'text' && (f.size || 0) <= TEXT_EDIT_MAX) return setTextEdit({ path: f.path });
     if (f.size > MAX_UPLOAD) {
       warn();
       return Alert.alert(t('ws.editFailed'), t('ws.tooBig', { name: baseName(f.path) }), [{ text: t('common.ok') }]);
@@ -2407,6 +2447,16 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       {/* iOS'ta açık bir sayfanın üstüne ikinci sayfa açılamaz: kayıt ayrıntısı açıkken görüntüleyici onun içinde */}
       {!snapshot ? <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} /> : null}
       {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={null} project={project} history={history} /> : null}
+      <TextEditorSheet
+        c={c}
+        target={textEdit}
+        load={() => REPO.localFile(project, textEdit.path).text()}
+        save={async (txt) => {
+          REPO.localFile(project, textEdit.path).write(txt);
+          await runSync({ manual: true });
+        }}
+        onClose={() => setTextEdit(null)}
+      />
       <BusyHud c={c} text={busy} />
     </View>
   );
@@ -3069,6 +3119,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
   const [refreshing, setRefreshing] = useState(false);
   const [record, setRecord] = useState(null);
   const [viewer, setViewer] = useState(null);
+  const [textEdit, setTextEdit] = useState(null); // uygulama içi metin düzenleyici
   const [statsOpen, setStatsOpen] = useState(false);
   const [fileFilter, setFileFilter] = useState(null);
   const [query, setQuery] = useState('');
@@ -3195,6 +3246,9 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
   // "Düzenle": dosyanın kendisi (kopya değil) sistemin "Şununla aç" sayfasıyla açılır; kaydedilen hal
   // bir sonraki taramada yeni kayıt olur
   const editFile = async (path) => {
+    // Düz metin / kod: uygulamanın içinde düzenlenir
+    const known = (files || []).find((f) => f.path === path);
+    if (kindOf(path) === 'text' && (!known || (known.size || 0) <= TEXT_EDIT_MAX)) return setTextEdit({ path });
     setBusy(isIcloud ? t('viewer.downloading') : t('ws.preparing'));
     try {
       await LOCAL.readCurrent(project, path);
@@ -3627,6 +3681,16 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
       />
       {!record ? <ViewerSheet c={c} target={viewer} onClose={() => setViewer(null)} /> : null}
       {history ? <StatsSheet c={c} visible={statsOpen} onClose={() => setStatsOpen(false)} token={null} project={project} history={history} /> : null}
+      <TextEditorSheet
+        c={c}
+        target={textEdit}
+        load={() => LOCAL.workFile(project, textEdit.path).text()}
+        save={async (txt) => {
+          LOCAL.workFile(project, textEdit.path).write(txt);
+          await scan();
+        }}
+        onClose={() => setTextEdit(null)}
+      />
       <BusyHud c={c} text={record ? null : busy} />
     </View>
   );
@@ -3733,6 +3797,90 @@ function LocalSnapshotSheet({ c, log, record, readOnly, onClose, onOpenCopy, onO
 // ---------------------------------------------------------------------------
 // Belge görüntüleyici (GitHub ve Drive ortak)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Metin düzenleyici: düz metin / kod dosyaları uygulamanın içinde açılır, "Kaydet" ile kayda geçer
+// ---------------------------------------------------------------------------
+const TEXT_EDIT_MAX = 2 * 1024 * 1024;
+
+function TextEditorSheet({ c, target, load, save, onClose }) {
+  const [text, setText] = useState(null);
+  const [orig, setOrig] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    if (!target) return;
+    setText(null);
+    setErr(null);
+    load()
+      .then((v) => {
+        setText(v);
+        setOrig(v);
+      })
+      .catch((e) => setErr(errText(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+  if (!target) return null;
+  const dirty = text != null && text !== orig;
+  const close = () => {
+    if (!dirty) return onClose();
+    Alert.alert(t('editor.discardTitle'), t('editor.discardBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      { text: t('editor.discard'), style: 'destructive', onPress: onClose },
+    ]);
+  };
+  const doSave = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      await save(text);
+      setOrig(text);
+      success();
+      onClose();
+    } catch (e) {
+      warn();
+      Alert.alert(t('editor.saveFailed'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const name = target.path.split('/').pop();
+  return (
+    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
+      <View style={[s.flex, { backgroundColor: c.bg }]} testID="text-editor">
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 18, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: c.border }}>
+          <FileBadge name={name} size={36} />
+          <View style={s.flex}>
+            <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }} numberOfLines={1}>{name}</Text>
+            <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }} numberOfLines={1}>{dirty ? t('editor.unsaved') : t('editor.sub')}</Text>
+          </View>
+          <Pressable onPress={close} hitSlop={10} accessibilityRole="button">
+            <Text style={{ color: c.text2, fontWeight: '600', fontSize: 16 }}>{t('common.close')}</Text>
+          </Pressable>
+          <Pressable onPress={doSave} disabled={!dirty || saving} hitSlop={10} accessibilityRole="button" testID="text-editor-save">
+            {saving ? <ActivityIndicator color={c.accent} /> : <Text style={{ color: dirty ? c.accent : c.text3, fontWeight: '800', fontSize: 16 }}>{t('editor.save')}</Text>}
+          </Pressable>
+        </View>
+        {err ? (
+          <Text style={{ color: c.red, margin: 18 }}>{err}</Text>
+        ) : text == null ? (
+          <ActivityIndicator color={c.accent} style={{ marginTop: 40 }} />
+        ) : (
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            multiline
+            autoCorrect={false}
+            autoCapitalize="none"
+            spellCheck={false}
+            keyboardAppearance={c.dark ? 'dark' : 'light'}
+            style={{ flex: 1, color: c.text, fontSize: 14.5, lineHeight: 21, paddingHorizontal: 18, paddingTop: 14, paddingBottom: 60, textAlignVertical: 'top', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}
+          />
+        )}
+      </View>
+    </Modal>
+  );
+}
+
 function ViewerSheet({ c, target, onClose }) {
   const [source, setSource] = useState(null);
   const [error, setError] = useState(null);
