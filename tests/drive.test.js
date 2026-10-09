@@ -435,3 +435,29 @@ test('Hesap modu: geçmiş deposu Drive API üzerinde; iki ".draftrewind" klasö
     const headsDirs = [...items.entries()].filter(([, f]) => f.name === 'heads' && f.parent === firstDr).map(([id]) => id);
     assert.ok([...items.values()].some(f => f.name === 'pc-b.json' && headsDirs.includes(f.parent)));
 });
+
+// Eşitlenmiş Drive klasörü bilerek silinirse (başka cihazdan / Drive'dan) masaüstü onu yeniden OLUŞTURMAZ
+test('Silinmiş Drive klasörü yeniden oluşturulmaz (EDRIVEGONE); hiç eşitlenmemiş proje klasörünü açar', async () => {
+    const synced = { driveState: { base: { 'tez.txt': 'abc' } } };
+    // Klasör modu
+    const root = h.tmpDir();
+    fs.mkdirSync(path.join(root, 'DraftRewind'), { recursive: true });
+    const p = await h.openProject({ root: h.tmpDir(), name: 'Tezim' });
+    const fr = new drive.FolderRemote(root);
+    await assert.rejects(fr.prepare(p, { ...synced, driveFolderName: 'Tezim' }), e => e.code === 'EDRIVEGONE');
+    assert.equal(fs.existsSync(path.join(root, 'DraftRewind', 'Tezim')), false);
+    const fresh = {};
+    await fr.prepare(p, fresh);
+    assert.ok(fs.existsSync(path.join(root, 'DraftRewind', 'Tezim')));
+    // Hesap modu: kayıtlı klasör çöpte
+    let created = 0;
+    const api = {
+        esc: s => s,
+        async req() { return { id: 'k1', trashed: true, mimeType: 'application/vnd.google-apps.folder' }; },
+        async query() { return []; },
+        async createFolder() { created++; return { id: 'yeni' }; }
+    };
+    const ar = new drive.ApiRemote(api);
+    await assert.rejects(ar.prepare({ id: 'p1', name: 'Tezim' }, { ...synced, driveFolderId: 'k1' }), e => e.code === 'EDRIVEGONE');
+    assert.equal(created, 0);
+});

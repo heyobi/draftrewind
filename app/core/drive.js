@@ -181,6 +181,7 @@ class FolderRemote {
             return !!m && (m.id === project.id || (record.driveMarkerId && m.id === record.driveMarkerId));
         };
         const adopted = record.driveFolderName ? path.join(base, record.driveFolderName) : null;
+        if (adopted && !fs.existsSync(adopted) && fs.existsSync(base) && record.driveState && record.driveState.base && Object.keys(record.driveState.base).length) throw Object.assign(new Error('drive folder gone'), { code: 'EDRIVEGONE' });
         if (adopted && fs.existsSync(adopted) && (mine(adopted) || (record.driveAdopted && !markerOf(adopted)))) {
             this.dir = adopted;
             if (!markerOf(adopted)) {
@@ -649,6 +650,9 @@ class ApiRemote {
         if (record.driveFolderId) {
             folder = await this.api.req('GET', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(record.driveFolderId)}?fields=id,name,mimeType,trashed,webViewLink,appProperties`);
             if (folder && (folder.trashed || (folder.mimeType && folder.mimeType !== FOLDER_MIME))) folder = null;
+            // Daha önce eşitlenmiş klasör silinmiş: bilerek silinmiş olabilir (başka cihazdan / Drive'dan).
+            // Yeniden oluşturulmaz; eşitleme durur ve kullanıcıya sorulur.
+            if (!folder && record.driveState && record.driveState.base && Object.keys(record.driveState.base).length) throw Object.assign(new Error('drive folder gone'), { code: 'EDRIVEGONE' });
             if (folder && (!folder.appProperties || folder.appProperties.draftrewindId !== project.id)) {
                 // Etiketsiz klasör: etiketle ki kayıtlı kimlik kaybolsa da yedek yolla bulunabilsin
                 try {

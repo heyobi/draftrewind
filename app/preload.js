@@ -83,6 +83,7 @@ contextBridge.exposeInMainWorld('av', {
         signIn: () => call('drive:signIn'),
         disconnect: () => call('drive:disconnect'),
         open: id => call('drive:open', id),
+        reupload: id => call('drive:reupload', id),
         syncNow: id => call('drive:syncNow', id)
     },
 

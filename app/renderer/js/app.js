@@ -1027,11 +1027,11 @@
         if (dr.mode === 'folder') {
             drBody = `<div class="user-row"><span class="avatar-ic">${ic('folder')}</span><div style="min-width:0"><div class="nm">${t('cloud.driveFolder')}</div><div class="lg" style="word-break:break-all">${esc(dr.folder)}\\DraftRewind</div></div></div>
                 <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastCopy', { ago: ago(c.driveAt) }) : t('cloud.copying')}<br>${t('cloud.folderInfo')}</div>
-                <div class="actions"><button class="btn primary" data-action="drive-open">${t('cloud.openDriveFolder')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
+                <div class="actions">${c.driveOff ? `<button class="btn primary" data-action="drive-reupload">${ic('cloudUp')} ${t('cloud.driveReupload')}</button>` : ''}<button class="btn primary" data-action="drive-open">${t('cloud.openDriveFolder')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else if (dr.mode === 'account') {
             drBody = `<div class="user-row">${dr.user && dr.user.picture ? `<img src="${esc(dr.user.picture)}">` : `<span class="avatar-ic">${ic('drive')}</span>`}<div><div class="nm">${esc(dr.user ? dr.user.name : t('cloud.googleAccount'))}</div><div class="lg">${esc(dr.user ? dr.user.email : '')}</div></div></div>
                 <div class="sub">${c.driveError ? `${ic('history')} ${esc(c.driveError)}` : c.driveAt ? t('cloud.lastUpload', { ago: ago(c.driveAt) }) : t('cloud.uploading')}<br>${t('cloud.accountInfo', { name: esc(ov.name) })}<br>${t('cloud.driveAuto')}</div>
-                <div class="actions"><button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
+                <div class="actions">${c.driveOff ? `<button class="btn primary" data-action="drive-reupload">${ic('cloudUp')} ${t('cloud.driveReupload')}</button>` : ''}<button class="btn primary" data-action="drive-open" ${c.driveUrl ? '' : 'disabled'}>${t('cloud.openInDrive')}</button><button class="btn" data-action="drive-check">${ic('refresh')} ${t('cloud.driveCheckNow')}</button><button class="btn ghost" data-action="drive-disconnect">${t('cloud.disconnect')}</button></div>`;
         } else {
             const det = dr.detected.filter(d => d.kind === 'gdrive' || d.kind === 'icloud');
             const other = dr.detected.filter(d => d.kind !== 'gdrive' && d.kind !== 'icloud');
@@ -1856,6 +1856,12 @@
             const ok = await confirmModal({ title: t('driveLogout.title'), text: t('driveLogout.text'), ok: t('cloud.disconnect'), danger: true, emoji: 'drive' });
             if (!ok) return;
             await run(() => av.drive.disconnect());
+            refresh();
+        },
+        'drive-reupload': async () => {
+            toast(t('cloud.driveReuploading'), 'cloudUp', 4000);
+            const r = await run(() => av.drive.reupload(S.activeId));
+            if (r) toast(t('cloud.driveReuploaded'), 'drive', 4500);
             refresh();
         },
         'drive-open': () => run(() => av.drive.open(S.activeId)),

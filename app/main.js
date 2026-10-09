@@ -407,6 +407,8 @@ async function syncDrive(rt, kind = 'auto') {
     const remote = driveRemote();
     const record = recordOf(rt.project.id);
     if (!remote || !record) return;
+    // Drive'daki klasörü silinmiş proje: kullanıcı "Drive'a yeniden yükle" diyene kadar eşitlenmez
+    if (record.driveOff) return;
     rt.driveBusy = true;
     let result = null;
     try {
@@ -453,7 +455,11 @@ async function syncDrive(rt, kind = 'auto') {
         refreshDriveChangesToken();
     } catch (e) {
         const fresh = recordOf(rt.project.id);
-        if (fresh) {
+        if (fresh && e && e.code === 'EDRIVEGONE') {
+            Object.assign(fresh, { driveOff: true, driveError: T('main.driveGone'), driveFolderId: undefined, driveFolderName: undefined, driveState: undefined, driveUrl: undefined });
+            saveProjectRecord(fresh);
+            emit('toast', { icon: 'drive', text: T('main.driveGoneToast', { name: fresh.name }) });
+        } else if (fresh) {
             fresh.driveError = friendlyNetError(e);
             saveProjectRecord(fresh);
         }
@@ -807,7 +813,8 @@ function cloudInfo(record, rt) {
         syncing: !!(rt && rt.syncing),
         driveUrl: record.driveUrl || null,
         driveAt: record.driveAt || null,
-        driveError: record.driveError || null
+        driveError: record.driveError || null,
+        driveOff: !!record.driveOff
     };
 }
 
@@ -1340,6 +1347,16 @@ function registerIpc() {
         return true;
     });
     handle('update:install', async () => (updater ? updater.install() : false));
+    // Drive'daki klasörü silinmiş projeyi yeniden yükle (yeni klasör, tüm dosyalar ve geçmiş)
+    handle('drive:reupload', async id => {
+        const r = recordOf(id);
+        if (!r) throw new Error(T('err.projectNotFound'));
+        Object.assign(r, { driveOff: false, driveError: null, driveFolderId: undefined, driveFolderName: undefined, driveState: undefined, driveUrl: undefined });
+        saveProjectRecord(r);
+        const rt = rtOf(id);
+        await syncDrive(rt, 'star');
+        return true;
+    });
     handle('drive:open', async id => {
         const r = recordOf(id);
         if (!r || !r.driveUrl) throw new Error(T('err.notUploaded'));
