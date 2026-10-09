@@ -7,6 +7,8 @@ import './polyfill.js';
 import { openProject, gitEngineVersion } from './engine.js';
 import { backendExpo, ensureGitRoot } from './backendExpo.js';
 import { uriToPath, pathToUri } from './paths.js';
+import { nativeZlibStatus } from './pakoShim.js';
+import { nativeGit } from './native.js';
 import { plainBytes } from '../bytes.js';
 
 const now = () => Date.now();
@@ -71,6 +73,7 @@ export async function runSelfTest({ github, onStep } = {}) {
 
   // Expo'nun yeni dosya API'si yalnızca Documents ve Caches altına izin veriyor olabilir;
   // Library/Application Support reddedilirse rapora düşsün, uygulama durmasın
+  await step('Yerel hızlandırma (SHA-1, zlib)', async () => `zlib ${await nativeZlibStatus()}, SHA-1 ${nativeGit && globalThis.crypto && globalThis.crypto.subtle ? 'açık' : 'yok'}`);
   const okRoot = await step('Klasörler', async () => {
     base = `${ensureGitRoot()}/_selftest`;
     wipe(base);
