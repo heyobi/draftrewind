@@ -1084,6 +1084,44 @@ function freeLocalDir(name) {
     return path.join(base, `${clean} (${Date.now()})`);
 }
 
+// GitHub'dan proje aç: Belgeler/DraftRewind/<depo> içine indir, ayrı gitdir ile kaydet.
+// Hem "GitHub'dan aç" penceresi hem "Bulutunda" listesi kullanır (bu yüzden en üst düzeyde).
+async function importGithubRepo(input, cloud) {
+    const importer = require('./core/importer');
+    if (!importer.parseRepo(input)) throw new Error(T('imp.errBadLink'));
+    let token = null;
+    try { token = await freshGithubToken(); } catch (e) { token = githubToken(); }
+    const id = crypto.randomBytes(6).toString('hex');
+    const gitdir = path.join(app.getPath('userData'), 'depolar', `${id}.git`);
+    let last = 0;
+    const res = await importer.cloneFromGithub({
+        input,
+        baseDir: path.join(app.getPath('documents'), 'DraftRewind'),
+        gitdir,
+        token,
+        onProgress: p => {
+            const now = Date.now();
+            if (now - last < 120 && p.total && p.loaded < p.total) return;
+            last = now;
+            emit('importProgress', p);
+        }
+    });
+    const record = { id, name: res.repo, dir: res.dir, createdAt: Date.now() };
+    // Kullanıcının kendi deposuysa (ör. başka bilgisayardaki DraftRewind yedeği) aynı depoya bağlan;
+    // aksi halde ensureRepo ikinci bir yedek deposu açar ve iki bilgisayar birbirini göremezdi
+    const me = store.get('githubUser');
+    if (me && me.login && res.owner && res.owner.toLowerCase() === String(me.login).toLowerCase()) {
+        record.github = { owner: res.owner, repo: res.repo, url: `https://github.com/${res.owner}/${res.repo}` };
+    }
+    // Aynı proje Drive/iCloud'da da varsa o klasöre bağlan (ikinci bir "(2)" klasörü açılmasın)
+    if (cloud) linkCloudFolder(record, cloud);
+    store.set('projects', [...projects(), record]);
+    store.set('activeId', id);
+    const rt = await startProject(record);
+    syncDrive(rt, 'star');
+    return { id, name: record.name, dir: res.dir };
+}
+
 async function adoptCloudProject(item) {
     if (!item || !item.source) throw new Error(T('err.projectNotFound'));
     if (item.source === 'github') return importGithubRepo(item.url, item.alsoCloud || null);
@@ -1708,42 +1746,6 @@ function registerUxIpc() {
     handle('project:importGithub', input => importGithubRepo(input));
     handle('cloud:discover', () => discoverCloudProjects());
     handle('cloud:adopt', item => adoptCloudProject(item));
-
-    async function importGithubRepo(input, cloud) {
-        const importer = require('./core/importer');
-        if (!importer.parseRepo(input)) throw new Error(T('imp.errBadLink'));
-        let token = null;
-        try { token = await freshGithubToken(); } catch (e) { token = githubToken(); }
-        const id = crypto.randomBytes(6).toString('hex');
-        const gitdir = path.join(app.getPath('userData'), 'depolar', `${id}.git`);
-        let last = 0;
-        const res = await importer.cloneFromGithub({
-            input,
-            baseDir: path.join(app.getPath('documents'), 'DraftRewind'),
-            gitdir,
-            token,
-            onProgress: p => {
-                const now = Date.now();
-                if (now - last < 120 && p.total && p.loaded < p.total) return;
-                last = now;
-                emit('importProgress', p);
-            }
-        });
-        const record = { id, name: res.repo, dir: res.dir, createdAt: Date.now() };
-        // Kullanıcının kendi deposuysa (ör. başka bilgisayardaki DraftRewind yedeği) aynı depoya bağlan;
-        // aksi halde ensureRepo ikinci bir yedek deposu açar ve iki bilgisayar birbirini göremezdi
-        const me = store.get('githubUser');
-        if (me && me.login && res.owner && res.owner.toLowerCase() === String(me.login).toLowerCase()) {
-            record.github = { owner: res.owner, repo: res.repo, url: `https://github.com/${res.owner}/${res.repo}` };
-        }
-        // Aynı proje Drive/iCloud'da da varsa o klasöre bağlan (ikinci bir "(2)" klasörü açılmasın)
-        if (cloud) linkCloudFolder(record, cloud);
-        store.set('projects', [...projects(), record]);
-        store.set('activeId', id);
-        const rt = await startProject(record);
-        syncDrive(rt, 'star');
-        return { id, name: record.name, dir: res.dir };
-    }
 
     // Telefonu QR ile eşle: jeton yalnızca QR içinde, 3 dakika geçerli (asla günlüğe yazılmaz)
     handle('phone:pairQr', async () => {
