@@ -907,6 +907,16 @@ export class GitProject {
     return { parent: commit.parent[0] || null, files: rows.map((r) => ({ path: r.rel, status: r.change === 'deleted' ? 'removed' : r.change })) };
   }
 
+  // Bu kayıt bu cihazdaki geçmişte var mı?
+  async hasCommit(oid) {
+    try {
+      await git.readCommit(this.g({ oid }));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // Uzaktaki dalın bu cihazın bildiği son hali (eşitlemeden sonra); yoksa null
   async remoteHead() {
     try {

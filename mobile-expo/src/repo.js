@@ -440,10 +440,42 @@ async function link(p) {
 // Drive bağlantısı ekle: Drive'da klasör açılır; ilk eşitlemede tüm geçmiş ve dosyalar yüklenir
 export async function connectDrive(p, drive) {
   const { key, folder } = await link(p);
-  const f = await drive.createProject(p.name);
+  // Önce Drive'da bu projenin klasörü var mı bak (ör. bilgisayar zaten eşitliyor): yoksa yeni klasör
+  const f = (await findDriveFolder(p, drive)) || (await drive.createProject(p.name));
   WS.saveState(driveEntry({ id: f.id, name: f.name }), { head: null, files: {}, engine: true, gitKey: key, folder, github: { owner: p.owner, repo: p.repo, name: p.name } });
   WS.saveState(p, { ...WS.loadState(p), drive: { id: f.id, name: f.name } });
   return f;
+}
+
+// Aynı projenin Drive klasörü: adı aynı (ya da "Ad (2)" gibi) ve .draftrewind uç dosyalarından biri ya bu
+// GitHub deposunu yazıyor ya da bu cihazdaki geçmişte bulunan bir kayda işaret ediyor
+async function findDriveFolder(p, drive) {
+  const r = await repoFor(p);
+  const norm = (n) => String(n).trim().toLocaleLowerCase('tr-TR');
+  const base = norm(p.name);
+  const sameName = (n) => {
+    const x = norm(n);
+    if (x === base) return true;
+    const rest = x.startsWith(base + ' (') ? x.slice(base.length + 2) : '';
+    return /^\d+\)$/.test(rest);
+  };
+  let folders = [];
+  try {
+    folders = (await drive.projects()).filter((x) => sameName(x.name));
+  } catch (e) {
+    return null;
+  }
+  for (const folder of folders) {
+    try {
+      const store = historyStore(drive, folder.id);
+      for (const n of (await store.list()).filter((x) => x.startsWith('heads/'))) {
+        const h = JSON.parse(new TextDecoder().decode(await store.read(n)));
+        if (h && h.github && h.github.owner === p.owner && h.github.repo === p.repo) return folder;
+        if (h && /^[0-9a-f]{40}$/.test(h.head) && (await r.hasCommit(h.head))) return folder;
+      }
+    } catch (e) {}
+  }
+  return null;
 }
 
 // GitHub bağlantısı ekle: boş depo açılır; ilk eşitlemede tüm geçmiş gönderilir
