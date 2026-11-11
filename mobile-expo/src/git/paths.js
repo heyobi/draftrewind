@@ -56,3 +56,9 @@ export function projectGitdir(documentUri, projectId) {
   const safe = String(projectId).replace(/[^A-Za-z0-9._-]/g, '_');
   return `${uriToPath(libraryGitRootUri(documentUri))}/${safe}`;
 }
+
+// Dosyalar uygulamasını belirli bir klasörde açan adres: "file:///a/b c/" → "shareddocuments:///a/b%20c"
+// Yalnızca uygulamanın kendi kapsayıcısı (Belgeler) ve iCloud kapsayıcısı altındaki yollar için çalışır.
+export function filesAppUrl(uri) {
+  return `shareddocuments://${encodeURI(uriToPath(uri))}`;
+}

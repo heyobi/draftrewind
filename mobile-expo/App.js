@@ -48,6 +48,7 @@ import * as TRASH from './src/trash';
 import { recordError, buildReport } from './src/diag';
 import appJson from './app.json';
 import * as LOCAL from './src/local';
+import { openInFiles } from './src/filesApp';
 import * as IC from './src/icloud';
 import { isSignedIn, previousCopy } from './src/localCore';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
@@ -366,6 +367,29 @@ function SecondaryButton({ c, title, onPress, disabled, icon, testID }) {
         <Text style={{ color: c.text, fontSize: 16, fontWeight: '700' }}>{title}</Text>
       </Glass>
     </Jelly>
+  );
+}
+
+// Proje kartındaki "Dosyalar uygulamasında: …" satırı; dokununca Dosyalar o klasörde açılır
+function FilesLink({ c, path, onPress }) {
+  return (
+    <Pressable
+      onPress={() => {
+        tap();
+        onPress();
+      }}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={t('files.open')}
+      testID="open-in-files"
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}
+    >
+      <Icon name="folder" size={14} color={c.accent} weight="semibold" />
+      <Text style={{ color: c.text3, fontSize: 12, flex: 1 }} numberOfLines={2}>
+        {path}
+      </Text>
+      <Text style={{ color: c.accent, fontSize: 12.5, fontWeight: '700' }}>{t('files.open')} ›</Text>
+    </Pressable>
   );
 }
 
@@ -2330,6 +2354,14 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     setFileFilter(path);
     setTimeout(() => scrollRef.current && scrollRef.current.scrollTo({ y: Math.max(0, tabsY.current - 8), animated: true }), 350);
   };
+  // Dosyanın bu cihazda bir kopyası var mı (yoksa Dosyalar'da gösterilecek bir şey de yok)
+  const hasLocalCopy = (path) => {
+    try {
+      return WS.localFile(project, path).exists;
+    } catch (e) {
+      return false;
+    }
+  };
   const docActions = (path) =>
     showActions(c, {
       title: baseName(path),
@@ -2337,6 +2369,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
         { label: t('doc.preview'), onPress: () => openFile(path, null) },
         editable(path) && { label: t('ws.edit'), onPress: () => editFile((files || []).find((f) => f.path === path) || { path, size: sizeOf(path) }) },
         { label: t('doc.share'), onPress: () => shareFile(path, null) },
+        hasLocalCopy(path) && { label: t('doc.showInFiles'), onPress: () => openInFiles(WS.localFile(project, path).parentDirectory, WS.filesPath(project)) },
         { label: t('doc.history'), onPress: () => showHistory(path) },
       ],
     });
@@ -2516,7 +2549,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
               </View>
               <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>{ws.count ? (ws.lastPush || ws.lastPull ? t('ws.status', { n: ws.count, count: ws.count, ago: ago(ws.lastPush || ws.lastPull) }) : t('ws.statusSynced', { n: ws.count, count: ws.count })) : t('ws.statusNone')}</Text>
               {ws.pending ? <Text style={{ color: '#f97316', fontSize: 13, fontWeight: '700', marginTop: 4 }}>{t('ws.pending', { n: ws.pending, count: ws.pending })}</Text> : null}
-              {ws.count ? <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('ws.filesHint', { path: WS.filesPath(project) })}</Text> : null}
+              <FilesLink c={c} path={t('ws.filesHint', { path: WS.filesPath(project) })} onPress={() => openInFiles(WS.projectDir(project), WS.filesPath(project))} />
               {ws.pending ? (
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                   <Jelly onPress={() => runSync({ manual: true })} disabled={syncing} scaleTo={0.97} accessibilityLabel={t('ws.syncNow')} testID="sync-now-button">
@@ -3552,6 +3585,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
         { label: t('doc.preview'), onPress: () => openFile(path) },
         editable(path) && !gone && { label: t('ws.edit'), onPress: () => editFile(path) },
         { label: t('doc.share'), onPress: () => shareDoc(setBusy, baseName(path), () => LOCAL.readCurrent(project, path)) },
+        !gone && { label: t('doc.showInFiles'), onPress: () => openInFiles(LOCAL.workFile(project, path).parentDirectory, LOCAL.filesPath(project)) },
         { label: t('doc.history'), onPress: () => showHistory(path) },
       ],
     });
@@ -3803,7 +3837,7 @@ function LocalProjectScreen({ c, prefs, project, ghToken, drive, onBack, onMoved
               <Text style={{ color: c.text2, fontSize: 13, marginTop: 6 }}>
                 {files && files.length ? t('local.cardBody', { n: files.length, count: files.length, ago: ago(history && history.length ? history[0].time : 0) }) : t('local.cardNone')}
               </Text>
-              <Text style={{ color: c.text3, fontSize: 12, marginTop: 3 }} numberOfLines={2}>{t('local.filesHint', { path: LOCAL.filesPath(project) })}</Text>
+              <FilesLink c={c} path={t('local.filesHint', { path: LOCAL.filesPath(project) })} onPress={() => openInFiles(LOCAL.projectDir(project), LOCAL.filesPath(project))} />
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
                 <Jelly onPress={markMoment} disabled={gone || !!busy} scaleTo={0.97} style={s.flex} accessibilityLabel={t('local.star')} testID="star-button">
                   <View style={[s.actionBtn, s.btnRow, { backgroundColor: '#ffb93826', gap: 6 }]}>
