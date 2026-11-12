@@ -146,8 +146,9 @@ Metinler `docs/store/app-store.md` içinde; EN ve TR ayrı ayrı doldurulur:
 - **App Review Information:**
   - İletişim adı, telefonu ve e-postası: kullanıcı girer.
   - Notes: `app-store.md` içindeki "App Review notes" bölümü.
-  - Demo hesabı: test GitHub hesabının kullanıcı adı ve şifresini **kullanıcı yazar**. Belgedeki
-    `<TEST_LOGIN>` gibi yer tutucular asla gönderilmez.
+  - Demo hesabı yok: **Sign-in required** işaretsiz bırakılır. İnceleme hesapsız yapılır, Pro ise
+    iCloud Drive ile test edilir (notlar `app-store.md` içinde). Apple yine de GitHub/Google girişi
+    isterse o zaman ayrı bir test hesabı açılır ve bilgilerini **kullanıcı yazar**.
 - Export compliance sorusu çıkmamalı, çünkü `ITSAppUsesNonExemptEncryption = false` ayarlı. Çıkarsa:
   yalnızca standart HTTPS kullanılıyor, muaf.
 - Version Release: **Manually release this version**, böylece onaydan sonra yayın zamanını kullanıcı seçer.
@@ -155,7 +156,7 @@ Metinler `docs/store/app-store.md` içinde; EN ve TR ayrı ayrı doldurulur:
 ### 3.7 Burada dur
 **"Add for Review" / "Submit for Review" düğmesine basma.** Kullanıcıya şunları bildir:
 - Tamamlanan her adım
-- Eksik kalanlar (ör. ekran görüntüleri, demo hesabı) ve kimin yapacağı
+- Eksik kalanlar (ör. ekran görüntüleri) ve kimin yapacağı
 - Sayfada görülen uyarılar
 
 ---
@@ -176,5 +177,5 @@ Başvuruyu kullanıcının onayıyla gönder.
 - [ ] App Information, Age Rating, Pricing (Free) ve App Privacy tamam
 - [ ] `com.draftrewind.app.pro` ürünü **Ready to Submit**
 - [ ] Sürüm sayfası EN + TR dolu; build ve satın alma ürünü seçili
-- [ ] Ekran görüntüleri ve demo hesabı: kullanıcıdan bekleniyor ya da tamam
+- [ ] Ekran görüntüleri: kullanıcıdan bekleniyor ya da tamam (demo hesabı gerekmiyor)
 - [ ] **Submit for Review'a basılmadı**
