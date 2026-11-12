@@ -9,7 +9,8 @@ Age rating: 4+ · Privacy URL: https://draftrewind.com/privacy.html · Support U
 App Privacy answers: **Data Not Collected** (no analytics, no accounts, no server). Export compliance: only standard HTTPS → exempt.
 
 ## Name / subtitle (30 chars each)
-- Name: `DraftRewind`
+- Name EN: `DraftRewind`
+- Name TR: `DraftRewind: Sürüm Takibi` (App Store Connect rejects plain `DraftRewind` for the Turkish localization as "already being used"; no other app in this account or on the public store uses it, so it is probably reserved by an unreleased record elsewhere. A name claim can be filed from the error message.)
 - Subtitle EN: `Your thesis history, in hand`
 - Subtitle TR: `Tezinin geçmişi cebinde`
 
@@ -70,26 +71,33 @@ Bu cihazda ücretsiz kullanılır. DraftRewind Pro (tek seferlik satın alma, ab
 Take them on a real iPhone (Settings → English for the EN set, Turkish for the TR set), light mode, status bar with full battery.
 
 ## App Review notes (paste into "Notes")
-DraftRewind keeps the version history of the user's own documents. No account with us is needed: on the first screen tap "Continue without an account" to try everything on the device (create a project, add a file with "+", edit it, open a save point to see the coloured diff, Settings › Advanced › Sync engine test).
+No demo account is provided: in App Store Connect › App Review Information, **Sign-in required is unchecked**. Everything can be reviewed without a third-party account; Pro is tested through iCloud Drive with the review device's own Apple ID. If App Review still asks for a GitHub/Google login, create a dedicated test account then and reply in Resolution Center.
 
-Cloud connections are part of the one-time in-app purchase "DraftRewind Pro" (com.draftrewind.app.pro). When you tap "Continue with GitHub" the purchase sheet appears; buy it with the sandbox account. "Restore purchases" is at the top of Settings and on the purchase sheet.
+```
+No sign-in or demo account is needed. DraftRewind keeps the version history of the user's own documents and has no server or account of ours.
 
-Optional connections use the user's own storage: iCloud Drive (app container), Google Drive (drive.file scope, only folders the app creates), GitHub (private repository). Google and GitHub sign-in exist only to reach that third-party storage, so Sign in with Apple is not required (guideline 4.8 exception). There is no server of ours.
+TRY THE APP (no account)
+On the first screen tap "Continue without an account". Then: create a project, add a file with "+", edit it, open a save point to see the coloured diff, and try Settings › Advanced › Sync engine test.
 
-Demo GitHub account (two sample projects with history):
-  GitHub username: <TEST_LOGIN>
-  Password: <TEST_PASSWORD>
-  If a 2FA prompt appears, use the TOTP secret: <TOTP_SECRET>
-Steps: "Continue with GitHub" → enter the code shown on github.com/login/device → projects appear.
+IN-APP PURCHASE (com.draftrewind.app.pro)
+Cloud connections are part of the one-time purchase "DraftRewind Pro". Open Settings › DraftRewind Pro (or tap any cloud option) and buy it with the sandbox account. "Restore purchases" is at the top of Settings and on the purchase sheet.
+
+TEST PRO WITHOUT ANY EXTRA ACCOUNT
+After the purchase, connect a project to iCloud Drive. It uses the Apple ID already signed in on the review device, so no third-party account is required. Edits sync to the app's iCloud container and the project can be restored from there.
+
+OPTIONAL THIRD-PARTY STORAGE
+Google Drive (drive.file scope, only folders the app creates) and GitHub (a private repository) are optional extra storage destinations that use the user's own account. They work the same way as iCloud Drive; any Google or GitHub account can be used. Google and GitHub sign-in exist only to reach that third-party storage, so Sign in with Apple is not required (guideline 4.8 exception).
+
 Live Activities and Apple Intelligence features are optional and degrade gracefully on devices without them.
+```
 
 ## Before submitting — checklist
 Step-by-step browser setup (website, email, Google OAuth, App Store Connect — everything except Submit): `docs/store/setup-handoff.md`.
 
-- [ ] Apple Developer Program active; Paid Apps agreement signed (bank + tax)
+- [ ] Apple Developer Program active; Paid Apps agreement signed (bank + tax) — license agreement accepted; Paid Apps agreement still to sign
 - [x] `ITSAppUsesNonExemptEncryption = false` in app.json
-- [ ] Privacy policy live at draftrewind.com/privacy.html (ready: `docs/site/privacy.html`; set the contact address)
-- [ ] Test GitHub account with sample projects; credentials in review notes
-- [ ] 10 screenshots (5 EN + 5 TR) uploaded
-- [ ] Apply to the App Store Small Business Program (15% commission)
-- [ ] In-app purchase `com.draftrewind.app.pro` created (Non-Consumable, $4.99), localized EN/TR, review screenshot of the purchase sheet attached, and added to the app version before submitting
+- [x] Privacy policy live at https://draftrewind.com/privacy.html; support@draftrewind.com forwards via Cloudflare Email Routing
+- [x] No demo account needed (Sign-in required off; review notes explain the no-account and iCloud Drive path)
+- [ ] 10 screenshots (5 EN + 5 TR) uploaded, plus 13" iPad screenshots
+- [x] Applied to the App Store Small Business Program (15% commission) — awaiting Apple's reply
+- [ ] In-app purchase `com.draftrewind.app.pro` — created, priced ($4.99, Türkiye ₺149.99), localized EN/TR, review note added; still needs the purchase-sheet review screenshot, then pick it on the "Add for Review" screen
