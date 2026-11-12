@@ -22,6 +22,7 @@ import * as Core from './localCore';
 import * as WS from './workspace';
 import * as TRASH from './trash';
 import { plainBytes } from './bytes';
+import { recordError } from './diag';
 
 const { ROOT_FOLDER, claimedFolders } = WS;
 
@@ -342,7 +343,9 @@ export async function snapshotAll(projects) {
     try {
       const r = await snapshot(p);
       if (r && r.record) n++;
-    } catch (e) {}
+    } catch (e) {
+      recordError(e, 'snapshot');
+    }
   }
   return n;
 }
@@ -489,7 +492,9 @@ export async function listIcloudProjects(force = false) {
 function writeMarker(dir, name, id) {
   try {
     new File(dir, Core.MARKER_FILE).write(JSON.stringify({ id, name, note: 'DraftRewind bu klasörü eşitliyor. Bu dosyayı silmeyin.' }));
-  } catch (e) {}
+  } catch (e) {
+    recordError(e, 'marker');
+  }
 }
 
 // Yeni proje. store: 'local' | 'icloud'. Aynı adlı klasör varsa hata (kullanıcı başka ad seçer).
@@ -858,7 +863,9 @@ function engineFor(p) {
         // Başka bir Apple cihaz bu projenin geçmişini zaten oluşturduysa aynı geçmişe katıl (iki ayrı geçmiş olmasın)
         try {
           if ((await icloudStore(p).list()).some((n) => n.startsWith('heads/'))) await shareIcloudHistory(p, r, { noPush: true });
-        } catch (e) {}
+        } catch (e) {
+          recordError(e, 'icloud-join');
+        }
       }
       if (!(await r.head())) await migrateLog(p, r);
       return r;
@@ -881,7 +888,9 @@ async function migrateLog(p, r) {
         return f.exists ? f.bytes() : null;
       },
     });
-  } catch (e) {}
+  } catch (e) {
+    recordError(e, 'migrate-log');
+  }
 }
 
 // Motor kaydı → ekranın kayıt biçimi (localCore.buildRecord ile aynı alanlar; files: yol → kayıt oid'i)

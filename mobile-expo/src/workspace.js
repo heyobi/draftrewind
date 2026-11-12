@@ -11,6 +11,7 @@ import { latestWords } from './stats';
 import { t } from './i18n';
 import { countWords, countsWords, classifyChanges, decideRemoteChange, conflictName, advanceWords, buildMessage, ignoredName, isLocallyModified, recentlyTouched } from './wsCore';
 import { plainBytes } from './bytes';
+import { recordError } from './diag';
 
 export const ROOT_FOLDER = 'Projeler';
 const root = () => new Directory(Paths.document, ROOT_FOLDER);
@@ -53,7 +54,9 @@ export function saveState(p, st) {
     stateDir().create({ intermediates: true, idempotent: true });
     // Klasör adı da saklanır: bu klasör bir GitHub projesine ait, "hesapsız" yerel proje sayılmasın
     stateFile(p).write(JSON.stringify({ ...st, folder: st.folder || folderName(p) }));
-  } catch (e) {}
+  } catch (e) {
+    recordError(e, 'ws-state');
+  }
 }
 
 // Girişin durumunu tamamen siler (bağlantı kesilince; klasör ve geçmiş yerinde kalır)
@@ -109,7 +112,9 @@ export function saveFlags(flags) {
   try {
     stateDir().create({ intermediates: true, idempotent: true });
     flagsFile().write(JSON.stringify(flags));
-  } catch (e) {}
+  } catch (e) {
+    recordError(e, 'ws-flags');
+  }
 }
 
 export function ensureProjectDir(p) {
@@ -170,7 +175,9 @@ export function status(p) {
   try {
     const r = scanChanges(p);
     pending = r.modified.length + r.added.length + r.deleted.length;
-  } catch (e) {}
+  } catch (e) {
+    recordError(e, 'ws-scan');
+  }
   return { count: Object.keys(st.files).length, lastPush: st.lastPush, lastPull: st.lastPull, full: !!st.full, pending };
 }
 

@@ -20,8 +20,8 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "DraftRewind, çektiğin fotoğrafları projene eklemek için kamerayı kullanır. / DraftRewind uses the camera to add the photos you take to your project.",
-          "photosPermission": "DraftRewind, seçtiğin fotoğrafları projene eklemek için fotoğraf arşivine erişir. / DraftRewind accesses your photo library to add the photos you choose to your project.",
+          "cameraPermission": "DraftRewind uses the camera to take photos for your project and to scan the sign-in QR code shown on your computer.",
+          "photosPermission": "DraftRewind accesses your photo library to add the photos you choose to your project.",
           "microphonePermission": false
         }
       ],
@@ -30,7 +30,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "DraftRewind, bilgisayarındaki QR kodunu okuyarak giriş yapmak için kamerayı kullanır. / DraftRewind uses the camera to scan the QR code on your computer to sign in.",
+          "cameraPermission": "DraftRewind uses the camera to take photos for your project and to scan the sign-in QR code shown on your computer.",
           "microphonePermission": false,
           "recordAudioAndroid": false
         }
@@ -118,6 +118,10 @@
         "projectId": "3e137a29-0d9d-4133-ba8b-e27af127dd7a"
       }
     },
-    "scheme": "draftrewind"
+    "scheme": "draftrewind",
+    "locales": {
+      "en": "./locales/en.json",
+      "tr": "./locales/tr.json"
+    }
   }
 }

@@ -1,0 +1,7 @@
+{
+  "ios": {
+    "CFBundleDisplayName": "DraftRewind",
+    "NSCameraUsageDescription": "DraftRewind, projene fotoğraf eklemek ve bilgisayarında gösterilen giriş QR kodunu okumak için kamerayı kullanır.",
+    "NSPhotoLibraryUsageDescription": "DraftRewind, seçtiğin fotoğrafları projene eklemek için fotoğraf arşivine erişir."
+  }
+}

@@ -17,6 +17,7 @@ import { historyStore, driveRemote, readTombstones, addTombstone } from './drive
 import * as GH from './github';
 import * as LOCAL from './local';
 import * as TRASH from './trash';
+import { recordError } from './diag';
 
 const opened = new Map(); // anahtar → Promise<GitProject>
 
@@ -642,7 +643,9 @@ export async function deleteEverywhere(p) {
   if (auth.drive && roots.length) {
     try {
       await addTombstone(auth.drive, { id: `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, roots, name: p.name, at: Date.now(), device: author().name });
-    } catch (e) {}
+    } catch (e) {
+      recordError(e, 'tombstone');
+    }
   }
   if (conns.drive && auth.drive) {
     const res = await deleteRemote('drive', conns.drive, { drive: auth.drive });
@@ -676,7 +679,9 @@ export async function applyTombstones(drive, candidates) {
       if (c.kind === 'local') await LOCAL.removeFromDevice(c.project, { tomb: hit.id });
       else removeFromDevice(c.project, { tomb: hit.id });
       removed.push(c.project.name);
-    } catch (e) {}
+    } catch (e) {
+      recordError(e, 'tombstone-apply');
+    }
   }
   return removed;
 }
