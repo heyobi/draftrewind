@@ -24,10 +24,9 @@ Site dosyaları: `site/` (index.html, privacy.html, support.html, img/).
 
 App Store; gizlilik politikası, destek sayfası ve iletişim e-postası istiyor. Hepsi bu sitede duracak.
 
-**Önce sor:** `draftrewind.com` alan adı kullanıcıda var mı, varsa Cloudflare'de mi?
-- **Varsa:** Aşağıdaki adımlar o alan adıyla yapılır.
-- **Yoksa:** Alan adı ücretlidir (yılda yaklaşık 10 $); satın almadan önce sor. Ücretsiz seçenek
-  `draftrewind.pages.dev` adresidir. Bu seçilirse 1.4'teki adres değişikliklerini yap.
+**Alan adı:** `draftrewind.com` kullanıcıda zaten var ve Cloudflare hesabında görünmesi gerekiyor. Cloudflare
+panelinde **Domains** listesinde olduğunu doğrula ve aşağıdaki adımları bu alan adıyla yap. Yeni bir alan adı
+satın alma. Listede yoksa (başka bir kayıt firmasında ya da başka bir hesapta olabilir) dur ve kullanıcıya sor.
 
 ### 1.1 Siteyi yayımla
 1. dash.cloudflare.com › **Workers & Pages** › **Create** › **Pages** › **Connect to Git**.
