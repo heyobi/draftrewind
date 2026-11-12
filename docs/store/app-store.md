@@ -84,6 +84,8 @@ Steps: "Continue with GitHub" → enter the code shown on github.com/login/devic
 Live Activities and Apple Intelligence features are optional and degrade gracefully on devices without them.
 
 ## Before submitting — checklist
+Step-by-step browser setup (website, email, Google OAuth, App Store Connect — everything except Submit): `docs/store/setup-handoff.md`.
+
 - [ ] Apple Developer Program active; Paid Apps agreement signed (bank + tax)
 - [x] `ITSAppUsesNonExemptEncryption = false` in app.json
 - [ ] Privacy policy live at draftrewind.com/privacy.html (ready: `docs/site/privacy.html`; set the contact address)
