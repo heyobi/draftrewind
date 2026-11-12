@@ -1,6 +1,10 @@
 # App Store listing — DraftRewind (iPhone)
 
-Bundle ID: `com.draftrewind.app` · Price tier: $4.99 (launch: $2.99 for the first 6 weeks) · Category: Productivity · Secondary: Education
+Bundle ID: `com.draftrewind.app` · Price: **Free** + one in-app purchase · Category: Productivity · Secondary: Education
+
+In-app purchase: **DraftRewind Pro** — Non-Consumable, Product ID `com.draftrewind.app.pro`, $4.99 (Türkiye set by hand, ≈ ₺149.99).
+Free: unlimited projects and history on this device. Pro: cloud connections (GitHub, Google Drive, iCloud Drive, QR pairing with the computer).
+Installs that were already connected to a cloud before Pro existed (TestFlight testers) keep Pro for free.
 Age rating: 4+ · Privacy URL: https://draftrewind.com/privacy.html · Support URL: https://draftrewind.com/support.html
 App Privacy answers: **Data Not Collected** (no analytics, no accounts, no server). Export compliance: only standard HTTPS → exempt.
 
@@ -35,7 +39,7 @@ Keep a project only on this device, or connect it to iCloud Drive, Google Drive,
 PRIVATE BY DESIGN
 There is no DraftRewind server. Your files live on your device and in your own accounts. No analytics, no tracking, no account with us.
 
-One-time purchase, no subscription. The Windows app is free at draftrewind.com.
+Free to use on this device. DraftRewind Pro (one-time purchase, no subscription) adds sync with your computer and backup to iCloud Drive, Google Drive and GitHub. The Windows app is free at draftrewind.com.
 
 ## Description (TR)
 DraftRewind; tezinin, ödevinin ya da makalenin her sürümünü kendiliğinden saklar ve istediğin ana geri sarmanı sağlar. iPhone'da tek başına çalışır; bilgisayarın varsa ücretsiz Windows uygulamasıyla birlikte de.
@@ -55,7 +59,7 @@ Projeyi yalnızca bu cihazda tut ya da iCloud Drive'a, Google Drive'a, GitHub'a 
 TASARIMI GEREĞİ GİZLİ
 DraftRewind'in sunucusu yoktur. Dosyaların cihazında ve kendi hesaplarında durur. Analitik yok, takip yok, bizde hesap yok.
 
-Tek seferlik ödeme, abonelik yok. Windows uygulaması draftrewind.com'da ücretsiz.
+Bu cihazda ücretsiz kullanılır. DraftRewind Pro (tek seferlik satın alma, abonelik yok) bilgisayarla eşitleme ile iCloud Drive, Google Drive ve GitHub yedeğini açar. Windows uygulaması draftrewind.com'da ücretsiz.
 
 ## Screenshots (6.7" and 6.5", 5 each, portrait)
 1. Home with two projects and the "new saves" card — caption: "Every version, in your pocket"
@@ -68,6 +72,8 @@ Take them on a real iPhone (Settings → English for the EN set, Turkish for the
 ## App Review notes (paste into "Notes")
 DraftRewind keeps the version history of the user's own documents. No account with us is needed: on the first screen tap "Continue without an account" to try everything on the device (create a project, add a file with "+", edit it, open a save point to see the coloured diff, Settings › Advanced › Sync engine test).
 
+Cloud connections are part of the one-time in-app purchase "DraftRewind Pro" (com.draftrewind.app.pro). When you tap "Continue with GitHub" the purchase sheet appears; buy it with the sandbox account. "Restore purchases" is at the top of Settings and on the purchase sheet.
+
 Optional connections use the user's own storage: iCloud Drive (app container), Google Drive (drive.file scope, only folders the app creates), GitHub (private repository). Google and GitHub sign-in exist only to reach that third-party storage, so Sign in with Apple is not required (guideline 4.8 exception). There is no server of ours.
 
 Demo GitHub account (two sample projects with history):
@@ -78,9 +84,12 @@ Steps: "Continue with GitHub" → enter the code shown on github.com/login/devic
 Live Activities and Apple Intelligence features are optional and degrade gracefully on devices without them.
 
 ## Before submitting — checklist
+Step-by-step browser setup (website, email, Google OAuth, App Store Connect — everything except Submit): `docs/store/setup-handoff.md`.
+
 - [ ] Apple Developer Program active; Paid Apps agreement signed (bank + tax)
 - [x] `ITSAppUsesNonExemptEncryption = false` in app.json
 - [ ] Privacy policy live at draftrewind.com/privacy.html (ready: `docs/site/privacy.html`; set the contact address)
 - [ ] Test GitHub account with sample projects; credentials in review notes
 - [ ] 10 screenshots (5 EN + 5 TR) uploaded
 - [ ] Apply to the App Store Small Business Program (15% commission)
+- [ ] In-app purchase `com.draftrewind.app.pro` created (Non-Consumable, $4.99), localized EN/TR, review screenshot of the purchase sheet attached, and added to the app version before submitting

@@ -49,6 +49,7 @@ import { recordError, buildReport } from './src/diag';
 import appJson from './app.json';
 import * as LOCAL from './src/local';
 import { openInFiles } from './src/filesApp';
+import * as PRO from './src/pro';
 import * as IC from './src/icloud';
 import { isSignedIn, previousCopy } from './src/localCore';
 import { t, lang, locale, resolveLanguage, setLanguage, loadPrefs, savePrefs, viewerLabels } from './src/i18n';
@@ -326,6 +327,10 @@ function reportSync(r, project, onAuthError, manual = false) {
     Alert.alert(t('ws.conflictTitle'), r.pull.conflicts.map((x) => t('ws.conflict', { name: x.path.split('/').pop(), copy: x.copy.split('/').pop() })).join('\n\n'), [{ text: t('common.ok') }]);
   }
   if (r.pullError && r.pullError.auth && onAuthError) onAuthError();
+  if (r.driveGone) {
+    warn();
+    Alert.alert(t('gone.driveOffTitle'), t('gone.driveOffBody', { name: project.name }), [{ text: t('common.ok') }]);
+  }
 }
 
 // Hata nesnesini kullanıcıya gösterilecek metne çevirir (ham iz yok)
@@ -738,12 +743,42 @@ function Root() {
   const [accounts, setAccounts] = useState(false);
 
   useEffect(() => {
-    Promise.all([GH.loadToken(), G.loadGoogle()]).then(([t, g]) => {
+    Promise.all([GH.loadToken(), G.loadGoogle()]).then(async ([t, g]) => {
       setGhToken(t || null);
       setGoogle(g || null);
+      await PRO.init({ hadCloud: !!(t || g || prefs.icloud) });
       setReady(true);
     });
   }, []);
+
+  // Pro gerektiren bir işlem: satın alma ekranı. Ayarlar açıksa önce kapanır (iOS iki sayfayı yan yana
+  // açamaz), işlem bitince yeniden açılır ve başlatılan giriş kaldığı yerden sürer.
+  const [paywall, setPaywall] = useState(null);
+  const accountsOpen = useRef(false);
+  accountsOpen.current = accounts;
+  useEffect(() => {
+    PRO.setPresenter(async (reason) => {
+      const fromSettings = accountsOpen.current;
+      if (fromSettings) {
+        setAccounts(false);
+        await new Promise((r) => setTimeout(r, 450));
+      }
+      const ok = await new Promise((resolve) => setPaywall({ reason, resolve }));
+      if (fromSettings) setTimeout(() => setAccounts(true), 450);
+      return ok;
+    });
+    return () => PRO.setPresenter(null);
+  }, []);
+  const closePaywall = (ok) => {
+    if (paywall) paywall.resolve(!!ok);
+    setPaywall(null);
+  };
+  const startScan = async () => {
+    if (await PRO.ensure('pair')) setScanning(true);
+  };
+  const continueIcloud = async () => {
+    if (await PRO.ensure('icloud')) updatePrefs({ localOnly: true, icloud: true });
+  };
 
   useEffect(() => {
     if (!ghToken) return;
@@ -845,6 +880,11 @@ function Root() {
       Alert.alert(t(expired ? 'pair.expiredTitle' : 'pair.invalidTitle'), t(expired ? 'pair.expired' : 'pair.invalid'), [{ text: t('common.ok') }]);
       return;
     }
+    // Bilgisayarla eşleştirme bulut bağlantısıdır: Pro gerekir (uygulama içi tarayıcı bunu zaten sordu)
+    if (!fromScanner && !(await PRO.ensure('pair'))) {
+      handledUrl.current = null;
+      return;
+    }
     if (!fromScanner && ghUser) {
       const ok = await new Promise((resolve) =>
         Alert.alert(t('pair.replaceTitle'), t('pair.replaceText', { next: info.login || '?', current: ghUser.login }), [
@@ -902,9 +942,9 @@ function Root() {
             c={c}
             onGithub={loginGithub}
             onGoogle={setGoogle}
-            onScan={() => setScanning(true)}
+            onScan={startScan}
             onLocal={() => updatePrefs({ localOnly: true })}
-            onIcloud={() => updatePrefs({ localOnly: true, icloud: true })}
+            onIcloud={continueIcloud}
           />
         ) : screen && screen.type === 'gh' ? (
           <ProjectScreen c={c} prefs={prefs} token={ghToken} project={screen.project} syncTick={syncTick} onBack={() => setScreen(null)} onAuthError={logoutGithub} />
@@ -932,7 +972,7 @@ function Root() {
       <SettingsSheet
         onScan={() => {
           setAccounts(false);
-          setTimeout(() => setScanning(true), 450);
+          setTimeout(startScan, 450);
         }}
         c={c}
         prefs={prefs}
@@ -949,7 +989,99 @@ function Root() {
         onChanged={() => setSyncTick((n) => n + 1)}
       />
       <BusyHud c={c} text={pairing ? t('pair.connecting') : null} />
+      {paywall ? <Paywall c={c} onClose={closePaywall} /> : null}
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DraftRewind Pro: tek seferlik satın alma ekranı
+// ---------------------------------------------------------------------------
+function Paywall({ c, onClose }) {
+  const [product, setProduct] = useState(undefined); // undefined: yükleniyor, null: alınamadı
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    PRO.loadProduct().then((p) => alive && setProduct(p || null));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const buy = async () => {
+    setBusy(true);
+    try {
+      const r = await PRO.buy();
+      if (r === 'purchased') {
+        success();
+        return onClose(true);
+      }
+      if (r === 'pending') Alert.alert(t('pro.pendingTitle'), t('pro.pendingBody'), [{ text: t('common.ok') }]);
+      else if (r === 'unverified' || r === 'unavailable') Alert.alert(t('pro.failedTitle'), t('pro.unavailable'), [{ text: t('common.ok') }]);
+    } catch (e) {
+      recordError(e, 'pro-buy');
+      warn();
+      Alert.alert(t('pro.failedTitle'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const restore = async () => {
+    setBusy(true);
+    try {
+      if (await PRO.restore()) {
+        success();
+        Alert.alert(t('pro.restoredTitle'), t('pro.restoredBody'), [{ text: t('common.ok'), onPress: () => onClose(true) }]);
+      } else Alert.alert(t('pro.notFoundTitle'), t('pro.notFoundBody'), [{ text: t('common.ok') }]);
+    } catch (e) {
+      recordError(e, 'pro-restore');
+      Alert.alert(t('pro.failedTitle'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const bullets = [
+    ['laptopcomputer.and.iphone', t('pro.b1')],
+    ['externaldrive.fill', t('pro.b2')],
+    ['arrow.clockwise.icloud', t('pro.b3')],
+    ['checkmark.seal.fill', t('pro.b4')],
+  ];
+  return (
+    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={() => onClose(false)}>
+      <View style={[s.flex, { backgroundColor: c.bg, padding: 24 }]} testID="paywall">
+        <View style={s.grabber} />
+        <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+          <Icon name="sparkles" size={44} color={c.accent} style={{ alignSelf: 'center', marginTop: 18 }} />
+          <Text style={[s.h1, { color: c.text, textAlign: 'center', marginTop: 12 }]}>{t('pro.title')}</Text>
+          <Text style={{ color: c.text2, textAlign: 'center', fontSize: 16, lineHeight: 22, marginTop: 8 }}>{t('pro.subtitle')}</Text>
+          <Glass c={c} style={{ padding: 16, marginTop: 24, gap: 14 }}>
+            {bullets.map(([icon, text]) => (
+              <View key={icon} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <Icon name={icon} size={20} color={c.accent} weight="semibold" />
+                <Text style={{ color: c.text, fontSize: 15, lineHeight: 20, flex: 1 }}>{text}</Text>
+              </View>
+            ))}
+          </Glass>
+          <Text style={{ color: c.text3, fontSize: 13, lineHeight: 18, textAlign: 'center', marginTop: 14 }}>{t('pro.freeNote')}</Text>
+        </ScrollView>
+        <View style={{ gap: 12 }}>
+          <GradientButton
+            icon="lock.open.fill"
+            title={busy ? '…' : product ? t('pro.buy', { price: product.displayPrice }) : product === undefined ? t('pro.loading') : t('pro.buyNoPrice')}
+            onPress={buy}
+            disabled={busy || !product}
+          />
+          {product === null ? <Text style={{ color: c.text3, fontSize: 12.5, textAlign: 'center' }}>{t('pro.unavailable')}</Text> : null}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 6 }}>
+            <Pressable onPress={restore} disabled={busy} hitSlop={10} testID="paywall-restore">
+              <Text style={{ color: c.accent, fontWeight: '700', fontSize: 14.5 }}>{t('pro.restore')}</Text>
+            </Pressable>
+            <Pressable onPress={() => onClose(false)} disabled={busy} hitSlop={10} testID="paywall-close">
+              <Text style={{ color: c.text3, fontWeight: '700', fontSize: 14.5 }}>{t('pro.notNow')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -964,6 +1096,7 @@ function useGithubLogin(onToken) {
   useEffect(() => () => (cancelled.current = true), []);
   const start = async () => {
     setError(null);
+    if (!(await PRO.ensure('github'))) return;
     setBusy(true);
     cancelled.current = false;
     try {
@@ -994,6 +1127,7 @@ function useGoogleLogin(onSession) {
   const [busy, setBusy] = useState(false);
   const start = async () => {
     setError(null);
+    if (!(await PRO.ensure('google'))) return;
     if (!G.googleAvailable()) {
       setError(t('login.googleNotConfigured'));
       return;
@@ -1216,6 +1350,50 @@ function Segmented({ c, options, value, onChange }) {
 }
 
 // Ayarlar (profil resmine dokununca): hesaplar + dil + tema
+// Ayarlar'ın en üstü: Pro durumu, "Pro'ya geç" ve "Satın alımları geri yükle" (App Store kuralı: her zaman erişilebilir)
+function ProRow({ c }) {
+  const [pro, setPro] = useState(PRO.isPro());
+  const [busy, setBusy] = useState(false);
+  useEffect(() => PRO.subscribe(setPro), []);
+  const restore = async () => {
+    setBusy(true);
+    try {
+      const ok = await PRO.restore();
+      if (ok) success();
+      Alert.alert(t(ok ? 'pro.restoredTitle' : 'pro.notFoundTitle'), t(ok ? 'pro.restoredBody' : 'pro.notFoundBody'), [{ text: t('common.ok') }]);
+    } catch (e) {
+      recordError(e, 'pro-restore');
+      Alert.alert(t('pro.failedTitle'), errText(e), [{ text: t('common.ok') }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Text style={[s.dayHeader, { color: c.text3, marginTop: 0 }]}>{t('pro.title')}</Text>
+      <Glass c={c} style={s.accountRow}>
+        <View style={s.accountIcon}>
+          <Icon name={pro ? 'checkmark.seal.fill' : 'sparkles'} size={22} color={pro ? c.accent : c.text2} />
+        </View>
+        <View style={s.flex}>
+          <Text style={{ color: c.text, fontWeight: '700', fontSize: 16 }}>{pro ? t('pro.active') : t('pro.free')}</Text>
+          <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 2 }}>{pro ? (PRO.isLegacy() ? t('pro.activeLegacy') : t('pro.activeSub')) : t('pro.freeSub')}</Text>
+        </View>
+        {!pro ? (
+          <Pressable onPress={() => PRO.ensure('settings')} hitSlop={10} testID="pro-upgrade">
+            <Text style={{ color: c.accent, fontWeight: '700' }}>{t('pro.upgrade')}</Text>
+          </Pressable>
+        ) : null}
+      </Glass>
+      {!pro || PRO.isLegacy() ? (
+        <Pressable onPress={restore} disabled={busy} hitSlop={6} testID="pro-restore">
+          <Text style={{ color: c.accent, fontSize: 13, fontWeight: '700', marginTop: 8, marginHorizontal: 6 }}>{busy ? '…' : t('pro.restore')}</Text>
+        </Pressable>
+      ) : null}
+    </>
+  );
+}
+
 function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, google, onGithub, onGoogle, onLogoutGithub, onLogoutGoogle, onScan, onChanged }) {
   const gh = useGithubLogin(onGithub);
   const go = useGoogleLogin(onGoogle);
@@ -1317,7 +1495,8 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
           </Pressable>
         </View>
         <ScrollView>
-          <Text style={[s.dayHeader, { color: c.text3, marginTop: 0 }]}>{t('settings.accounts')}</Text>
+          <ProRow c={c} />
+          <Text style={[s.dayHeader, { color: c.text3, marginTop: 22 }]}>{t('settings.accounts')}</Text>
 
           <Glass c={c} style={s.accountRow}>
             <View style={s.accountIcon}><Icon name="chevron.left.forwardslash.chevron.right" size={22} color={c.text2} /></View>
@@ -1359,7 +1538,10 @@ function SettingsSheet({ c, prefs, onPrefs, visible, onClose, ghUser, ghToken, g
             <Switch
               value={!!prefs.icloud && icloudOk}
               disabled={!icloudOk}
-              onValueChange={(on) => onPrefs(on ? { icloud: true } : { icloud: false, localOnly: prefs.localOnly || (!ghToken && !google) })}
+              onValueChange={async (on) => {
+                if (on && !(await PRO.ensure('icloud'))) return;
+                onPrefs(on ? { icloud: true } : { icloud: false, localOnly: prefs.localOnly || (!ghToken && !google) });
+              }}
               trackColor={{ true: c.accent }}
               accessibilityLabel={t('icloud.settingsTitle')}
               testID="icloud-toggle"
@@ -1557,7 +1739,8 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
         const r = await REPO.syncProject(ghToken, p, { auto: autoPush });
         if (r && r.push) pushed += r.push.pushed.length + r.push.removed.length;
         if (r && ((r.push && r.push.commit) || (r.pull && r.pull.moved))) changed = true;
-        if (r && r.pull && r.pull.conflicts.length) reportSync({ pull: r.pull }, p);
+        if (r && ((r.pull && r.pull.conflicts.length) || r.driveGone)) reportSync({ pull: r.pull, driveGone: r.driveGone }, p);
+        if (r && r.driveGone) changed = true;
       } catch (e) {
         if (e && e.auth) return onAuthErrorGh();
       }
@@ -1707,6 +1890,7 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
   const norm = (s) => String(s || '').trim().toLocaleLowerCase('tr-TR');
   const ghNames = new Set((ghList || []).map((p) => norm(p.name)));
   const driveNames = new Set((driveList || []).map((f) => norm(f.name)));
+  const driveIds = new Set((driveList || []).map((f) => f.id));
   const driveOnly = (driveList || []).filter((f) => !ghNames.has(norm(f.name)));
   // iCloud projeleri GitHub ile ada göre birleşir (ikisinde de varsa GitHub satırı "iCloud'da da var" der)
   const icloudNames = new Set(wantIcloud ? icloudInfo.projects.map((p) => norm(p.name)) : []);
@@ -1722,7 +1906,9 @@ function HomeScreen({ c, prefs, onPrefs, ghToken, ghUser, google, drive, syncTic
       key: `gh:${p.owner}/${p.repo}`,
       name: p.name,
       github: true,
-      drive: !!conns.drive || driveNames.has(norm(p.name)),
+      // Google oturumu kapalıyken Drive etiketi gösterilmez (eşitleme o sırada çalışmıyor); Drive listesi
+      // geldiyse bağlı klasör o listede olmalı (Drive'da silinen klasör "bağlı" görünmesin)
+      drive: !!drive && (driveList ? driveIds.has(conns.drive && conns.drive.driveId) || driveNames.has(norm(p.name)) : !!conns.drive),
       icloud: icloudNames.has(norm(p.name)),
       onDevice: REPO.onDevice(p),
       time: p.pushedAt,
@@ -2173,6 +2359,18 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
     ]);
   };
 
+  // Drive projesinin klasörü Drive'da silinmiş: GitHub bağlantısı varsa o sürer, yoksa proje hesapsız kalır
+  const askDriveGone = () => {
+    const conns = REPO.connectionsOf(project);
+    Alert.alert(t('gone.driveTitle'), t(conns.github ? 'gone.driveBodyGh' : 'gone.driveBody'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      conns.github
+        ? { text: t('conn.disconnect'), onPress: () => (REPO.disconnect(project, 'drive'), onBack()) }
+        : { text: t('conn.keepLocal'), onPress: () => (REPO.keepLocalOnly(project), onBack()) },
+      { text: t('trash.removeAction'), style: 'destructive', onPress: () => (REPO.removeFromDevice(project), onBack()) },
+    ]);
+  };
+
   // Bu cihazdan kaldır: klasör ve geçmiş Silinenler'e (30 gün); buluttaki kopyalara dokunulmaz
   const removeHere = () => {
     const conns = REPO.connectionsOf(project);
@@ -2254,6 +2452,7 @@ function ProjectScreen({ c, prefs, token, project, syncTick, onBack, onAuthError
       warn();
       if (e && e.auth) onAuthError();
       else if (e && e.repoGone) askRepoGone();
+      else if (e && e.driveGone) askDriveGone();
       else if (!(await REPO.ready(project).catch(() => false))) setError(t('ws.firstSyncFailed', { error: errText(e) }));
       else if (manual) Alert.alert(t('ws.pushFailedTitle'), errText(e), [{ text: t('common.ok') }]);
     } finally {
@@ -2830,8 +3029,11 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
     ]);
   };
 
+  const authNow = REPO.getAuth();
   const row = (which, icon, detail) => {
     const on = !!conns[which];
+    // Bağlantı kayıtlı ama hesabın oturumu kapalı: eşitleme durmuş durumda; açıkça söylenir
+    const paused = on && which !== self && !(which === 'github' ? authNow.github : authNow.drive);
     return (
       <View key={which} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
         <View style={[s.accountIcon, { width: 34, height: 34 }]}>
@@ -2839,8 +3041,8 @@ function ConnectionsCard({ c, project, onChanged, onLeave }) {
         </View>
         <View style={s.flex}>
           <Text style={{ color: c.text, fontWeight: '700', fontSize: 15 }}>{SERVICE[which]}</Text>
-          <Text style={{ color: c.text3, fontSize: 12.5, marginTop: 1 }} numberOfLines={1}>
-            {on ? detail : t('conn.off')}
+          <Text style={{ color: paused ? '#f97316' : c.text3, fontSize: 12.5, marginTop: 1, fontWeight: paused ? '600' : '400' }} numberOfLines={2}>
+            {paused ? t('conn.paused', { service: SERVICE[which] }) : on ? detail : t('conn.off')}
           </Text>
         </View>
         {busy === which ? (

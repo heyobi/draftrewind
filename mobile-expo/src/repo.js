@@ -166,10 +166,23 @@ async function doSync(token, p, opts) {
   const conns = connectionsOf(p);
   const ghToken = p.kind === 'drive' ? auth.github : token || auth.github;
   const drive = p.kind === 'drive' ? token || auth.drive : auth.drive;
+  const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null, driveGone: null };
   const jobs = [];
   if (conns.github && ghToken) jobs.push({ self: p.kind !== 'drive', run: () => doGithubSync(ghToken, conns.github, opts) });
-  if (conns.drive && drive) jobs.push({ self: p.kind === 'drive', run: () => doDriveSync(drive, conns.drive, opts) });
-  const out = { pull: { updated: [], conflicts: [], removed: [], skipped: [], moved: false }, pullError: null, push: null, pending: null };
+  if (conns.drive && drive) {
+    if (await driveFolderAlive(drive, conns.drive.driveId)) {
+      jobs.push({ self: p.kind === 'drive', run: () => doDriveSync(drive, conns.drive, opts) });
+    } else if (p.kind === 'drive') {
+      const e = new Error(t('err.driveFolderGone'));
+      e.driveGone = true;
+      throw e;
+    } else {
+      // Drive'daki klasör kullanıcı tarafından silinmiş: bağlantı kapanır (klasör yeniden oluşturulmaz);
+      // proje ve geçmişi bu cihazda ve GitHub'da olduğu gibi kalır
+      disconnect(p, 'drive');
+      out.driveGone = conns.drive.name;
+    }
+  }
   for (const job of jobs) {
     let r;
     try {
@@ -246,6 +259,25 @@ async function doGithubSync(token, p, opts) {
     pendingN: out.pending ? out.pending.n : 0,
   });
   return out;
+}
+
+// Drive'daki proje klasörü hâlâ yerinde mi? Çöp kutusuna atılmışsa ya da kalıcı silinmişse false.
+// Emin olunamayan durumda (ağ hatası, beklenmeyen yanıt) true: bağlantıya dokunulmaz.
+async function driveFolderAlive(drive, id) {
+  try {
+    const f = await drive.req('GET', `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?fields=id,trashed`);
+    return !(f && f.trashed === true);
+  } catch (e) {
+    if (e && e.auth) throw e;
+    if (!e || e.status !== 404) return true;
+    // 404: klasör ya gerçekten silinmiş ya da bu uygulama ona erişemiyor. DraftRewind klasörlerinin
+    // listesinde de yoksa silinmiş sayılır.
+    try {
+      return (await drive.projects()).some((x) => x.id === id);
+    } catch (e2) {
+      return true;
+    }
+  }
 }
 
 // Ekrandaki durum satırı: hemen (kayıtlı durumdan). Eşitlemeden sonra güncellenir.
