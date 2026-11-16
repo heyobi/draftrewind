@@ -38,7 +38,7 @@
       "expo-font"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.draftrewind.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
